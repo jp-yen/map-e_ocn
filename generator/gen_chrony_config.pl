@@ -5,7 +5,7 @@ use warnings;
 use File::Basename;
 use FindBin qw($RealBin);
 use lib $RealBin;
-use MapeCommon qw(find_template);
+use MapeCommon qw(find_template render_template_file);
 
 # =============================================================================
 # 1. map-e.conf からシェル経由で export された環境変数を取得
@@ -23,25 +23,5 @@ if (!$final_tmpl) {
     die "Error: Template file '$tmpl_file' not found.\n";
 }
 
-# =============================================================================
-# 3. カンマ区切りの上位NTPサーバーを Chronyの複数行設定へ変換
-# =============================================================================
-my @ntp_list = split(/[\s,]+/, $system_ntp);
-my @lines;
-foreach my $ntp (@ntp_list) {
-    next if $ntp eq ''; # 空要素を除外
-    push @lines, "server $ntp iburst";
-}
-my $ntp_servers_lines = join("\n", @lines);
-
-# =============================================================================
-# 4. テンプレートの読み込みと置換
-# =============================================================================
-open my $fh, '<', $final_tmpl or die "Cannot open $final_tmpl: $!";
-my $content = do { local $/; <$fh> };
-close $fh;
-
-# map-e.conf の変数名表記に合わせたプレースホルダーを置換
-$content =~ s/\$\{SYSTEM_NTP\}/$ntp_servers_lines/g;
-
-print $content;
+my $ntp_servers_lines = join("\n", map { "server $_ iburst" } grep { length $_ } split(/[\s,]+/, $system_ntp));
+print render_template_file($final_tmpl, { SYSTEM_NTP => $ntp_servers_lines });

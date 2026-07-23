@@ -9,16 +9,20 @@ REQUIRED_PACKAGES := python3 openssl radvd kea-dhcp6-server bind9 chrony syslog-
 .DEFAULT_GOAL := all
 .PHONY: all clean generate check install packages archive check-root check-user
 
-TARGETS = \
+SYSTEM_TARGETS = \
     system/interfaces \
-    system/99-network-routing.conf \
-    radvd/radvd.conf \
-    kea-dhcp6/kea-dhcp6.conf \
-    kea-dhcp6/kea-map-e-hook \
+    system/99-network-routing.conf
+
+BIND_TARGETS = \
     bind/named.conf.local \
     bind/db.map.ocn.ad.jp \
-    bind/db.v6connect.net \
-    chrony/chrony.conf \
+    bind/db.v6connect.net
+
+KEA_TARGETS = \
+    kea-dhcp6/kea-dhcp6.conf \
+    kea-dhcp6/kea-map-e-hook
+
+MPE_TARGETS = \
     mape-provisioning-server/mape-provisioning-server \
     mape-provisioning-server/mape_calc \
     mape-provisioning-server/mape-provisioning-server.service \
@@ -27,6 +31,30 @@ TARGETS = \
     mape-provisioning-server/server.crt \
     mape-provisioning-server/server.key
 
+TARGETS = \
+    $(SYSTEM_TARGETS) \
+    radvd/radvd.conf \
+    $(KEA_TARGETS) \
+    $(BIND_TARGETS) \
+    chrony/chrony.conf \
+    $(MPE_TARGETS)
+
+PERL_TARGETS = \
+	chrony/chrony.conf \
+	bind/named.conf.local \
+	bind/db.map.ocn.ad.jp \
+	bind/db.v6connect.net \
+	system/interfaces \
+	system/99-network-routing.conf \
+	radvd/radvd.conf \
+	kea-dhcp6/kea-dhcp6.conf \
+	kea-dhcp6/kea-map-e-hook \
+	mape-provisioning-server/mape_calc \
+	mape-provisioning-server/mape-provisioning-server \
+	mape-provisioning-server/mape-provisioning-server.service \
+	mape-provisioning-server/mape-route-monitor \
+	mape-provisioning-server/mape-route-monitor.service
+
 CUR_DIR = $(shell basename $(CURDIR))
 
 all: generate
@@ -34,86 +62,62 @@ all: generate
 generate: $(TARGETS) check-user
 	@echo "Successfully generated all configuration files."
 
-
-# =============================================================================
-# 各設定ファイルの生成ルール (それぞれの分割スクリプトへ直結)
-# =============================================================================
-chrony/chrony.conf: generator/gen_chrony_config.pl $(CONFIG_FILE)
+$(PERL_TARGETS): $(CONFIG_FILE)
 	@mkdir -p $(dir $@)
+	$(if $(GEN_CHMOD_BEFORE),@chmod +x $(GEN_SCRIPT))
 	@echo "Generating $@ via Perl"
-	@set -a; . ./$(CONFIG_FILE); perl generator/gen_chrony_config.pl chrony > $@
+	@set -a; . ./$(CONFIG_FILE); perl $(GEN_SCRIPT) $(GEN_MODE) > $@
+	$(if $(GEN_CHMOD_AFTER),@chmod +x $@)
 
-bind/named.conf.local: generator/gen_bind_configs.pl $(CONFIG_FILE)
-	@mkdir -p $(dir $@)
-	@echo "Generating $@ via Perl"
-	@set -a; . ./$(CONFIG_FILE); perl generator/gen_bind_configs.pl named_local > $@
+chrony/chrony.conf: GEN_SCRIPT = generator/gen_chrony_config.pl
+chrony/chrony.conf: GEN_MODE = chrony
 
-bind/db.map.ocn.ad.jp: generator/gen_bind_configs.pl $(CONFIG_FILE)
-	@mkdir -p $(dir $@)
-	@echo "Generating $@ via Perl"
-	@set -a; . ./$(CONFIG_FILE); perl generator/gen_bind_configs.pl db_map > $@
+bind/named.conf.local: GEN_SCRIPT = generator/gen_bind_configs.pl
+bind/named.conf.local: GEN_MODE = named_local
+bind/db.map.ocn.ad.jp: GEN_SCRIPT = generator/gen_bind_configs.pl
+bind/db.map.ocn.ad.jp: GEN_MODE = db_map
+bind/db.v6connect.net: GEN_SCRIPT = generator/gen_bind_configs.pl
+bind/db.v6connect.net: GEN_MODE = db_v6
 
-bind/db.v6connect.net: generator/gen_bind_configs.pl $(CONFIG_FILE)
-	@mkdir -p $(dir $@)
-	@echo "Generating $@ via Perl"
-	@set -a; . ./$(CONFIG_FILE); perl generator/gen_bind_configs.pl db_v6 > $@
+system/interfaces: GEN_SCRIPT = generator/gen_system_mod.pl
+system/interfaces: GEN_MODE = interfaces
+system/interfaces: GEN_CHMOD_BEFORE = 1
+system/99-network-routing.conf: GEN_SCRIPT = generator/gen_system_mod.pl
+system/99-network-routing.conf: GEN_MODE = sysctl
+system/99-network-routing.conf: GEN_CHMOD_BEFORE = 1
 
-system/interfaces: generator/gen_system_mod.pl $(CONFIG_FILE)
-	@mkdir -p $(dir $@)
-	@echo "Generating $@ via Perl (interfaces mode)"
-	@chmod +x generator/gen_system_mod.pl
-	@set -a; . ./$(CONFIG_FILE); perl generator/gen_system_mod.pl interfaces > $@
+radvd/radvd.conf: GEN_SCRIPT = generator/gen_radvd_mod.pl
+radvd/radvd.conf: GEN_MODE = radvd
+radvd/radvd.conf: GEN_CHMOD_BEFORE = 1
 
-system/99-network-routing.conf: generator/gen_system_mod.pl $(CONFIG_FILE)
-	@mkdir -p $(dir $@)
-	@echo "Generating $@ via Perl (sysctl mode)"
-	@chmod +x generator/gen_system_mod.pl
-	@set -a; . ./$(CONFIG_FILE); perl generator/gen_system_mod.pl sysctl > $@
+kea-dhcp6/kea-dhcp6.conf: GEN_SCRIPT = generator/gen_kea_configs.pl
+kea-dhcp6/kea-dhcp6.conf: GEN_MODE = dhcp6
+kea-dhcp6/kea-map-e-hook: GEN_SCRIPT = generator/gen_kea_configs.pl
+kea-dhcp6/kea-map-e-hook: GEN_MODE = hook
+kea-dhcp6/kea-map-e-hook: GEN_CHMOD_AFTER = 1
 
-radvd/radvd.conf: generator/gen_radvd_mod.pl $(CONFIG_FILE)
-	@mkdir -p $(dir $@)
-	@echo "Generating $@ via Perl (radvd mode)"
-	@chmod +x generator/gen_radvd_mod.pl
-	@set -a; . ./$(CONFIG_FILE); perl generator/gen_radvd_mod.pl radvd > $@
+mape-provisioning-server/mape_calc: GEN_SCRIPT = generator/gen_mape_mod.pl
+mape-provisioning-server/mape_calc: GEN_MODE = mape_calc
+mape-provisioning-server/mape_calc: mape-provisioning-server/mape_calc.tmpl
+mape-provisioning-server/mape_calc: GEN_CHMOD_AFTER = 1
 
-kea-dhcp6/kea-dhcp6.conf: generator/gen_kea_configs.pl $(CONFIG_FILE)
-	@mkdir -p $(dir $@)
-	@echo "Generating $@ via Perl script"
-	@set -a; . ./$(CONFIG_FILE); perl generator/gen_kea_configs.pl dhcp6 > $@
+mape-provisioning-server/mape-provisioning-server: GEN_SCRIPT = generator/gen_mape_mod.pl
+mape-provisioning-server/mape-provisioning-server: GEN_MODE = provisioning-server
+mape-provisioning-server/mape-provisioning-server: mape-provisioning-server/mape-provisioning-server.tmpl
+mape-provisioning-server/mape-provisioning-server: GEN_CHMOD_AFTER = 1
 
-kea-dhcp6/kea-map-e-hook: generator/gen_kea_configs.pl $(CONFIG_FILE)
-	@mkdir -p $(dir $@)
-	@echo "Generating $@ via Perl script"
-	@set -a; . ./$(CONFIG_FILE); perl generator/gen_kea_configs.pl hook > $@
-	@chmod +x $@
+mape-provisioning-server/mape-provisioning-server.service: GEN_SCRIPT = generator/gen_mape_mod.pl
+mape-provisioning-server/mape-provisioning-server.service: GEN_MODE = provisioning-server-service
+mape-provisioning-server/mape-provisioning-server.service: mape-provisioning-server/mape-provisioning-server.service.tmpl
 
-mape-provisioning-server/mape_calc: generator/gen_mape_mod.pl mape-provisioning-server/mape_calc.tmpl $(CONFIG_FILE)
-	@mkdir -p $(dir $@)
-	@echo "Generating $@ via Perl"
-	@set -a; . ./$(CONFIG_FILE); perl generator/gen_mape_mod.pl mape_calc > $@
-	@chmod +x $@
+mape-provisioning-server/mape-route-monitor: GEN_SCRIPT = generator/gen_mape_mod.pl
+mape-provisioning-server/mape-route-monitor: GEN_MODE = route-monitor
+mape-provisioning-server/mape-route-monitor: mape-provisioning-server/mape-route-monitor.tmpl
+mape-provisioning-server/mape-route-monitor: GEN_CHMOD_AFTER = 1
 
-mape-provisioning-server/mape-provisioning-server: generator/gen_mape_mod.pl mape-provisioning-server/mape-provisioning-server.tmpl $(CONFIG_FILE)
-	@mkdir -p $(dir $@)
-	@echo "Generating $@ via Perl"
-	@set -a; . ./$(CONFIG_FILE); perl generator/gen_mape_mod.pl provisioning-server > $@
-	@chmod +x $@
-
-mape-provisioning-server/mape-provisioning-server.service: generator/gen_mape_mod.pl mape-provisioning-server/mape-provisioning-server.service.tmpl $(CONFIG_FILE)
-	@mkdir -p $(dir $@)
-	@echo "Generating $@ via Perl"
-	@set -a; . ./$(CONFIG_FILE); perl generator/gen_mape_mod.pl provisioning-server-service > $@
-
-mape-provisioning-server/mape-route-monitor: generator/gen_mape_mod.pl mape-provisioning-server/mape-route-monitor.tmpl $(CONFIG_FILE)
-	@mkdir -p $(dir $@)
-	@echo "Generating $@ via Perl"
-	@set -a; . ./$(CONFIG_FILE); perl generator/gen_mape_mod.pl route-monitor > $@
-	@chmod +x $@
-
-mape-provisioning-server/mape-route-monitor.service: generator/gen_mape_mod.pl mape-provisioning-server/mape-route-monitor.service.tmpl $(CONFIG_FILE)
-	@mkdir -p $(dir $@)
-	@echo "Generating $@ via Perl"
-	@set -a; . ./$(CONFIG_FILE); perl generator/gen_mape_mod.pl route-monitor-service > $@
+mape-provisioning-server/mape-route-monitor.service: GEN_SCRIPT = generator/gen_mape_mod.pl
+mape-provisioning-server/mape-route-monitor.service: GEN_MODE = route-monitor-service
+mape-provisioning-server/mape-route-monitor.service: mape-provisioning-server/mape-route-monitor.service.tmpl
 
 mape-provisioning-server/server.crt mape-provisioning-server/server.key:
 	@mkdir -p mape-provisioning-server

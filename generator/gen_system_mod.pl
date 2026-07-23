@@ -5,7 +5,7 @@ use warnings;
 use File::Basename;
 use FindBin qw($RealBin);
 use lib $RealBin;
-use MapeCommon qw(calc_br_ipv6 calc_vlan_prefix parse_vlan_list load_conf_file);
+use MapeCommon qw(calc_br_ipv6 calc_vlan_prefix build_vlan_segments load_conf_file);
 
 my $mode = $ARGV[0] || '';
 
@@ -75,57 +75,34 @@ sub generate_interfaces {
     print "iface $mape_if inet manual\n\n";
 
     # ①～④ セグメント定義
-    foreach my $vlan (parse_vlan_list($slaac_dyn_vlans)) {
-        my $vif    = "$mape_if.$vlan";
-        my $prefix = calc_vlan_prefix($base_subnet, $slaac_br_base, $vlan);
-        my $suffix = $slaac_br_suffix; $suffix =~ s/^:+//;
-        my $ip = "${prefix}::${suffix}";
-        # map-e.conf側の値変更(BASE_SUBNET/SLAAC_BR_BASE/SUFFIX等)でこの
-        # アドレスが書き換わった場合、ifdown は「新しい(=書き換え後の)
-        # interfacesファイル」を見て旧アドレスを削除しようとするため、
-        # 実際にインターフェースへ付与されている旧アドレスとは値が一致せず
-        # 削除に失敗し残留してしまう(dummy0と同種の問題)。
-        # post-down でVLANサブインターフェース自体を削除することで、
-        # 付与されているアドレスの値によらず確実に片付け、それに紐づく
-        # 経路(connected routeや、mape-route-monitor等が動的に張った
-        # dev指定の経路含む)もデバイス削除と同時にカーネルが自動的に
-        # 削除する。
-        print "auto $vif\niface $vif inet6 static\n";
-        print "    address ${ip}/64\n";
-        print "    accept_ra 0\n";
-        print "    pre-up ip link add link $mape_if name $vif type vlan id $vlan || true\n\n";
-        print "    post-down ip link del $vif || true\n";
-    }
+    foreach my $seg (build_vlan_segments([
+        { vlans => $slaac_dyn_vlans, type => 'slaac', base => $slaac_br_base },
+        { vlans => $pd_dyn_vlans,    type => 'pd',    base => undef },
+        { vlans => $slaac_fix_vlans, type => 'slaac', base => $slaac_fix_br_prefix },
+        { vlans => $pd_fix_vlans,    type => 'pd',    base => undef },
+    ])) {
+        my $vlan = $seg->{v};
+        my $vif  = "$mape_if.$vlan";
 
-    foreach my $vlan (parse_vlan_list($pd_dyn_vlans)) {
-        my $vif = "$mape_if.$vlan";
-        print "auto $vif\niface $vif inet6 manual\n";
-        print "    pre-up ip link add link $mape_if name $vif type vlan id $vlan || true\n";
-        print "    up ip link set dev $vif up\n";
-        print "    up sysctl -w net.ipv6.conf.${vif}.accept_ra=0\n";
-        print "    up sysctl -w net.ipv6.conf.${vif}.autoconf=0\n\n";
-    }
+        if ($seg->{t} eq 'slaac') {
+            my $prefix = calc_vlan_prefix($base_subnet, $seg->{b}, $vlan);
+            my $suffix = $slaac_br_suffix;
+            $suffix =~ s/^:+//;
+            my $ip = "${prefix}::${suffix}";
 
-    foreach my $vlan (parse_vlan_list($slaac_fix_vlans)) {
-        my $vif    = "$mape_if.$vlan";
-        my $prefix = calc_vlan_prefix($base_subnet, $slaac_fix_br_prefix, $vlan);
-        my $suffix = $slaac_fix_br_suffix; $suffix =~ s/^:+//;
-        my $ip = "${prefix}::${suffix}";
-        # 動的セグメントと同じ理由(旧アドレス/旧経路の確実な削除)で post-down を付与
-        print "auto $vif\niface $vif inet6 static\n";
-        print "    address ${ip}/64\n";
-        print "    pre-up ip link add link $mape_if name $vif type vlan id $vlan || true\n";
-        print "    post-down ip link del $vif || true\n";
-        print "    accept_ra 0\n\n";
-    }
-
-    foreach my $vlan (parse_vlan_list($pd_fix_vlans)) {
-        my $vif = "$mape_if.$vlan";
-        print "auto $vif\niface $vif inet6 manual\n";
-        print "    pre-up ip link add link $mape_if name $vif type vlan id $vlan || true\n";
-        print "    up ip link set dev $vif up\n";
-        print "    up sysctl -w net.ipv6.conf.${vif}.autoconf=0\n";
-        print "    up sysctl -w net.ipv6.conf.${vif}.accept_ra=0\n\n";
+            # 動的セグメントと同じ理由(旧アドレス/旧経路の確実な削除)で post-down を付与
+            print "auto $vif\niface $vif inet6 static\n";
+            print "    address ${ip}/64\n";
+            print "    accept_ra 0\n";
+            print "    pre-up ip link add link $mape_if name $vif type vlan id $vlan || true\n\n";
+            print "    post-down ip link del $vif || true\n";
+        } else {
+            print "auto $vif\niface $vif inet6 manual\n";
+            print "    pre-up ip link add link $mape_if name $vif type vlan id $vlan || true\n";
+            print "    up ip link set dev $vif up\n";
+            print "    up sysctl -w net.ipv6.conf.${vif}.accept_ra=0\n";
+            print "    up sysctl -w net.ipv6.conf.${vif}.autoconf=0\n\n";
+        }
     }
 
     # サービスIP

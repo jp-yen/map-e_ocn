@@ -3,7 +3,7 @@ use strict;
 use warnings;
 use FindBin qw($RealBin);
 use lib $RealBin;
-use MapeCommon qw(calc_vlan_prefix parse_vlan_list);
+use MapeCommon qw(calc_vlan_prefix build_vlan_segments);
 
 sub generate_radvd {
     my ($c) = @_;
@@ -23,28 +23,18 @@ sub generate_radvd {
     print "# /etc/radvd.conf (Generated via gen_configs.pl)\n";
     print "# =============================================================================\n\n";
 
-    # ① SLAAC動的
-    foreach my $vlan (parse_vlan_list($slaac_dyn_vlans)) {
-        my $vif    = "${mape_if}.${vlan}";
-        my $prefix = calc_vlan_prefix($base_subnet, $slaac_br_base, $vlan);
+    foreach my $seg (build_vlan_segments([
+        { vlans => $slaac_dyn_vlans, type => 'slaac', base => $slaac_br_base },
+        { vlans => $pd_dyn_vlans,    type => 'pd',    base => undef },
+        { vlans => $slaac_fix_vlans, type => 'slaac', base => $slaac_fix_br_prefix },
+        { vlans => $pd_fix_vlans,    type => 'pd',    base => undef },
+    ])) {
+        my $vlan = $seg->{v};
+        my $vif = "$mape_if.$vlan";
+        my $prefix = ($seg->{t} eq 'slaac')
+            ? calc_vlan_prefix($base_subnet, $seg->{b}, $vlan)
+            : undef;
         _print_radvd_block($vif, $prefix, $mape_dns_ip, $domain);
-    }
-
-    # ② PD動的
-    foreach my $vlan (parse_vlan_list($pd_dyn_vlans)) {
-        _print_radvd_block("${mape_if}.${vlan}", undef, $mape_dns_ip, $domain);
-    }
-
-    # ③ SLAAC固定
-    foreach my $vlan (parse_vlan_list($slaac_fix_vlans)) {
-        my $vif    = "${mape_if}.${vlan}";
-        my $prefix = calc_vlan_prefix($base_subnet, $slaac_fix_br_prefix, $vlan);
-        _print_radvd_block($vif, $prefix, $mape_dns_ip, $domain);
-    }
-
-    # ④ PD固定
-    foreach my $vlan (parse_vlan_list($pd_fix_vlans)) {
-        _print_radvd_block("${mape_if}.${vlan}", undef, $mape_dns_ip, $domain);
     }
 }
 

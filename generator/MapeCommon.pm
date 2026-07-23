@@ -25,9 +25,28 @@ our @EXPORT_OK = qw(
     calc_br_ipv6
     calc_vlan_prefix
     parse_vlan_list
+    build_vlan_segments
     find_template
     load_conf_file
+    render_template_file
 );
+
+sub render_template_text {
+    my ($content, $vars_ref) = @_;
+    my %vars = %{ $vars_ref || {} };
+
+    $content =~ s/\$\{(\w+)\}/exists $vars{$1} ? (defined $vars{$1} ? $vars{$1} : '') : $&/ge;
+    return $content;
+}
+
+sub render_template_file {
+    my ($path, $vars_ref) = @_;
+    open(my $fh, '<', $path) or die "Cannot open template file '$path': $!";
+    my $content = do { local $/; <$fh> };
+    close($fh);
+
+    return render_template_text($content, $vars_ref);
+}
 
 # ---------------------------------------------------------------------------
 # IPv4ドット表記 -> "xxxx:xxxx" 形式のhextetペアに変換 (BR_IPV6計算などで使用)
@@ -212,6 +231,34 @@ sub parse_vlan_list {
     my ($str) = @_;
     return () unless defined $str;
     return grep { /^\d+$/ } split(/\s+/, $str);
+}
+
+# ---------------------------------------------------------------------------
+# VLANセグメント定義を共通形式にまとめる
+#   specs は [{ vlans => '1 2 3', type => 'slaac', base => '1000' }, ...]
+#   の配列参照を想定し、各VLANを { v => VLAN ID, t => type, b => base }
+#   へ展開して返す。
+# ---------------------------------------------------------------------------
+sub build_vlan_segments {
+    my ($specs_ref) = @_;
+    my @segments;
+
+    foreach my $spec (@{ $specs_ref || [] }) {
+        next unless $spec && defined $spec->{type};
+        my $vlans = $spec->{vlans};
+        my $type  = $spec->{type};
+        my $base  = $spec->{base};
+
+        foreach my $vlan (parse_vlan_list($vlans)) {
+            push @segments, {
+                v => $vlan,
+                t => $type,
+                b => $base,
+            };
+        }
+    }
+
+    return @segments;
 }
 
 1;

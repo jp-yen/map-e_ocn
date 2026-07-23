@@ -4,7 +4,7 @@ use warnings;
 use File::Basename;
 use FindBin qw($RealBin);
 use lib $RealBin;
-use MapeCommon qw(ipv4_to_hex_hextets calc_br_ipv6 calc_vlan_prefix parse_vlan_list load_conf_file);
+use MapeCommon qw(ipv4_to_hex_hextets calc_br_ipv6 calc_vlan_prefix build_vlan_segments load_conf_file render_template_file);
 
 # ----------------------------------------------------------------------------
 # map-e.conf の読み込み (共通ロジックは MapeCommon::load_conf_file)
@@ -67,11 +67,12 @@ if ($mode eq 'hook') {
     # ---------------------------------------------------------------
     # VLANセグメント一覧の組み立て (①②③④)
     # ---------------------------------------------------------------
-my @segs;
-foreach (parse_vlan_list($ENV{SLAAC_DYN_VLANS})) { push @segs, { v => $_, t => "slaac", b => $ENV{SLAAC_BR_BASE}       || "1000" } }
-foreach (parse_vlan_list($ENV{PD_DYN_VLANS}))    { push @segs, { v => $_, t => "pd",    b => $ENV{PD_POOL}             || "2000" } }
-foreach (parse_vlan_list($ENV{SLAAC_FIX_VLANS})) { push @segs, { v => $_, t => "slaac", b => $ENV{SLAAC_FIX_BR_PREFIX} || "3000" } }
-foreach (parse_vlan_list($ENV{PD_FIX_VLANS}))    { push @segs, { v => $_, t => "pd",    b => $ENV{PD_FIX_POOL}        || "4000" } }
+    my @segs = build_vlan_segments([
+        { vlans => $ENV{SLAAC_DYN_VLANS}, type => 'slaac', base => $ENV{SLAAC_BR_BASE}       || '1000' },
+        { vlans => $ENV{PD_DYN_VLANS},    type => 'pd',    base => $ENV{PD_POOL}             || '2000' },
+        { vlans => $ENV{SLAAC_FIX_VLANS}, type => 'slaac', base => $ENV{SLAAC_FIX_BR_PREFIX} || '3000' },
+        { vlans => $ENV{PD_FIX_VLANS},    type => 'pd',    base => $ENV{PD_FIX_POOL}         || '4000' },
+    ]);
 
     my $ifaces = join(", ", map { "\"$mape_if.$_->{v}\"" } sort { $a->{v} <=> $b->{v} } @segs);
 
@@ -115,12 +116,7 @@ foreach (parse_vlan_list($ENV{PD_FIX_VLANS}))    { push @segs, { v => $_, t => "
     );
 
     my $template = 'kea-dhcp6/kea-dhcp6.conf.tmpl';
-    open my $fh, '<', $template or die "Cannot open template $template: $!";
-    while (my $line = <$fh>) {
-        $line =~ s/\$\{(\w+)\}/exists $v{$1} ? $v{$1} : $&/ge;
-        print $line;
-    }
-    close $fh;
+    print render_template_file($template, { %ENV, %v });
 
 } else {
     die "Usage: $0 [dhcp6|hook]\n";
