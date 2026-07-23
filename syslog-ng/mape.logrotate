@@ -1,0 +1,20 @@
+/var/log/mape-provisioning-server.log
+/var/log/mape-route-monitor.log
+/var/log/radvd.log
+/var/log/kea/kea-dhcp6.log
+/var/log/kea/kea-map-e-hook.log
+/var/log/bind.log
+{
+    daily
+    rotate 3
+    missingok
+    notifempty
+    compress
+    delaycompress
+    sharedscripts
+    postrotate
+        if command -v syslog-ng-ctl >/dev/null 2>&1; then
+            syslog-ng-ctl reload >/dev/null 2>&1 || true
+        fi
+    endscript
+}

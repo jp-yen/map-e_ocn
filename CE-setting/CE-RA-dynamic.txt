@@ -1,0 +1,305 @@
+
+ix-RA-dyn(config)# show running-config
+! NEC Portable Internetwork Core Operating System Software
+! IX Series IX2215 (magellan-sec) Software, Version 10.10.29, RELEASE SOFTWARE
+! Compiled Jan 10-Fri-2025 12:37:01 JST #2
+! Current time Jul 07-Tue-2026 21:13:59 JST
+!
+!
+!
+hostname ix-RA-dyn
+timezone +09 00
+terminal default-length 0
+terminal default-width 512
+!
+logging buffered 8388608
+logging subsystem all warn
+logging subsystem mape debug
+logging timestamp datetime
+!
+ntp ip enable
+ntp ipv6 enable
+ntp server dhcpv6
+!
+!
+ip ufs-cache max-entries 20000
+ip ufs-cache enable
+ip route default Tunnel0.0
+!
+!
+ipv6 ufs-cache max-entries 10000
+ipv6 ufs-cache enable
+ipv6 dhcp enable
+!
+!
+!
+!
+!
+!
+!
+!
+!
+!
+!
+!
+ipv6 dhcp client-profile dhcpv6-cl
+  information-request
+  option-request dns-servers
+  option-request domain-search-list
+  option-request ntp-servers
+!
+device GigaEthernet0
+!
+device GigaEthernet1
+!
+device GigaEthernet2
+!
+device BRI0
+  isdn switch-type hsd128k
+!
+device USB0
+  shutdown
+!
+interface GigaEthernet0.0
+  no ip address
+  ipv6 enable
+  ipv6 address autoconfig receive-default
+  ipv6 dhcp client dhcpv6-cl
+  no shutdown
+!
+interface GigaEthernet1.0
+  description // LAN10
+  no ip address
+  ipv6 enable
+  ipv6 nd ra enable
+  ipv6 nd ra other-config-flag
+  no shutdown
+!
+interface GigaEthernet2.0
+  description // LAN20
+  ip address 192.168.10.1/24
+  ipv6 enable
+  ipv6 nd ra enable
+  ipv6 nd ra other-config-flag
+  no shutdown
+!
+interface BRI0.0
+  encapsulation ppp
+  no auto-connect
+  no ip address
+  shutdown
+!
+interface USB-Serial0.0
+  encapsulation ppp
+  no auto-connect
+  no ip address
+  shutdown
+!
+interface Loopback0.0
+  no ip address
+!
+interface Null0.0
+  no ip address
+!
+interface Tunnel0.0
+  tunnel mode map-e ocn
+  ip address map-e
+  ip tcp adjust-mss auto
+  ip napt enable
+  ip napt hairpinning
+  ip napt static Tunnel0.0 1
+  no shutdown
+!
+ix-RA-dyn(config)#
+ix-RA-dyn(config)#
+ix-RA-dyn(config)# show ipv6 dhcp client
+DHCPv6 client is enabled
+  System DUID 00:03:00:01:00:60:b9:e5:a1:b1
+  Statistics:
+    Information request-reply:
+      1 send, 483 seconds ago
+      1 receive, 0 drops, 483 seconds ago
+Interface GigaEthernet0.0 is active
+  Server address fe80::be24:11ff:feb2:eaab
+  Server identifier 00:01:00:01:31:dd:60:e2:bc:24:11:10:30:fe
+  Uptime 0:08:03
+  DNS Servers:
+    5f00:3aa:1000::53
+  NTP Servers:
+    5f00:3aa:1000::123
+  Domain Search List:
+    my.corp
+  Statistics:
+    Information request-reply:
+      1 send, 483 seconds ago
+      1 receive, 0 drops, 483 seconds ago
+ix-RA-dyn(config)#
+ix-RA-dyn(config)#
+ix-RA-dyn(config)# ping6 5f00:3aa:1000::53
+PING 5f00:3aa:1000:0:260:b9ff:fee5:a1b1 > 5f00:3aa:1000::53 56 data bytes
+64 bytes from 5f00:3aa:1000::53 icmp_seq=0 hlim=64 time=0.570 ms
+64 bytes from 5f00:3aa:1000::53 icmp_seq=1 hlim=64 time=0.812 ms
+64 bytes from 5f00:3aa:1000::53 icmp_seq=2 hlim=64 time=0.215 ms
+64 bytes from 5f00:3aa:1000::53 icmp_seq=3 hlim=64 time=0.598 ms
+64 bytes from 5f00:3aa:1000::53 icmp_seq=4 hlim=64 time=0.585 ms
+
+--- 5f00:3aa:1000::53 ping statistics ---
+5 packets transmitted, 5 packets received, 0% packet loss
+round-trip (ms)  min/avg/max = 0.215/0.556/0.812
+ix-RA-dyn(config)#
+ix-RA-dyn(config)#
+ix-RA-dyn(config)# show map-e status
+Tunnel interface: Tunnel0.0
+  Vendor Name: OCN
+  Status: active
+  Transport information:
+    CE IPv4 address is 198.51.161.177/32
+    CE IPv6 address is 5f00:3aa:1000:0:c6:33a1:b100:0/64
+  Request statistics:
+    Last Request: -
+    Last Update : -
+    0 request, 0 success, 0 failure
+ix-RA-dyn(config)#
+ix-RA-dyn(config)#
+ix-RA-dyn(config)#
+ix-RA-dyn(config)# ping 100.127.255.255
+PING 198.51.161.177 > 100.127.255.255 56 data bytes
+64 bytes from 100.127.255.255: icmp_seq=0 ttl=64 time=0.830 ms
+64 bytes from 100.127.255.255: icmp_seq=1 ttl=64 time=0.451 ms
+64 bytes from 100.127.255.255: icmp_seq=2 ttl=64 time=0.663 ms
+64 bytes from 100.127.255.255: icmp_seq=3 ttl=64 time=0.672 ms
+64 bytes from 100.127.255.255: icmp_seq=4 ttl=64 time=1.120 ms
+
+--- 100.127.255.255 ping statistics ---
+5 packets transmitted, 5 packets received, 0% packet loss
+round-trip (ms)  min/avg/max = 0.451/0.747/1.120
+ix-RA-dyn(config)#
+ix-RA-dyn(config)#
+ix-RA-dyn(config)# ping 192.168.0.42
+PING 198.51.161.177 > 192.168.0.42 56 data bytes
+64 bytes from 192.168.0.42: icmp_seq=0 ttl=64 time=0.430 ms
+64 bytes from 192.168.0.42: icmp_seq=1 ttl=64 time=0.296 ms
+64 bytes from 192.168.0.42: icmp_seq=2 ttl=64 time=0.286 ms
+64 bytes from 192.168.0.42: icmp_seq=3 ttl=64 time=0.391 ms
+64 bytes from 192.168.0.42: icmp_seq=4 ttl=64 time=0.330 ms
+
+--- 192.168.0.42 ping statistics ---
+5 packets transmitted, 5 packets received, 0% packet loss
+round-trip (ms)  min/avg/max = 0.286/0.346/0.430
+ix-RA-dyn(config)#
+ix-RA-dyn(config)#
+ix-RA-dyn(config)# show ipv6 address
+Interface GigaEthernet0.0 is up, line protocol is up
+  Global address(es):
+    5f00:3aa:1000:0:c6:33a1:b100:0 prefixlen 64
+    5f00:3aa:1000:0:260:b9ff:fee5:a1b1 prefixlen 64
+    5f00:3aa:1000:: prefixlen 64 anycast
+  Link-local address(es):
+    fe80::260:b9ff:fee5:a1b1 prefixlen 64
+    fe80:: prefixlen 64 anycast
+  Multicast address(es):
+    ff02::1
+    ff02::2
+    ff02::1:2
+    ff02::1:ff00:0
+    ff02::1:ffe5:a1b1
+Interface GigaEthernet1.0 is up, line protocol is up
+  Link-local address(es):
+    fe80::260:b9ff:fee5:a171 prefixlen 64
+    fe80:: prefixlen 64 anycast
+  Multicast address(es):
+    ff02::1
+    ff02::2
+    ff02::1:ff00:0
+    ff02::1:ffe5:a171
+Interface GigaEthernet2.0 is up, line protocol is up
+  Link-local address(es):
+    fe80::260:b9ff:fee5:a1f1 prefixlen 64
+    fe80:: prefixlen 64 anycast
+  Multicast address(es):
+    ff02::1
+    ff02::2
+    ff02::1:ff00:0
+    ff02::1:ffe5:a1f1
+Interface Loopback0.0 is up, line protocol is up
+  Orphan address(es):
+    ::1 prefixlen 128
+Interface Loopback1.0 is up, line protocol is up
+Interface Null0.0 is up, line protocol is up
+Interface Null1.0 is up, line protocol is up
+ix-RA-dyn(config)#
+ix-RA-dyn(config)# show ipv6 neighbors
+Neighbor cache - 3 dynamic, 1021 free, 0 static
+Interface GigaEthernet0.0 is up, line protocol is up
+  Neighbor 5f00:3aa:1000::53 (router)
+    STALE, linklayer bc:24:11:b2:ea:ab, uptime 0:00:26, age 0:00:56
+  Neighbor 5f00:3aa:1000::123 (router)
+    REACHABLE, linklayer bc:24:11:b2:ea:ab, uptime 0:00:28, age 0:08:01
+  Neighbor fe80::be24:11ff:feb2:eaab (router)
+    STALE, linklayer bc:24:11:b2:ea:ab, uptime 0:00:15, age 0:09:00
+ix-RA-dyn(config)#
+ix-RA-dyn(config)# show ip address
+Interface GigaEthernet2.0 is up, line protocol is up
+  Internet address is 192.168.10.1/24
+  Broadcast address is 255.255.255.255
+  Address determined by config
+  Duplicate address detected
+    Tuesday, 7 July 2026 21:06:07 +09 00
+    IP address is 192.168.10.1
+    Hardware address is 00:60:b9:aa:e5:c6
+Interface Null0.0 is up, line protocol is up
+  Interface is unnumbered.
+Interface Tunnel0.0 is up, line protocol is up
+  Internet address is 198.51.161.177/32
+  Broadcast address is 255.255.255.255
+  Address determined by MAP-E
+ix-RA-dyn(config)#
+ix-RA-dyn(config)#
+ix-RA-dyn(config)# show log last 50
+% 50  -- Out of range.
+ix-RA-dyn(config)# show log
+Buffer logging enabled, 8388608 bytes, type cyclic
+  40 messages (1-40), 3405 bytes logged, 0 messages dropped
+
+Log Buffer (1-40):
+2026/07/07 21:05:59 MAPE.004: Next get MAP-E rule information after 20 seconds, interface Tunnel0.0
+2026/07/07 21:05:59 MAPE.022: MAP-E status changed from initializing to waiting, interface Tunnel0.0
+2026/07/07 21:06:00   GW.038: User anonymous@ has logged on
+2026/07/07 21:06:00   GW.037: Administrative user is not registered.
+2026/07/07 21:06:07  ETH.031: Link status up for port 0, 1G b/s, GigaEthernet1
+2026/07/07 21:06:07  IP6.021: Interface GigaEthernet1.0, link up
+2026/07/07 21:06:07  IP6.021: Interface GigaEthernet1.0, line protocol up
+2026/07/07 21:06:07  ETH.031: Link status up for port 2, 1G b/s, GigaEthernet2
+2026/07/07 21:06:07   IP.021: Interface GigaEthernet2.0, link up
+2026/07/07 21:06:07  IP6.021: Interface GigaEthernet2.0, link up
+2026/07/07 21:06:07  IP6.021: Interface GigaEthernet2.0, line protocol up
+2026/07/07 21:06:07  IP6.021: Interface GigaEthernet1.0, up
+2026/07/07 21:06:07   IP.021: Interface GigaEthernet2.0, line protocol up
+2026/07/07 21:06:07   IP.021: Interface GigaEthernet2.0, up
+2026/07/07 21:06:07  IP6.021: Interface GigaEthernet2.0, up
+2026/07/07 21:06:07  ARP.027: Duplicate address 192.168.10.1, 00:60:b9:aa:e5:c6, GigaEthernet2.0
+2026/07/07 21:06:18 MAPE.007: Not found valid IPv6 address to start MAP-E, interface Tunnel0.0
+2026/07/07 21:06:18 MAPE.004: Next get MAP-E rule information after 60 seconds, interface Tunnel0.0
+2026/07/07 21:06:20  ETH.031: Link status up for port 0, 1G b/s, GigaEthernet0
+2026/07/07 21:06:20  IP6.021: Interface GigaEthernet0.0, link up
+2026/07/07 21:06:20  IP6.021: Interface GigaEthernet0.0, line protocol up
+2026/07/07 21:06:20  IP6.021: Interface GigaEthernet0.0, up
+2026/07/07 21:06:20 MAPE.004: Next get MAP-E rule information after 20 seconds, interface Tunnel0.0
+2026/07/07 21:06:21  DH6.005: Client reset, GigaEthernet0.0
+2026/07/07 21:06:21 ICP6.025: Address 5f00:3aa:1000:0:260:b9ff:fee5:a1b1/64 attached to GigaEthernet0.0 by stateless addrconf.
+2026/07/07 21:06:21 ICP6.029: Default router fe80::be24:11ff:feb2:eaab attached to GigaEthernet0.0 by stateless addrconf.
+2026/07/07 21:06:40 MAPE.022: MAP-E status changed from waiting to loading rule, interface Tunnel0.0
+2026/07/07 21:06:40 MAPE.023: Load MAP-E rule information, interface Tunnel0.0
+2026/07/07 21:06:40 MAPE.024: Success load MAP-E rule information, interface Tunnel0.0
+2026/07/07 21:06:40 MAPE.008: Failed to assign MAP-E information(attempt to assign MAP-E information for fixed address), interface Tunnel0.0
+2026/07/07 21:06:40   IP.021: Interface Tunnel0.0, up
+2026/07/07 21:06:40 MAPE.001: Started MAP-E, interface Tunnel0.0, IPv4 address 198.51.161.177
+2026/07/07 21:06:40 MAPE.003: Assigned CE IPv4 198.51.161.177, CE IPv6 5f00:3aa:1000:0:c6:33a1:b100:0 to interface Tunnel0.0
+2026/07/07 21:06:40 MAPE.022: MAP-E status changed from loading rule to active, interface Tunnel0.0
+2026/07/07 21:06:40 MAPE.004: Next get MAP-E rule information after 552 seconds, interface Tunnel0.0
+2026/07/07 21:06:40   IP.021: Interface Tunnel0.0, link up
+2026/07/07 21:06:40   IP.021: Interface Tunnel0.0, link down
+2026/07/07 21:06:40   IP.021: Interface Tunnel0.0, link up
+2026/07/07 21:06:40   IP.021: Interface Tunnel0.0, line protocol up
+2026/07/07 21:08:59   GW.079: System woke up by reload, caused by command execution. System started at Jul 07-Tue-2026 21:05:57 JST
+ix-RA-dyn(config)#

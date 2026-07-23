@@ -1,0 +1,23 @@
+# 設定情報
+show running-config
+
+# DHCPv6 で取得している情報
+show ipv6 dhcp client
+
+# DNS への疎通
+ping6 5f00:3aa:9999::53
+
+# map-e の情報
+show map-e status
+
+# map-e トンネルを通って IPv4 の疎通
+ping 100.127.255.255
+ping 192.168.0.42
+
+# アドレスの情報
+show ipv6 address
+show ipv6 neighbors
+show ip address
+
+show log last 50
+

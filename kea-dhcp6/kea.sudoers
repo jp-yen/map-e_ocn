@@ -1,0 +1,7 @@
+# =============================================================================
+# Sudoers configuration for Kea DHCPv6 Hook script
+# =============================================================================
+
+# Kea実行ユーザー（_kea）に対し、IPv6ルート操作のみ root 権限での実行をパスワードなしで許可
+# kea-map-e-hook が使用するコマンド: ip -6 route replace / ip -6 route del
+_kea ALL=(ALL) NOPASSWD: /usr/sbin/ip -6 route replace *, /usr/sbin/ip -6 route del *

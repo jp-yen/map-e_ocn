@@ -1,0 +1,22 @@
+# =============================================================================
+# Chrony configuration for MAP-E Emulation Environment
+# =============================================================================
+
+# 1. 上位NTPサーバーの設定
+${SYSTEM_NTP}
+
+# 2. 動作ログ、計測データの保存先設定
+driftfile /var/lib/chrony/chrony.drift
+
+# 3. システム時計の大幅なズレを起動時に即時補正する設定
+makestep 1.0 3
+
+# 4. ハードウェアクロック（RTC）との同期
+rtcsync
+
+# 5. すべてのアクセス制限を解除
+allow all
+
+# 6. ログ出力設定
+logdir /var/log/chrony
+log measurements statistics tracking

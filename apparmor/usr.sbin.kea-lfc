@@ -1,0 +1,39 @@
+abi <abi/3.0>,
+
+include <tunables/global>
+
+# flags=(attach_disconnected) を追加して disconnected path エラー (apparmor/.null) を解消
+profile kea-lfc /usr/sbin/kea-lfc flags=(attach_disconnected) {
+  include <abstractions/base>
+  include <abstractions/nameservice>
+
+  network inet dgram,
+
+  /usr/sbin/kea-lfc mr,
+
+  owner /run/kea/logger_lockfile rwk,
+  owner /run/lock/kea/logger_lockfile rw,
+
+  # Control sockets
+  # Before LP: #1863100, these were in /tmp. For compatibility, let's keep both locations
+  owner /{tmp,run/kea}/kea4-ctrl-socket.lock r,
+  owner /{tmp,run/kea}/kea6-ctrl-socket.lock r,
+  
+  # 現在の環境の実態に合わせて、引き継ぎ(file_inherit)に必要なロックファイルへの権限を追加
+  owner /run/kea/kea-dhcp6-ctrl.socket.lock rw,
+
+  # this includes .completed, .output, .pid, .[0-9]
+  owner /var/lib/kea/kea-leases4.csv* rw,
+
+  # this includes .completed, .output, .pid, .[0-9]
+  owner /var/lib/kea/kea-leases6.csv* rw,
+
+  owner /var/log/kea/kea-dhcp4.log w,
+  owner /var/log/kea/kea-dhcp6.log w,
+
+  # 切断された標準入出力の代替として /dev/null へのアクセスを明示的に許可
+  /dev/null rw,
+
+  # Site-specific additions and overrides. See local/README for details.
+  #include <local/usr.sbin.kea-lfc>
+}

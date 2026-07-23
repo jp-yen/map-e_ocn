@@ -1,0 +1,95 @@
+#!/bin/bash
+# =============================================================================
+# Kea DHCPv6 External Hook Script for MAP-E Router Routing
+# (kea-dhcp6/kea-map-e-hook.tmpl -> gen_config.pl hook -> /etc/kea/kea-map-e-hook)
+# =============================================================================
+# 以下の変数はすべて Kea の run_script フックが実行時に子プロセスへ渡す
+# 環境変数。gen_config.pl の %v ハッシュに存在しない名前なので、
+# generator を通しても書き換えられずそのまま残る（意図的に安全）。
+LOG_TAG="kea-map-e-hook"
+
+log_message() {
+    logger -t "${LOG_TAG}" -p local0.info "$1"
+}
+
+add_route() {
+    local prefix="$1" gateway="$2" iface="$3" err_msg
+    # --- デバッグログを追加 ---
+    log_message "DEBUG: Attempting to add route. Prefix: ${prefix}, Gateway: ${gateway}, Iface: ${iface}"
+    # -----------------------
+    
+    # 念のため if [ -z "${gateway}" ] などのチェックを入れるとより安全です
+    if [ -z "${gateway}" ]; then
+        log_message "ERROR: Gateway address is empty. Cannot add route."
+        return 1
+    fi
+
+    err_msg=$(sudo ip -6 route replace "${prefix}" via "${gateway}" dev "${iface}" proto static 2>&1)
+    if [ $? -ne 0 ]; then
+        log_message "Failed to add route ${prefix} via ${gateway} dev ${iface}: ${err_msg}"
+    else
+        log_message "Added route ${prefix} via ${gateway} dev ${iface}"
+    fi
+}
+
+del_route() {
+    local prefix="$1" err_msg
+    err_msg=$(sudo ip -6 route del "${prefix}" proto static 2>&1)
+    if [ $? -ne 0 ]; then
+        log_message "Failed to delete route ${prefix}: ${err_msg}"
+    else
+        log_message "Deleted route ${prefix}"
+    fi
+}
+
+# 新規/更新時。PDの払い出しはここで捕捉する。
+# QUERY6_IFACE_NAME にはKeaが実際に受信したVLANサブインターフェース名
+# （例: ens19.911）がそのまま入るので、VLAN番号が変わっても対応不要。
+leases6_committed() {
+    local i type_var addr_var plen_var
+    for i in $(seq 0 $((LEASES6_SIZE - 1))); do
+        type_var="LEASES6_AT${i}_TYPE"
+        if [ "${!type_var}" = "IA_PD" ]; then
+            addr_var="LEASES6_AT${i}_ADDRESS"
+            plen_var="LEASES6_AT${i}_PREFIX_LEN"
+            add_route "${!addr_var}/${!plen_var}" "${QUERY6_REMOTE_ADDR}" "${QUERY6_IFACE_NAME}"
+        fi
+    done
+    for i in $(seq 0 $((DELETED_LEASES6_SIZE - 1))); do
+        type_var="DELETED_LEASES6_AT${i}_TYPE"
+        if [ "${!type_var}" = "IA_PD" ]; then
+            addr_var="DELETED_LEASES6_AT${i}_ADDRESS"
+            plen_var="DELETED_LEASES6_AT${i}_PREFIX_LEN"
+            del_route "${!addr_var}/${!plen_var}"
+        fi
+    done
+    exit 0
+}
+
+lease6_release() {
+    if [ "${LEASE6_TYPE}" = "IA_PD" ]; then
+        del_route "${LEASE6_ADDRESS}/${LEASE6_PREFIX_LEN}"
+    fi
+    exit 0
+}
+
+# タイムアウト失効。このフックにはQUERY6_*系（インターフェース名含む）が
+# 一切渡らないため、dev/via指定なしでプレフィックス一致のみで削除する。
+lease6_expire() {
+    if [ "${LEASE6_TYPE}" = "IA_PD" ]; then
+        del_route "${LEASE6_ADDRESS}/${LEASE6_PREFIX_LEN}"
+    fi
+    exit 0
+}
+
+unknown_handle() {
+    log_message "Unhandled hook point: ${*}"
+    exit 0
+}
+
+case "$1" in
+    "leases6_committed") leases6_committed ;;
+    "lease6_release")    lease6_release ;;
+    "lease6_expire")     lease6_expire ;;
+    *)                   unknown_handle "${@}" ;;
+esac

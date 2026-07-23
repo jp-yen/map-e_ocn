@@ -1,0 +1,23 @@
+;
+; BIND data file for map.ocn.ad.jp
+;
+$TTL    604800
+@       IN      SOA     ns.map.ocn.ad.jp. root.map.ocn.ad.jp. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache Number
+;
+@       IN      NS      ns.map.ocn.ad.jp.
+
+; プロビジョニングサーバーの IPv4（BRアドレスを流用）と IPv6
+@       IN      A       ${BR_IPV4_ADDR}
+@       IN      AAAA    ${MAPE_PROV_IP}
+
+; DNS自身のIPアドレス
+ns      IN      AAAA    ${MAPE_DNS_IP}
+
+; ワイルドカードでの一括誘導
+* IN      A       ${BR_IPV4_ADDR}
+* IN      AAAA    ${MAPE_PROV_IP}

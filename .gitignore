@@ -1,0 +1,24 @@
+# Makefile で自動生成される設定ファイル・証明書
+system/interfaces
+system/99-network-routing.conf
+radvd/radvd.conf
+kea-dhcp6/kea-dhcp6.conf
+kea-dhcp6/kea-map-e-hook
+bind/named.conf.local
+bind/db.map.ocn.ad.jp
+bind/db.v6connect.net
+chrony/chrony.conf
+mape-provisioning-server/mape-provisioning-server
+mape-provisioning-server/mape_calc
+mape-provisioning-server/mape-provisioning-server.service
+mape-provisioning-server/mape-route-monitor
+mape-provisioning-server/mape-route-monitor.service
+mape-provisioning-server/server.crt
+mape-provisioning-server/server.key
+
+# アーカイブ・作業用ファイル
+STATUS.TXT
+MAP-E.shar*
+MAP-E.tar.xz
+__pycache__/
+*.pyc

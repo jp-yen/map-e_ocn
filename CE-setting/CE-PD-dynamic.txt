@@ -1,0 +1,381 @@
+
+
+ipv6 dhcp client-profile dhcpv6-cl
+  option-request dns-servers
+  option-request domain-search-list
+  option-request ntp-servers
+  ia-pd subscriber GigaEthernet1.0 ::/64 eui-64
+!!! 使うときは ::/64 eui-64 セグメントを必ず割り当てる必要があります
+!!! そうでないと map-e のトンネルが張れません
+!!!
+!!! 内部で IPv6 を使わないときは
+!!! ia-pd subscriber GigaEthernet0.0 ::/64 eui-64
+!!! でも構いません。
+!!! 2つ目以降のセグメントは
+!!! ia-pd subscriber GigaEthernet2.1 0:0:0:1::/64 eui-64
+!!! ia-pd subscriber GigaEthernet2.2 0:0:0:2::/64 eui-64
+!!! などと割り当てることができます。
+
+
+
+ix-PD-dyn# enable-config
+Enter configuration commands, one per line. End with CNTL/Z.
+ix-PD-dyn(config)# show running-config
+! NEC Portable Internetwork Core Operating System Software
+! IX Series IX2215 (magellan-sec) Software, Version 10.10.29, RELEASE SOFTWARE
+! Compiled Jan 10-Fri-2025 12:37:01 JST #2
+! Current time Jul 08-Wed-2026 06:23:28 JST
+!
+!
+!
+hostname ix-PD-dyn
+timezone +09 00
+terminal default-length 0
+terminal default-width 512
+!
+logging buffered 8388608
+logging subsystem all warn
+logging subsystem dh6 debug
+logging subsystem mape debug
+logging timestamp datetime
+!
+ntp ip enable
+ntp ipv6 enable
+ntp server dhcpv6
+!
+!
+ip ufs-cache max-entries 20000
+ip ufs-cache enable
+ip route default Tunnel0.0
+!
+!
+ipv6 ufs-cache max-entries 10000
+ipv6 ufs-cache enable
+ipv6 dhcp enable
+!
+!
+!
+!
+!
+!
+!
+!
+!
+!
+!
+!
+ipv6 dhcp client-profile dhcpv6-cl
+  option-request dns-servers
+  option-request domain-search-list
+  option-request ntp-servers
+  ia-pd subscriber GigaEthernet0.0 ::/64 eui-64
+  ia-pd subscriber GigaEthernet2.0 0:0:0:ff::/64 eui-64
+!
+ipv6 dhcp server-profile dhcpv6-sv10
+  dns-server dhcp
+!
+ipv6 dhcp server-profile dhcpv6-sv20
+  dns-server dhcp
+!
+device GigaEthernet0
+!
+device GigaEthernet1
+!
+device GigaEthernet2
+!
+device BRI0
+  isdn switch-type hsd128k
+!
+device USB0
+  shutdown
+!
+interface GigaEthernet0.0
+  no ip address
+  ipv6 enable
+  ipv6 dhcp client dhcpv6-cl
+  no shutdown
+!
+interface GigaEthernet1.0
+  description // LAN10
+  no ip address
+  ipv6 enable
+  ipv6 dhcp server dhcpv6-sv10
+  ipv6 nd ra enable
+  ipv6 nd ra other-config-flag
+  no shutdown
+!
+interface GigaEthernet2.0
+  description // LAN20
+  ip address 192.168.50.1/24
+  ipv6 enable
+  ipv6 dhcp server dhcpv6-sv20
+  ipv6 nd ra enable
+  ipv6 nd ra other-config-flag
+  no shutdown
+!
+interface BRI0.0
+  encapsulation ppp
+  no auto-connect
+  no ip address
+  shutdown
+!
+interface USB-Serial0.0
+  encapsulation ppp
+  no auto-connect
+  no ip address
+  shutdown
+!
+interface Loopback0.0
+  no ip address
+  ipv6 autoselect enable
+!
+interface Null0.0
+  no ip address
+!
+interface Null1.0
+  no ip address
+!
+interface Tunnel0.0
+  tunnel mode map-e ocn
+  ip address map-e
+  ip tcp adjust-mss auto
+  ip napt enable
+  ip napt hairpinning
+  ip napt static Tunnel0.0 1
+  no shutdown
+!
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)# show ipv6 dhcp client
+DHCPv6 client is enabled
+  System DUID 00:03:00:01:00:60:b9:aa:e5:86
+  Statistics:
+    Solicit-advertise(reply):
+      1 send, 12 seconds ago
+      1 receive, 0 drops, 12 seconds ago
+    Request-reply:
+      1 send, 11 seconds ago
+      1 receive, 0 drops, 11 seconds ago
+Interface GigaEthernet0.0 is active
+  Server address fe80::be24:11ff:fe48:78aa
+  Server identifier 00:01:00:01:31:dd:60:e2:bc:24:11:10:30:fe
+  Uptime 0:00:12
+  Prefix Delegation:
+    T1 is 1800, T2 is 2880, renew 1788 seconds
+  IA Prefix:
+    5f00:3aa:2000::/56 vltime 7200 pltime 3600, expire 7188 seconds
+  DNS Servers:
+    5f00:3aa:9999::53
+  NTP Servers:
+    5f00:3aa:9999::123
+  Domain Search List:
+    my.corp
+  Subscribers:
+    GigaEthernet0.0 is up
+      5f00:3aa:2000:0:260:b9ff:feaa:e586/64
+    GigaEthernet2.0 is up
+      5f00:3aa:2000:ff:260:b9ff:feaa:e5c6/64
+  Statistics:
+    Solicit-advertise(reply):
+      1 send, 13 seconds ago
+      1 receive, 0 drops, 13 seconds ago
+    Request-reply:
+      1 send, 12 seconds ago
+      1 receive, 0 drops, 12 seconds ago
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)# ping6 5f00:3aa:9999::53
+PING 5f00:3aa:2000:0:260:b9ff:feaa:e586 > 5f00:3aa:9999::53 56 data bytes
+64 bytes from 5f00:3aa:9999::53 icmp_seq=0 hlim=64 time=0.660 ms
+
+--- 5f00:3aa:9999::53 ping statistics ---
+1 packets transmitted, 1 packets received, 0% packet loss
+round-trip (ms)  min/avg/max = 0.660/0.660/0.660
+ix-PD-dyn(config)#
+ix-PD-dyn(config)# ping6 5f00:3aa:9999::53
+PING 5f00:3aa:2000:0:260:b9ff:feaa:e586 > 5f00:3aa:9999::53 56 data bytes
+64 bytes from 5f00:3aa:9999::53 icmp_seq=0 hlim=64 time=0.689 ms
+64 bytes from 5f00:3aa:9999::53 icmp_seq=1 hlim=64 time=0.544 ms
+64 bytes from 5f00:3aa:9999::53 icmp_seq=2 hlim=64 time=0.935 ms
+64 bytes from 5f00:3aa:9999::53 icmp_seq=3 hlim=64 time=0.318 ms
+64 bytes from 5f00:3aa:9999::53 icmp_seq=4 hlim=64 time=0.732 ms
+
+--- 5f00:3aa:9999::53 ping statistics ---
+5 packets transmitted, 5 packets received, 0% packet loss
+round-trip (ms)  min/avg/max = 0.318/0.643/0.935
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)# show map-e status
+Tunnel interface: Tunnel0.0
+  Vendor Name: OCN
+  Status: active
+  Transport information:
+    CE IPv4 address is 198.51.0.0/32
+    CE IPv6 address is 5f00:3aa:2000:0:c6:3300::/64
+  Request statistics:
+    Last Request: -
+    Last Update : -
+    0 request, 0 success, 0 failure
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)# ping 100.127.255.255
+PING 198.51.0.0 > 100.127.255.255 56 data bytes
+64 bytes from 100.127.255.255: icmp_seq=0 ttl=64 time=0.288 ms
+64 bytes from 100.127.255.255: icmp_seq=1 ttl=64 time=1.137 ms
+64 bytes from 100.127.255.255: icmp_seq=2 ttl=64 time=0.860 ms
+64 bytes from 100.127.255.255: icmp_seq=3 ttl=64 time=0.796 ms
+64 bytes from 100.127.255.255: icmp_seq=4 ttl=64 time=0.972 ms
+
+--- 100.127.255.255 ping statistics ---
+5 packets transmitted, 5 packets received, 0% packet loss
+round-trip (ms)  min/avg/max = 0.288/0.810/1.137
+ix-PD-dyn(config)#
+ix-PD-dyn(config)# ping 192.168.0.42
+PING 198.51.0.0 > 192.168.0.42 56 data bytes
+64 bytes from 192.168.0.42: icmp_seq=0 ttl=64 time=0.904 ms
+64 bytes from 192.168.0.42: icmp_seq=1 ttl=64 time=0.643 ms
+64 bytes from 192.168.0.42: icmp_seq=2 ttl=64 time=0.697 ms
+64 bytes from 192.168.0.42: icmp_seq=3 ttl=64 time=0.407 ms
+64 bytes from 192.168.0.42: icmp_seq=4 ttl=64 time=0.670 ms
+
+--- 192.168.0.42 ping statistics ---
+5 packets transmitted, 5 packets received, 0% packet loss
+round-trip (ms)  min/avg/max = 0.407/0.664/0.904
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)# show ipv6 address
+Interface GigaEthernet0.0 is up, line protocol is up
+  Global address(es):
+    5f00:3aa:2000:0:c6:3300:: prefixlen 64
+    5f00:3aa:2000:0:260:b9ff:feaa:e586 prefixlen 64
+      Valid lifetime 7138, preferred lifetime 3538
+    5f00:3aa:2000:: prefixlen 56 anycast
+  Link-local address(es):
+    fe80::260:b9ff:feaa:e586 prefixlen 64
+    fe80:: prefixlen 64 anycast
+  Multicast address(es):
+    ff02::1
+    ff02::2
+    ff02::1:2
+    ff02::1:ff00:0
+    ff02::1:ffaa:e586
+Interface GigaEthernet1.0 is up, line protocol is up
+  Link-local address(es):
+    fe80::260:b9ff:feaa:e546 prefixlen 64
+    fe80:: prefixlen 64 anycast
+  Multicast address(es):
+    ff02::1
+    ff02::2
+    ff02::1:2
+    ff02::1:ff00:0
+    ff02::1:ffaa:e546
+Interface GigaEthernet2.0 is up, line protocol is up
+  Global address(es):
+    5f00:3aa:2000:ff:260:b9ff:feaa:e5c6 prefixlen 64
+      Valid lifetime 7137, preferred lifetime 3537
+    5f00:3aa:2000:ff:: prefixlen 64 anycast
+  Link-local address(es):
+    fe80::260:b9ff:feaa:e5c6 prefixlen 64
+    fe80:: prefixlen 64 anycast
+  Multicast address(es):
+    ff02::1
+    ff02::2
+    ff02::1:2
+    ff02::1:ff00:0
+    ff02::1:ffaa:e5c6
+Interface Loopback0.0 is up, line protocol is up
+  Orphan address(es):
+    ::1 prefixlen 128
+Interface Loopback1.0 is up, line protocol is up
+Interface Null0.0 is up, line protocol is up
+Interface Null1.0 is up, line protocol is up
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)# show ipv6 neighbors
+Neighbor cache - 1 dynamic, 1023 free, 0 static
+Interface GigaEthernet0.0 is up, line protocol is up
+  Neighbor fe80::be24:11ff:fe48:78aa (router)
+    REACHABLE, linklayer bc:24:11:48:78:aa, uptime 0:00:22, age 0:01:04
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)# show ip address
+Interface GigaEthernet2.0 is up, line protocol is up
+  Internet address is 192.168.50.1/24
+  Broadcast address is 255.255.255.255
+  Address determined by config
+Interface Null0.0 is up, line protocol is up
+  Interface is unnumbered.
+Interface Tunnel0.0 is up, line protocol is up
+  Internet address is 198.51.0.0/32
+  Broadcast address is 255.255.255.255
+  Address determined by MAP-E
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)#
+ix-PD-dyn(config)# show log
+Buffer logging enabled, 8388608 bytes, type cyclic
+  54 messages (1-54), 4620 bytes logged, 0 messages dropped
+
+Log Buffer (1-54):
+2026/07/08 06:23:01 MAPE.004: Next get MAP-E rule information after 20 seconds, interface Tunnel0.0
+2026/07/08 06:23:01 MAPE.022: MAP-E status changed from initializing to waiting, interface Tunnel0.0
+2026/07/08 06:23:02   GW.038: User anonymous@ has logged on
+2026/07/08 06:23:02   GW.037: Administrative user is not registered.
+2026/07/08 06:23:09  ETH.031: Link status up for port 0, 1G b/s, GigaEthernet1
+2026/07/08 06:23:09  IP6.021: Interface GigaEthernet1.0, link up
+2026/07/08 06:23:09  IP6.021: Interface GigaEthernet1.0, line protocol up
+2026/07/08 06:23:09  ETH.031: Link status up for port 2, 1G b/s, GigaEthernet2
+2026/07/08 06:23:09   IP.021: Interface GigaEthernet2.0, link up
+2026/07/08 06:23:09  IP6.021: Interface GigaEthernet2.0, link up
+2026/07/08 06:23:09  IP6.021: Interface GigaEthernet2.0, line protocol up
+2026/07/08 06:23:09  IP6.021: Interface GigaEthernet1.0, up
+2026/07/08 06:23:09   IP.021: Interface GigaEthernet2.0, line protocol up
+2026/07/08 06:23:09   IP.021: Interface GigaEthernet2.0, up
+2026/07/08 06:23:09  IP6.021: Interface GigaEthernet2.0, up
+2026/07/08 06:23:10  DH6.103: Create interface entry, GigaEthernet2.0
+2026/07/08 06:23:10  DH6.101: Add All_DHCP_Relay_Agents_and_Servers, GigaEthernet2.0
+2026/07/08 06:23:10  DH6.115: Create server entry, GigaEthernet2.0
+2026/07/08 06:23:10  DH6.103: Create interface entry, GigaEthernet1.0
+2026/07/08 06:23:10  DH6.101: Add All_DHCP_Relay_Agents_and_Servers, GigaEthernet1.0
+2026/07/08 06:23:10  DH6.115: Create server entry, GigaEthernet1.0
+2026/07/08 06:23:20 MAPE.007: Not found valid IPv6 address to start MAP-E, interface Tunnel0.0
+2026/07/08 06:23:20 MAPE.004: Next get MAP-E rule information after 60 seconds, interface Tunnel0.0
+2026/07/08 06:23:22  ETH.031: Link status up for port 0, 1G b/s, GigaEthernet0
+2026/07/08 06:23:22  IP6.021: Interface GigaEthernet0.0, link up
+2026/07/08 06:23:22  IP6.021: Interface GigaEthernet0.0, line protocol up
+2026/07/08 06:23:22  IP6.021: Interface GigaEthernet0.0, up
+2026/07/08 06:23:22 MAPE.004: Next get MAP-E rule information after 20 seconds, interface Tunnel0.0
+2026/07/08 06:23:23  DH6.103: Create interface entry, GigaEthernet0.0
+2026/07/08 06:23:23  DH6.105: Create client entry, GigaEthernet0.0
+2026/07/08 06:23:23  DH6.101: Add All_DHCP_Relay_Agents_and_Servers, GigaEthernet0.0
+2026/07/08 06:23:24  DH6.052: Send Solicit fe80::260:b9ff:feaa:e586 > ff02::1:2, id 0x4a12fc, GigaEthernet0.0
+2026/07/08 06:23:24  DH6.051: Receive Advertise fe80::be24:11ff:fe48:78aa > fe80::260:b9ff:feaa:e586, id 0x4a12fc, GigaEthernet0.0
+2026/07/08 06:23:25  DH6.052: Send Request fe80::260:b9ff:feaa:e586 > ff02::1:2, id 0x1b57a0, GigaEthernet0.0
+2026/07/08 06:23:25  DH6.051: Receive Reply fe80::be24:11ff:fe48:78aa > fe80::260:b9ff:feaa:e586, id 0x1b57a0, GigaEthernet0.0
+2026/07/08 06:23:25  DH6.062: Add subnet router anycast address 5f00:3aa:2000::/56, GigaEthernet0.0
+2026/07/08 06:23:25  DH6.055: Add null route 5f00:3aa:2000::/56
+2026/07/08 06:23:25  DH6.059: Add address 5f00:3aa:2000:0:260:b9ff:feaa:e586/64 vltime 7199 pltime 3599, GigaEthernet0.0
+2026/07/08 06:23:25  DH6.059: Add address 5f00:3aa:2000:ff:260:b9ff:feaa:e5c6/64 vltime 7199 pltime 3599, GigaEthernet2.0
+2026/07/08 06:23:25  DH6.053: Add default route fe80::be24:11ff:fe48:78aa, GigaEthernet0.0
+2026/07/08 06:23:25  DH6.107: Change client neighbor fe80::be24:11ff:fe48:78aa, GigaEthernet0.0
+2026/07/08 06:23:42 MAPE.022: MAP-E status changed from waiting to loading rule, interface Tunnel0.0
+2026/07/08 06:23:42 MAPE.023: Load MAP-E rule information, interface Tunnel0.0
+2026/07/08 06:23:42 MAPE.024: Success load MAP-E rule information, interface Tunnel0.0
+2026/07/08 06:23:42 MAPE.008: Failed to assign MAP-E information(attempt to assign MAP-E information for fixed address), interface Tunnel0.0
+2026/07/08 06:23:42   IP.021: Interface Tunnel0.0, up
+2026/07/08 06:23:42 MAPE.001: Started MAP-E, interface Tunnel0.0, IPv4 address 198.51.0.0
+2026/07/08 06:23:42 MAPE.003: Assigned CE IPv4 198.51.0.0, CE IPv6 5f00:3aa:2000:0:c6:3300:: to interface Tunnel0.0
+2026/07/08 06:23:42 MAPE.022: MAP-E status changed from loading rule to active, interface Tunnel0.0
+2026/07/08 06:23:42 MAPE.004: Next get MAP-E rule information after 409 seconds, interface Tunnel0.0
+2026/07/08 06:23:42   IP.021: Interface Tunnel0.0, link up
+2026/07/08 06:23:42   IP.021: Interface Tunnel0.0, link down
+2026/07/08 06:23:42   IP.021: Interface Tunnel0.0, link up
+2026/07/08 06:23:42   IP.021: Interface Tunnel0.0, line protocol up
+ix-PD-dyn(config)#

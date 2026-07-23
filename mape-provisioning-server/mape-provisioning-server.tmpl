@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+import sys
+import json
+import socket
+import ssl
+import syslog
+import ipaddress
+
+from urllib.parse import urlparse, parse_qs
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# syslogの初期化
+syslog.openlog(ident='mape-provisioning-server', facility=syslog.LOG_DAEMON)
+
+sys.path.append("/usr/local/bin")
+try:
+    import mape_calc
+except ImportError as e:
+    syslog.syslog(syslog.LOG_ERR, f"Failed to import common library mape_calc: {e}")
+    sys.exit(1)
+
+# BRのIPv6アドレス (map-eトンネルのencap src、および basicMapRules の brIpv6Address に使用)
+BR_IPV6 = "${BR_IPV6}"
+
+class HTTPServerV6(HTTPServer):
+    address_family = socket.AF_INET6
+
+class MAPEProvisioningHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # 1. 接続元の生IPとスコープID情報を安全にデコードして取得
+        client_host = self.client_address[0]
+        client_ip = client_host.split('%')[0]  # 🌟 接続元からスコープを除去した純粋なIPをここで定義（エラー防止） 
+        client_scope = ""
+
+        # IPv6接続の場合、self.client_address は (host, port, flowinfo, scope_id) の4タプル
+        if len(self.client_address) > 3 and self.client_address[3]:
+            scope_id = self.client_address[3]
+            try:
+                # スコープID（数値）をLinuxのインターフェース名（例: ens19.901）に変換
+                if_name = socket.if_indextoname(scope_id)
+                client_scope = f"%{if_name}"
+            except Exception:
+                # 変換に失敗した場合は数値のままフォールバック
+                client_scope = f"%{scope_id}"
+
+        # 二重付与を防ぎつつ、スコープID付きのIPを構築
+        if "%" in client_host:
+            client_ip_with_scope = client_host
+        else:
+            client_ip_with_scope = f"{client_ip}{client_scope}"
+
+        # 🌟 ログ出力：生のURL（パス＋クエリ）と、スコープID付きの物理接続元IPを記録
+        syslog.syslog(syslog.LOG_INFO, f"Request received - URL: {self.path} from Client-IP: {client_ip_with_scope}")
+
+        parsed_url = urlparse(self.path)
+        query_params = parse_qs(parsed_url.query)
+        req_prefix = query_params.get('ipv6Prefix', [None])[0]
+
+        # SLAAC接続とDHCPv6-PD接続 of IP自動判別を最適化
+        if req_prefix and req_prefix != '::': 
+            is_pure_prefix = req_prefix.endswith('::') or req_prefix.endswith(':0') or '/' in req_prefix
+            if is_pure_prefix and not client_ip.lower().startswith('fe80'):
+                # SLAAC環境など：MACアドレス復元のため、接続元実IP（グローバルIP）を採用
+                remote_ipv6 = client_ip
+            else:
+                # DHCPv6-PD環境など：実IPがリンクローカルなので、要求プレフィックスを採用
+                remote_ipv6 = req_prefix 
+        else:
+            remote_ipv6 = client_ip 
+
+        clean_ip = remote_ipv6.split('%')[0]
+
+        try:
+            syslog.syslog(syslog.LOG_INFO, f"Processing Request from IP: {clean_ip}")
+
+            # 戻り値から接続方式（segment）および target_psid も受け取る
+            target_ipv4, ce_ipv6, segment, target_psid = mape_calc.calc_map_e_params(clean_ip) 
+
+            # 割り当て確定: target_ipv4/32 宛のトラフィックがmap-eトンネル経由で
+            # CE(ce_ipv6)へ届くようルートを設定する(トンネルデバイスの用意も
+            # 含めてmape_calc側で一括して行う)。ルート設定に失敗しても
+            # CEへの応答自体は継続する(mape-route-monitorがNDPイベントで
+            # 経路を再投入するフォールバックとして動作するため)。
+            mape_calc.setup_tunnel_route(target_ipv4, ce_ipv6, BR_IPV6)
+
+            # 2. 接続方式と eaBitLength, psIdOffset の対応マッピング（辞書）を定義
+            # 動的(①②)は OCN 仕様の ea-len=8 / offset-len=4 を採用し、固定(③④)は 1台1IP占有のため ea-len=0 / offset-len=0 とする
+            EA_BIT_MAP = {
+                'slaac_dyn': 8, 
+                'pd_dyn':    8, 
+                'slaac_fix': 0, 
+                'pd_fix':    0 
+            }
+            OFFSET_MAP = {
+                'slaac_dyn': 4, 
+                'pd_dyn':    4, 
+                'slaac_fix': 0, 
+                'pd_fix':    0 
+            }
+
+            # 該当する方式の値を習得（万が一Noneなら安全に0フォールバック）
+            ea_len = EA_BIT_MAP.get(segment, 0)
+            psid_offset = OFFSET_MAP.get(segment, 0)
+            psid_val = target_psid if segment in ('slaac_dyn', 'pd_dyn') else 0 
+
+            # 3. ルールは1つだけ定義し、eaBitLength, psIdOffset, psId を動的に差し替える
+            rule = {
+                "brIpv6Address": BR_IPV6,
+                "ipv6Prefix": "${BASE_SUBNET}::",
+                "ipv6PrefixLength": 32,
+                "ipv4Prefix": str(target_ipv4), 
+                "ipv4PrefixLength": 32,
+                "eaBitLength": ea_len,
+                "psIdOffset": psid_offset,
+                "psId": psid_val
+            }
+            response_data = {"basicMapRules": [rule]} 
+
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"Calculation Error: {e}")
+            self.send_response(500)
+            self.end_headers()
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+
+        response_json = json.dumps(response_data)
+        body = response_json.encode("utf-8") 
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+
+        syslog.syslog(syslog.LOG_INFO, f"Payload to Router: {response_json}")
+        self.wfile.write(body)
+
+def run(server_class=HTTPServerV6, handler_class=MAPEProvisioningHandler, port=443):
+    server_address = ('::', port)
+    httpd = server_class(server_address, handler_class)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    try:
+        context.load_cert_chain(certfile='/usr/local/bin/server.crt', keyfile='/usr/local/bin/server.key')
+        httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+        syslog.syslog(syslog.LOG_INFO, f"Starting MAP-E Provisioning Server (Flat Mode) on port {port}...") 
+    except Exception as e:
+        syslog.syslog(syslog.LOG_ERR, f"SSL/TLS Initialization failed: {e}")
+        sys.exit(1)
+    httpd.serve_forever()
+
+if __name__ == "__main__":
+    run()
+

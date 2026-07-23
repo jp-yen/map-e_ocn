@@ -1,0 +1,76 @@
+{
+"Dhcp6": {
+    # フックスクリプトの呼び出し設定
+    "hooks-libraries": [
+        {
+            "library": "/usr/lib/x86_64-linux-gnu/kea/hooks/libdhcp_flex_option.so",
+            "parameters": {
+                "options": [
+${KEA_FLEX_OPTIONS}
+                ]
+            }
+        },
+        {
+            "library": "/usr/lib/x86_64-linux-gnu/kea/hooks/libdhcp_run_script.so",
+            "parameters": {
+                "name": "/usr/local/bin/kea-map-e-hook",
+                "sync": false
+            }
+        }
+    ],
+
+    "client-classes": [
+${KEA_CLIENT_CLASSES}
+    ],
+
+    "interfaces-config": {
+        "interfaces": [ ${KEA_INTERFACES} ]
+    },
+
+    "subnet6": [
+${KEA_SUBNET6_BLOCKS}
+    ],
+
+    "option-data": [
+        {
+            "name": "dns-servers",
+            "data": "${MAPE_DNS_IP}"
+        },
+        {
+            "name": "sntp-servers",
+            "data": "${MAPE_NTP_IP}"
+        },
+        {
+            "name": "domain-search",
+            "data": "${MAPE_DOMAIN_SEARCH}"
+        }
+    ],
+
+    "loggers": [
+        {
+            "name": "kea-dhcp6",
+            "severity": "DEBUG",
+            "debuglevel": 99
+        }
+    ],
+
+    "control-socket": {
+        "socket-type": "unix",
+        "socket-name": "/run/kea/kea-dhcp6-ctrl.sock"
+    },
+
+    "lease-database": {
+        "type": "memfile",
+        "persist": true,
+        "name": "/var/lib/kea/kea-leases6.csv",
+        "lfc-interval": 3600
+    },
+
+    "expired-leases-processing": {
+        "reclaim-timer-wait-time": 10,
+        "flush-reclaimed-timer-wait-time": 25,
+        "hold-reclaimed-time": 60
+    }
+}
+}
+

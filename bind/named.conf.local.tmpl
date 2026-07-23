@@ -1,0 +1,15 @@
+//
+// Do any local configuration here
+//
+
+// OCN MAP-E プロビジョニング用ゾーン
+zone "map.ocn.ad.jp" {
+    type master;
+    file "/etc/bind/db.map.ocn.ad.jp";
+};
+
+// V6プラス/バーチャルコネクト関連互換用ゾーン（必要に応じて）
+zone "v6connect.net" {
+    type master;
+    file "/etc/bind/db.v6connect.net";
+};
