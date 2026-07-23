@@ -36,6 +36,10 @@ if ($mode eq 'hook') {
     my $dns_ip      = $ENV{MAPE_DNS_IP}        || "5f00:3aa:9999::53";
     my $ntp_ip      = $ENV{MAPE_NTP_IP}        || "5f00:3aa:9999::123";
     my $domain      = $ENV{MAPE_DOMAIN_SEARCH} || "map.ocn.ad.jp";
+    my $slaac_br_base     = $ENV{SLAAC_BR_BASE}       || '1000';
+    my $slaac_fix_br_prefix = $ENV{SLAAC_FIX_BR_PREFIX} || '3000';
+    my $pd_pool           = $ENV{PD_POOL}             || '2000';
+    my $pd_fix_pool       = $ENV{PD_FIX_POOL}         || '4000';
 
     # ---------------------------------------------------------------
     # BR (Border Relay) IPv6アドレスの算出 (共通ロジックは MapeCommon::calc_br_ipv6)
@@ -55,7 +59,6 @@ if ($mode eq 'hook') {
     #  ipv6PrefixLength + eaBitLength = MAPE_PD_DELEGATED_LEN)
     # HTTPプロビジョニングサーバ側 (mape-provisioning-server) が返す値とも一致させること。
     # ---------------------------------------------------------------
-    my $pd_pool           = $ENV{PD_POOL} || "2000";
     my $rule_ipv6_prefix = $ENV{MAPE_RULE_IPV6_PREFIX} || "$base_subnet:$pd_pool" . "::";
     my $rule_ipv6_len     = $ENV{MAPE_RULE_IPV6_LEN}     || 38;
     my $rule_ipv4_prefix  = $ENV{MAPE_RULE_IPV4_PREFIX}  || "100.126.0.0";
@@ -68,10 +71,10 @@ if ($mode eq 'hook') {
     # VLANセグメント一覧の組み立て (①②③④)
     # ---------------------------------------------------------------
     my @segs = build_vlan_segments([
-        { vlans => $ENV{SLAAC_DYN_VLANS}, type => 'slaac', base => $ENV{SLAAC_BR_BASE}       || '1000' },
-        { vlans => $ENV{PD_DYN_VLANS},    type => 'pd',    base => $ENV{PD_POOL}             || '2000' },
-        { vlans => $ENV{SLAAC_FIX_VLANS}, type => 'slaac', base => $ENV{SLAAC_FIX_BR_PREFIX} || '3000' },
-        { vlans => $ENV{PD_FIX_VLANS},    type => 'pd',    base => $ENV{PD_FIX_POOL}         || '4000' },
+        { vlans => $ENV{SLAAC_DYN_VLANS}, type => 'slaac', base => $slaac_br_base },
+        { vlans => $ENV{PD_DYN_VLANS},    type => 'pd',    base => $pd_pool },
+        { vlans => $ENV{SLAAC_FIX_VLANS}, type => 'slaac', base => $slaac_fix_br_prefix },
+        { vlans => $ENV{PD_FIX_VLANS},    type => 'pd',    base => $pd_fix_pool },
     ]);
 
     my $ifaces = join(", ", map { "\"$mape_if.$_->{v}\"" } sort { $a->{v} <=> $b->{v} } @segs);
@@ -90,7 +93,7 @@ if ($mode eq 'hook') {
             ? "[\n                { \"prefix\": \"$rule_ipv6_prefix\", \"prefix-len\": 40, \"delegated-len\": $delegated_len }\n            ]"
             : "[ ]";
 
-        my $res_json = get_reservations_json($s, $base_subnet, $br_ipv6, \%static_ips);
+        my $res_json = get_reservations_json($s, $base_subnet, $br_ipv6, $slaac_fix_br_prefix, $pd_fix_pool, \%static_ips);
 
         push @blocks, "        {\n" .
                       "            \"id\": $id,\n" .
@@ -111,8 +114,8 @@ if ($mode eq 'hook') {
         MAPE_DNS_IP        => $dns_ip,
         MAPE_NTP_IP        => $ntp_ip,
         MAPE_DOMAIN_SEARCH => $domain,
-        KEA_FLEX_OPTIONS   => get_flex_options_json($br_ipv6, $base_subnet, $ENV{SLAAC_BR_BASE} || "1000", $ENV{SLAAC_FIX_BR_PREFIX} || "3000", $pd_pool, @segs),
-        KEA_CLIENT_CLASSES => get_client_classes_json($ENV{SLAAC_BR_BASE} || "1000", $ENV{SLAAC_FIX_BR_PREFIX} || "3000", $pd_pool, $ENV{PD_FIX_POOL} || "4000", $mape_if, @segs),
+        KEA_FLEX_OPTIONS   => get_flex_options_json($br_ipv6, $base_subnet, $slaac_br_base, $slaac_fix_br_prefix, $pd_pool, @segs),
+        KEA_CLIENT_CLASSES => get_client_classes_json($slaac_br_base, $slaac_fix_br_prefix, $pd_pool, $pd_fix_pool, $mape_if, @segs),
     );
 
     my $template = 'kea-dhcp6/kea-dhcp6.conf.tmpl';
@@ -232,12 +235,12 @@ sub calculate_option94_fixed_hex {
 }
 
 sub get_reservations_json {
-    my ($s, $base_subnet, $br_ipv6, $static_ips_ref) = @_;
+    my ($s, $base_subnet, $br_ipv6, $slaac_fix_br_prefix, $pd_fix_pool, $static_ips_ref) = @_;
     my %static_ips = %{$static_ips_ref};
     my @res_blocks;
     
-    my $is_slaac_fix = ($s->{t} eq "slaac" && $s->{b} eq ($ENV{SLAAC_FIX_BR_PREFIX} || "3000"));
-    my $is_pd_fix    = ($s->{t} eq "pd" && $s->{b} eq ($ENV{PD_FIX_POOL} || "4000"));
+    my $is_slaac_fix = ($s->{t} eq "slaac" && $s->{b} eq $slaac_fix_br_prefix);
+    my $is_pd_fix    = ($s->{t} eq "pd" && $s->{b} eq $pd_fix_pool);
     
     return "" unless $is_slaac_fix || $is_pd_fix;
     
