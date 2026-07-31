@@ -7,7 +7,7 @@
 ## 1. 前提条件と動作環境
 
 ### 動作OS・前提条件
-- **OS**: Linux (Debian 13 上で検証済み)
+- **OS**: Debian 13 上で動作確認済み
 - **事前に必要なツール**: `make`, `sudo`（手順の実行に必須。Debian標準搭載）
 - **依存パッケージ**: Step 3 の `sudo make packages` で Python 3、OpenSSL、Kea DHCPv6、BIND9、radvd、chrony、syslog-ng、logrotate 等が一括自動導入されます。
 - **ネットワーク環境**:
@@ -93,6 +93,38 @@ vi map-e-static-ip.conf
 00:a0:de:11:22:33,203.0.113.32/27
 00:a0:de:44:55:66,198.51.200.1/32
 ```
+
+---
+
+### Step 2.5: DDNS（Dynamic DNS）ホスト名マッピングの記述 (`ddns.conf`) 【任意】
+
+CEのアドレス確定時に、指定したホスト名（IPv6 / IPv4 FQDN）へのDDNS自動登録を行わせたい場合は、`ddns.conf` を記述します。
+
+```bash
+vi ddns.conf
+```
+
+```text
+# 識別キー (MACアドレス または VLAN ID), IPv6用FQDN, IPv4用FQDN
+# MACアドレスで指定する場合
+00:a0:de:11:22:33, cebox1.p-ns.flets-west.jp, cebox1.v4.flets-west.jp
+00:a0:de:44:55:66, cebox2.aoi.flets-east.jp, cebox2.v4.flets-east.jp
+
+# VLAN IDで指定する場合
+841, cebox3.p-ns.flets-west.jp, cebox3.v4.flets-west.jp
+845, cebox4.aoi.flets-east.jp, cebox4.v4.flets-east.jp
+```
+
+> [!TIP]
+> **登録日時の確認（TXTレコード）**:
+> DDNS登録時には A/AAAA レコードと同時に、更新タイムスタンプ（`updated=YYYY-MM-DDTHH:MM:SS+09:00`）が **TXT レコード** として自動記録されます。問い合わせ先のDNSサーバーには共通サービスIPv6（`${MAPE_DNS_IP}`）、管理用IPv4（`${MGT_IP}`）、または `127.0.0.1` を指定して確認できます：
+> ```bash
+> # 共通サービスIPv6アドレス (${MAPE_DNS_IP}) で確認する場合
+> dig @2400:4150:9999::53 TXT cebox1.p-ns.flets-west.jp
+>
+> # 管理用IPv4アドレス (${MGT_IP}) または 127.0.0.1 で確認する場合
+> dig @172.31.220.85 TXT cebox1.p-ns.flets-west.jp
+> ```
 
 ---
 

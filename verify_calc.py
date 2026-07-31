@@ -102,3 +102,23 @@ print('=== CE side analysis ===')
 print(f'CE SLAAC address (NDP): 5f00:3aa:1901:0:260:b9ff:fee5:a1b1')
 print(f'MAP-E CE tunnel addr:   {zeroed.compressed}')
 print(f'These are DIFFERENT - CE must configure the MAP-E address on its tunnel interface')
+
+print()
+print('=== DDNS Load & Match Test ===')
+import importlib.machinery
+import importlib.util
+try:
+    loader = importlib.machinery.SourceFileLoader("mape_calc", "./mape-provisioning-server/mape_calc")
+    spec = importlib.util.spec_from_loader("mape_calc", loader)
+    mape_calc = importlib.util.module_from_spec(spec)
+    loader.exec_module(mape_calc)
+    mac_map, vlan_map = mape_calc.load_ddns_map('./ddns.conf')
+    print(f'Loaded MAC DDNS map count: {len(mac_map)}')
+    print(f'Loaded VLAN DDNS map count: {len(vlan_map)}')
+    for k, v in mac_map.items():
+        print(f'  MAC {k} -> IPv6: {v[0]}, IPv4: {v[1]}')
+    for k, v in vlan_map.items():
+        print(f'  VLAN {k} -> IPv6: {v[0]}, IPv4: {v[1]}')
+except Exception as ex:
+    print(f'DDNS test error: {ex}')
+

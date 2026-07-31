@@ -5,8 +5,7 @@ radvd/radvd.conf
 kea-dhcp6/kea-dhcp6.conf
 kea-dhcp6/kea-map-e-hook
 bind/named.conf.local
-bind/db.map.ocn.ad.jp
-bind/db.v6connect.net
+bind/db.*
 chrony/chrony.conf
 mape-provisioning-server/mape-provisioning-server
 mape-provisioning-server/mape_calc

@@ -59,8 +59,14 @@ CUR_DIR = $(shell basename $(CURDIR))
 
 all: generate
 
-generate: $(TARGETS) check-user
+generate: $(TARGETS) generate_ddns_zones check-user
 	@echo "Successfully generated all configuration files."
+
+generate_ddns_zones:
+	@for domain in $$(perl generator/gen_bind_configs.pl list_domains 2>/dev/null); do \
+	        echo "Generating bind/db.$$domain via Perl"; \
+	        perl generator/gen_bind_configs.pl ddns_zone "$$domain" > "bind/db.$$domain"; \
+	done
 
 $(PERL_TARGETS): $(CONFIG_FILE)
 	@mkdir -p $(dir $@)
@@ -144,6 +150,11 @@ check: check-root
 	@echo "--- Checking BIND Zone Syntax ---"
 	named-checkzone map.ocn.ad.jp bind/db.map.ocn.ad.jp
 	named-checkzone v6connect.net bind/db.v6connect.net
+	@for domain in $$(perl generator/gen_bind_configs.pl list_domains 2>/dev/null); do \
+	        if [ -f "bind/db.$$domain" ]; then \
+	                named-checkzone "$$domain" "bind/db.$$domain" || exit 1; \
+	        fi; \
+	done
 	@echo "--- Checking radvd Syntax ---"
 	radvd -c -C $$(pwd)/radvd/radvd.conf
 	@echo "--- Checking Kea DHCPv6 Config Syntax ---"
@@ -186,6 +197,14 @@ install: check-root
 	install -o root -g bind -m 644 bind/named.conf.local /etc/bind/named.conf.local
 	install -o root -g bind -m 644 bind/db.map.ocn.ad.jp /etc/bind/db.map.ocn.ad.jp
 	install -o root -g bind -m 644 bind/db.v6connect.net /etc/bind/db.v6connect.net
+	install -d -o bind -g bind -m 775 /var/lib/bind
+	@for domain in $$(perl generator/gen_bind_configs.pl list_domains 2>/dev/null); do \
+	        if [ -f "bind/db.$$domain" ]; then \
+	                if [ ! -f "/var/lib/bind/db.$$domain" ]; then \
+	                        install -o bind -g bind -m 644 "bind/db.$$domain" "/var/lib/bind/db.$$domain"; \
+	                fi; \
+	        fi; \
+	done
 	install -o root -g root -m 644 chrony/chrony.conf /etc/chrony/chrony.conf
 	@mkdir -p /usr/local/bin
 	install -o root -g root -m 644 mape-provisioning-server/mape_calc /usr/local/bin/mape_calc.py
@@ -196,6 +215,7 @@ install: check-root
 	install -o _kea -g _kea -m 600 mape-provisioning-server/server.crt /usr/local/bin/server.crt
 	install -o _kea -g _kea -m 600 mape-provisioning-server/server.key /usr/local/bin/server.key
 	if [ -f map-e-static-ip.conf ]; then install -o root -g root -m 644 map-e-static-ip.conf /etc/map-e-static-ip.conf; fi
+	if [ -f ddns.conf ]; then install -o root -g root -m 644 ddns.conf /etc/ddns.conf; fi
 	if [ -d /etc/syslog-ng/conf.d ] && [ -f syslog-ng/mape.conf ]; then install -o root -g root -m 644 syslog-ng/mape.conf /etc/syslog-ng/conf.d/; fi
 	if [ -d /etc/logrotate.d ] && [ -f syslog-ng/mape.logrotate ]; then install -o root -g root -m 644 syslog-ng/mape.logrotate /etc/logrotate.d/mape; fi
 

@@ -5,6 +5,7 @@ import syslog
 import ipaddress
 import hashlib
 import os
+import datetime
 
 # -----------------------------------------------------------------------------
 # 設定項目
@@ -27,8 +28,9 @@ PD_DYN_VLANS         = "${PD_DYN_VLANS}"
 SLAAC_FIX_VLANS      = "${SLAAC_FIX_VLANS}"
 PD_FIX_VLANS         = "${PD_FIX_VLANS}"
 
-# 固定IPマッピング (方針.md 12.7節)。Makefileのinstallルールと同じパスに揃える。
+# 固定IPマッピング / DDNS設定ファイル。Makefileのinstallルールと同じパスに揃える。
 STATIC_IP_CONF_PATH = "/etc/map-e-static-ip.conf"
+DDNS_CONF_PATH      = "/etc/ddns.conf"
 
 _CFG = {
     'BASE_SUBNET': BASE_SUBNET,
@@ -170,6 +172,91 @@ def load_static_map(config_path, mac_addr):
             if len(parts) == 2 and parts[0].strip().lower() == mac_addr.lower():
                 return ipaddress.IPv4Network(parts[1].strip(), strict=False)
     return None
+
+def load_ddns_map(config_path=None):
+    """ddns.conf から MAC -> (v6_fqdn, v4_fqdn) および VLAN -> (v6_fqdn, v4_fqdn) を読み込む"""
+    if not config_path:
+        config_path = DDNS_CONF_PATH
+    if not os.path.exists(config_path):
+        config_path = "./ddns.conf"
+    if not os.path.exists(config_path):
+        return {}, {}
+
+    mac_map = {}
+    vlan_map = {}
+    try:
+        with open(config_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 3:
+                    key, v6_fqdn, v4_fqdn = parts[0], parts[1], parts[2]
+                    key_clean = key.lower().replace("-", ":")
+                    if ":" in key_clean or len(key_clean) == 12:
+                        if ":" not in key_clean:
+                            key_clean = ":".join(key_clean[i:i+2] for i in range(0, 12, 2))
+                        mac_map[key_clean] = (v6_fqdn, v4_fqdn)
+                    elif key_clean.isdigit():
+                        vlan_map[int(key_clean)] = (v6_fqdn, v4_fqdn)
+    except Exception as e:
+        syslog.syslog(syslog.LOG_ERR, f"[DDNS-LOAD] Error reading {config_path}: {e}")
+
+    return mac_map, vlan_map
+
+def update_ddns(mac_str=None, vlan=None, target_v4=None, ce_ipv6=None):
+    """nsupdate を使用して AAAA (IPv6), A (IPv4) および TXT (updated_at) レコードを BIND9 へ登録"""
+    if not target_v4 or not ce_ipv6:
+        return False
+
+    mac_map, vlan_map = load_ddns_map()
+    fqdns = None
+
+    if mac_str:
+        target_mac = mac_str.lower().replace("-", ":")
+        if ":" not in target_mac and len(target_mac) == 12:
+            target_mac = ":".join(target_mac[i:i+2] for i in range(0, 12, 2))
+        fqdns = mac_map.get(target_mac)
+
+    if not fqdns and vlan is not None:
+        try:
+            vlan_id = int(vlan)
+            fqdns = vlan_map.get(vlan_id)
+        except ValueError:
+            pass
+
+    if not fqdns:
+        return False
+
+    v6_fqdn, v4_fqdn = fqdns
+    now_iso = datetime.datetime.now().astimezone().isoformat()
+
+    lines = [
+        "server 127.0.0.1",
+        f"update delete {v6_fqdn}. AAAA",
+        f"update add {v6_fqdn}. 300 AAAA {ce_ipv6}",
+        f"update delete {v6_fqdn}. TXT",
+        f"update add {v6_fqdn}. 300 TXT \"updated={now_iso}\"",
+        f"update delete {v4_fqdn}. A",
+        f"update add {v4_fqdn}. 300 A {target_v4}",
+        f"update delete {v4_fqdn}. TXT",
+        f"update add {v4_fqdn}. 300 TXT \"updated={now_iso}\"",
+        "send\n"
+    ]
+    script = "\n".join(lines)
+
+    try:
+        res = subprocess.run(["nsupdate"], input=script, text=True, capture_output=True, timeout=5)
+        if res.returncode == 0:
+            syslog.syslog(syslog.LOG_INFO, f"[DDNS-UPDATE] Updated {v6_fqdn}->{ce_ipv6}, {v4_fqdn}->{target_v4} (updated={now_iso})")
+            return True
+        else:
+            syslog.syslog(syslog.LOG_ERR, f"[DDNS-UPDATE] nsupdate failed: {res.stderr}")
+    except Exception as e:
+        syslog.syslog(syslog.LOG_ERR, f"[DDNS-UPDATE] Error executing nsupdate: {e}")
+
+    return False
 
 def get_hashed_dynamic_ipv4(pool_base, mask, mac_str):
     """
@@ -425,4 +512,14 @@ def calc_map_e_params(prefix_str, dev=None):
 
     # 計算した target_psid を引数に渡す (これまでは 0 固定だった箇所)
     ce_ipv6 = convert_to_data_ipv6(clean_ip, str(target_v4), target_psid=target_psid, is_slaac=is_slaac)
+
+    # DDNS (Dynamic DNS) 自動登録処理の呼出し
+    vlan_id = None
+    if dev and '.' in dev:
+        try:
+            vlan_id = int(dev.split('.')[1])
+        except ValueError:
+            pass
+    update_ddns(mac_str=mac, vlan=vlan_id, target_v4=str(target_v4), ce_ipv6=ce_ipv6)
+
     return str(target_v4), ce_ipv6, segment, target_psid
