@@ -10,9 +10,10 @@ show ipv6 dhcp client
 # DNS / プロビジョニングサーバーへの IPv6 疎通
 ping6 2400:4150:9999::ff
 
-# MAP-E (OCNバーチャルコネクト/v6プラス) トンネル状態確認
+# MAP-E (OCNバーチャルコネクト/v6プラス) トンネル状態確認・キャッシュクリア
 show map-e status
 show interface Tunnel0.0
+clear map-e status
 
 # MAP-E トンネルを通って IPv4 の疎通 (BR / 対向)
 ping 100.127.255.255
@@ -46,8 +47,17 @@ execute ping6 rule.map.ocn.ad.jp
 # MAP-E (VNE) プロビジョニング状態・トンネル情報
 diagnose test application vned 1
 
-# VNE デーモンの再起動・プロビジョニング即時再実行
+# MAP-E (VNE) キャッシュクリア・プロビジョニング即時再実行
+# 方法 1. 保存された BMR ホスト名キャッシュを削除 (完全クリア時)
+config system vne-interface
+    edit "vne.wan1"
+        unset bmr-hostname
+    next
+end
+
+# 方法 2. VNE デーモンのメモリキャッシュをアンロード・再起動
 diagnose test application vned 99
+
 
 # IPv4 アドレス情報 (vne.wan1 への /32 割当確認)
 diagnose ip address list
