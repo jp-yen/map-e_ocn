@@ -46,7 +46,7 @@ BASE_SUBNET = '5f00:3aa'
 SLAAC_BR_BASE = '1000'
 VLAN = 901
 
-# Step 1: Calculate target IPv4 (SLAAC dynamic formula)
+# ステップ1: SLAAC 動的式で target IPv4 を計算
 pool_octets = ipaddress.IPv4Network(f'{BR_IPV4_POOL}/{BR_IPV4_MASK}', strict=False).network_address.exploded.split('.')
 vlan_base = int(SLAAC_BR_BASE)
 seg_hextet_val = vlan_base + VLAN  # 1901
@@ -56,7 +56,7 @@ octet3 = int(mac.split(':')[-1], 16)  # 0xb1 = 177
 target_v4 = f'{pool_octets[0]}.{pool_octets[1]}.{octet2}.{octet3}'
 print(f'target_ipv4 = {target_v4}')
 
-# Step 2: Calculate CE IPv6 address
+# ステップ2: CE IPv6 アドレスを算出
 clean_ip = f'{BASE_SUBNET}:{seg_hextet_val}::'
 v6_addr = ipaddress.IPv6Address(clean_ip)
 exploded = v6_addr.exploded.split(':')
@@ -65,7 +65,7 @@ print(f'seg_hextet from exploded = {seg}')
 psid = int(seg[:2], 16)
 print(f'target_psid = {psid} (hex: {psid:02x})')
 
-# Step 3: Build CE data IPv6
+# ステップ3: CE データ IPv6 を構築
 v4_octets = [int(x) for x in target_v4.split('.')]
 prefix_part = v6_addr.exploded.split(':')[:4]
 
@@ -80,23 +80,23 @@ result = ipaddress.IPv6Address(data_ipv6_str)
 print(f'CE data IPv6 = {result.compressed}')
 print(f'CE data IPv6 exploded = {result.exploded}')
 
-# Step 4: After setup_tunnel_route zeroes block7 (exploded[7])
+# ステップ4: setup_tunnel_route 後に block7 (exploded[7]) を 0 にリセット
 exp = result.exploded.split(':')
 exp[7] = '0000'
 zeroed = ipaddress.IPv6Address(':'.join(exp))
 print(f'After PSID zeroing = {zeroed.compressed}')
 print(f'After PSID zeroing exploded = {zeroed.exploded}')
 
-# Step 5: Compare with actual route
+# ステップ5: 実際のルートと比較
 route_dst = ipaddress.IPv6Address('5f00:3aa:1901:0:c6:3385:b100:0')
 print(f'Route dst = {route_dst.compressed}')
 print(f'Route dst exploded = {route_dst.exploded}')
 print(f'Match: {zeroed == route_dst}')
 
-# Step 6: What about the CE router's actual IPv6?
-# NDP shows: 5f00:3aa:1901:0:260:b9ff:fee5:a1b1 - this is EUI-64 of MAC 00:60:b9:e5:a1:b1
-# But route goes to: 5f00:3aa:1901:0:c6:3385:b100:0 - this is the MAP-E computed CE address
-# The CE needs to have the MAP-E address configured on its tunnel interface
+# ステップ6: CE ルーターの実際の IPv6 アドレスは？
+# NDP が示す: 5f00:3aa:1901:0:260:b9ff:fee5:a1b1 - これは MAC 00:60:b9:e5:a1:b1 の EUI-64 表現です
+# ただしルートは: 5f00:3aa:1901:0:c6:3385:b100:0 - これは MAP-E が算出した CE アドレスです
+# CE はトンネルインターフェースに MAP-E アドレスを設定する必要があります
 print()
 print('=== CE side analysis ===')
 print(f'CE SLAAC address (NDP): 5f00:3aa:1901:0:260:b9ff:fee5:a1b1')

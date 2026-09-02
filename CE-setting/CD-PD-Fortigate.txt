@@ -1,0 +1,142 @@
+# =============================================================================
+# FortiGate 80F (FortiOS 7.6.7) OCN MAP-E (OCNバーチャルコネクト) 設定手順書
+# =============================================================================
+
+## 1. WAN インターフェース設定 (DHCPv6-PD /56 受信)
+
+# 1-1. WAN1 で DHCPv6-PD (/56) を受信し、WAN1自身にもプロビジョニング用IPv6 (/64) を割り当てる
+config system interface
+    edit "wan1"
+        set vdom "root"
+        set allowaccess ping
+        set type physical
+        set role wan
+        config ipv6
+            set ip6-mode delegated
+            set ip6-allowaccess ping
+            set dhcp6-prefix-delegation enable
+            config dhcp6-iapd-list
+                edit 1
+                    set prefix-hint ::/56
+                next
+            end
+            # vned プロビジョニング用 (WAN自身にプレフィックスを認識させる)
+            set ip6-delegated-prefix-iaid 1
+            set ip6-upstream-interface "wan1"
+            # 1つ目のサブネット
+            set ip6-subnet ::1/64
+        end
+    next
+end
+
+# 1-2. (任意) 取得した /56 から Loopback へ別の /64 を切り出して割り当てる場合
+# ※ wan1 で 1つ目のサブネット (::1/64) を使用しているため、Loopback は 2つ目以降を指定します
+# LAN へ IPv6 を流す例です。ループバックに IPv6 が必要な訳ではありません。
+config system interface
+    edit "loopback-pd1"
+        set vdom "root"
+        set type loopback
+        set role lan
+        config ipv6
+            set ip6-mode delegated
+            set ip6-allowaccess ping
+            set ip6-delegated-prefix-iaid 1
+            set ip6-upstream-interface "wan1"
+            # 2つ目のサブネット
+            set ip6-subnet ::1:0:0:0:1/64
+        end
+    next
+    edit "loopback-pd2"
+        set vdom "root"
+        set type loopback
+        set role lan
+        config ipv6
+            set ip6-mode delegated
+            set ip6-allowaccess ping
+            set ip6-delegated-prefix-iaid 1
+            set ip6-upstream-interface "wan1"
+            # 3つ目のサブネット
+            set ip6-subnet ::2:0:0:0:1/64
+        end
+    next
+end
+
+
+## 2. MAP-E プロビジョニング用 CA 証明書の登録 (検証環境用)
+
+# サーバー側で生成された CA 証明書 (mape-provisioning-server/server.crt) をインポート
+config vpn certificate ca
+    edit "test_OCN_MAP_E_CA"
+        set ca "-----BEGIN CERTIFICATE-----
+ここに server.crt の内容を貼り付ける
+-----END CERTIFICATE-----"
+    next
+end
+
+
+## 3. VNE インターフェース (MAP-E 自動トンネル) 設定
+# WAN1 を指定するだけで、モード(map-e)や各種パラメータはデフォルトで自動適用されます
+config system vne-interface
+    edit "vne.wan1"
+        set interface "wan1"
+    next
+end
+
+
+## 4. 静的ルーティング (IPv4 デフォルトルート)
+config router static
+    edit 1
+        set dst 0.0.0.0 0.0.0.0
+        set device "vne.wan1"
+    next
+end
+
+# vned プロセスをリセットしてリンク状態を再認識させ、プロビジョニングを即時トリガーする
+diagnose test application vned 99
+
+
+## 5. ファイアウォールポリシー、 NAT
+(省略)
+
+
+# =============================================================================
+# 確認・診断コマンド集 (FortiGate CLI)
+# =============================================================================
+
+# --- 1. IPv6 / DHCP-PD アドレス確認 ---
+# FortiGate-80F # diagnose ipv6 address list
+# dev=5 devname=wan1 flag= scope=0 prefix=64 addr=2400:4150:2000:100::1 preferred=4464 valid=7164
+# dev=28 devname=loopback-pd1 flag= scope=0 prefix=64 addr=2400:4150:2000:100::1
+# dev=29 devname=loopback-pd2 flag= scope=0 prefix=64 addr=2400:4150:2000:101::1
+
+# --- 2. VNE / MAP-E プロビジョニング状態確認 ---
+# FortiGate-80F # diagnose test application vned 1
+# ----------------------------------------------------------------------------
+# vdom: root/0, is master, devname=wan1 link=1 tun=vne.wan1 mode=map-e
+# end user ipv6 perfix: 2400:4150:2000:100::/56
+# interface ipv6 addr: 2400:4150:2000:100::1
+# bmr rule ipv6 perfix: 2400:4150::/32
+# bmr rule ipv4 perfix: 1.1.0.1/32
+# bmr rule br: 2400:4150:3220::647f:ffff
+# bmr rule hostname: ce-1.1.0.1.map.ocn.ad.jp
+# tunnel br: 2400:4150:3220::647f:ffff
+# tunnel ipv6 addr: 2400:4150:2000:100:1:100:100:0
+# tunnel ipv4 addr: 1.1.0.1/255.255.255.255
+# Map-e rule client: state=succeed reply_code=200
+# Map-e DDNS client: state=succeed reply_code=200
+
+# --- 3. IPv4 アドレス割り当て確認 ---
+# FortiGate-80F # diagnose ip address list
+# IP=1.1.0.1->1.1.0.1/255.255.255.255 index=31 devname=vne.wan1
+
+# --- 4. IPv4 ルーティングテーブル確認 ---
+# FortiGate-80F # get router info routing-table all
+# S* 0.0.0.0/0 [10/0] is directly connected, vne.wan1
+# C  1.1.0.1/32 is directly connected, vne.wan1
+
+# --- 5. BR IPv4 (100.127.255.255) への疎通確認 (ping) ---
+# FortiGate-80F # execute ping-options source 1.1.0.1
+# FortiGate-80F # execute ping 100.127.255.255
+# PING 100.127.255.255 (100.127.255.255): 56 data bytes
+# 64 bytes from 100.127.255.255: icmp_seq=0 ttl=64 time=0.5 ms
+# 64 bytes from 100.127.255.255: icmp_seq=1 ttl=64 time=0.4 ms

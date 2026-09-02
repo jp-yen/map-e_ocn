@@ -1,23 +1,68 @@
+# =============================================================================
+# NEC IX シリーズ (IX2215等) コマンド一覧
+# =============================================================================
 # 設定情報
 show running-config
 
-# DHCPv6 で取得している情報
+# DHCPv6-PD で取得している情報 (DUID・プレフィックス・DNS・送受信統計)
 show ipv6 dhcp client
 
-# DNS への疎通
-ping6 5f00:3aa:9999::53
+# DNS / プロビジョニングサーバーへの IPv6 疎通
+ping6 2400:4150:9999::ff
 
-# map-e の情報
+# MAP-E (OCNバーチャルコネクト/v6プラス) トンネル状態確認
 show map-e status
+show interface Tunnel0.0
 
-# map-e トンネルを通って IPv4 の疎通
+# MAP-E トンネルを通って IPv4 の疎通 (BR / 対向)
 ping 100.127.255.255
 ping 192.168.0.42
 
 # アドレスの情報
 show ipv6 address
-show ipv6 neighbors
+show ipv6 neighbor
 show ip address
 
-show log last 50
+# ログ確認 (最新50件のログ表示)
+show logging last 50
+
+
+# =============================================================================
+# FortiGate (FortiOS 7.6.x) コマンド一覧
+# =============================================================================
+# 設定情報 (全体 / WAN / VNE)
+show full-configuration
+show system interface wan1
+show system vne-interface
+
+# DHCPv6-PD で取得しているプレフィックス・IPv6 アドレス情報
+diagnose ipv6 address list
+get system interface physical
+
+# DNS (プロビジョニングサーバー) への IPv6 疎通
+execute ping6 2400:4150:9999::ff
+execute ping6 rule.map.ocn.ad.jp
+
+# MAP-E (VNE) プロビジョニング状態・トンネル情報
+diagnose test application vned 1
+
+# VNE デーモンの再起動・プロビジョニング即時再実行
+diagnose test application vned 99
+
+# IPv4 アドレス情報 (vne.wan1 への /32 割当確認)
+diagnose ip address list
+
+# IPv4 / IPv6 ルーティングテーブル確認
+get router info routing-table all
+get router info6 routing-table
+
+# MAP-E トンネル経由での IPv4 疎通確認 (BR / 対向)
+execute ping-options source 1.1.0.1
+execute ping 100.127.255.255
+
+# リアルタイム・デバッグログ (VNE / MAP-E プロビジョニング)
+diagnose debug reset
+diagnose debug application vned -1
+diagnose debug enable
+# (停止時: diagnose debug disable)
 

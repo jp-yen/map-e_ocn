@@ -434,7 +434,12 @@ def calc_map_e_params(prefix_str, dev=None):
     
     mac = extract_mac_from_eui64(clean_ip)
     if not mac:
-        raise ValueError(f"Cannot determine MAC address (not modified EUI-64) from: {clean_ip}")
+        # 手動設定アドレス(::1等)やModified EUI-64でない場合
+        # リンクローカルでなければプレフィックス自体からセグメント判定を試みる
+        if not clean_ip.lower().startswith("fe80"):
+            mac = "00:00:00:00:00:00"  # ダミーMAC
+        else:
+            raise ValueError(f"Cannot determine MAC address (not modified EUI-64) from: {clean_ip}")
 
     # NDP監視等でリンクローカルアドレスが渡された場合、グローバルアドレス(プレフィックス)を復元する
     if clean_ip.lower().startswith("fe80") or clean_ip == "::":
@@ -496,19 +501,18 @@ def calc_map_e_params(prefix_str, dev=None):
 
     # ---- target_psid を動的に計算する ----
     target_psid = 0
-    if segment in ('slaac_dyn', 'pd_dyn'):
-        # ルーターと同じ方法で、プレフィックスからPSID(EAビット)を逆算する
+    if segment == 'slaac_dyn':
+        # SLAAC動的: プレフィックスのhextet上位2桁からPSIDを抽出
         try:
-            syslog.syslog(syslog.LOG_INFO, f"[DEBUG] clean_ip: {clean_ip}, segment: {segment}")
             exploded = ipaddress.IPv6Address(clean_ip).exploded.split(':')
-            base_len = len(_CFG['BASE_SUBNET'].split(':')) # 通常は 2
-            seg_hextet = exploded[base_len]               # "1901" など
-            # 上位2桁(8ビット分)を抽出し、整数にする ("19" -> 0x19 = 25)
+            base_len = len(_CFG['BASE_SUBNET'].split(':'))
+            seg_hextet = exploded[base_len]
             target_psid = int(seg_hextet[:2], 16)
-            syslog.syslog(syslog.LOG_INFO, f"[DEBUG] calculated target_psid: {target_psid}")
-        except Exception as ex:
-            syslog.syslog(syslog.LOG_ERR, f"[DEBUG] target_psid calc failed: {ex}")
+        except Exception:
             target_psid = 0
+    elif segment == 'pd_dyn':
+        # DHCPv6-PD動的: CE(FortiGate/YAMAHA)は1台1IP(/32)割当て時 PSID=0 を使用
+        target_psid = 0
 
     # 計算した target_psid を引数に渡す (これまでは 0 固定だった箇所)
     ce_ipv6 = convert_to_data_ipv6(clean_ip, str(target_v4), target_psid=target_psid, is_slaac=is_slaac)

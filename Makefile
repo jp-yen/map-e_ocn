@@ -128,11 +128,11 @@ mape-provisioning-server/mape-route-monitor.service: mape-provisioning-server/ma
 mape-provisioning-server/server.crt mape-provisioning-server/server.key:
 	@mkdir -p mape-provisioning-server
 	@if [ ! -f mape-provisioning-server/server.key ] || [ ! -f mape-provisioning-server/server.crt ]; then \
-	        echo "Generating self-signed certificate for *.ocn.ad.jp..."; \
+	        echo "Generating self-signed certificate for *.ocn.ad.jp, *.map.ocn.ad.jp..."; \
 	        openssl req -x509 -newkey rsa:2048 -keyout mape-provisioning-server/server.key -out mape-provisioning-server/server.crt \
 	                -days 3650 -nodes \
-	                -subj "/C=JP/ST=Tokyo/L=Tokyo/O=OCN/CN=*.ocn.ad.jp" \
-	                -addext "subjectAltName=DNS:*.ocn.ad.jp,DNS:ocn.ad.jp"; \
+	                -subj "/C=JP/ST=Tokyo/L=Tokyo/O=OCN/CN=rule.map.ocn.ad.jp" \
+	                -addext "subjectAltName=DNS:rule.map.ocn.ad.jp,DNS:*.map.ocn.ad.jp,DNS:*.ocn.ad.jp,DNS:ocn.ad.jp"; \
 	        chmod 600 mape-provisioning-server/server.key; \
 	fi
 

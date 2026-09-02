@@ -47,10 +47,9 @@ sub _print_radvd_block {
     print "    AdvSendAdvert on;\n";
     print "    MinRtrAdvInterval 3;\n";
     print "    MaxRtrAdvInterval 10;\n";
-    print "    AdvManagedFlag off;\n";
-    print "    AdvOtherConfigFlag off;\n\n";
-
     if ($prefix) {
+        print "    AdvManagedFlag off;\n";
+        print "    AdvOtherConfigFlag off;\n\n";
         print "    # SLAAC用プレフィックス配布\n";
         print "    prefix ${prefix}::/64\n";
         print "    {\n";
@@ -59,6 +58,8 @@ sub _print_radvd_block {
         print "        AdvRouterAddr on;\n";
         print "    };\n\n";
     } else {
+        print "    AdvManagedFlag on;\n";
+        print "    AdvOtherConfigFlag on;\n\n";
         print "    # プレフィックス非通知 (DHCPv6-PD拠点へのデフォルトルート広報)\n";
     }
 

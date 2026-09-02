@@ -8,6 +8,12 @@ zone "map.ocn.ad.jp" {
     file "/etc/bind/db.map.ocn.ad.jp";
 };
 
+// OCN ドメイン全体（ipoe-static.ocn.ad.jp 等の解決用）
+zone "ocn.ad.jp" {
+    type master;
+    file "/etc/bind/db.map.ocn.ad.jp";
+};
+
 // V6プラス/バーチャルコネクト関連互換用ゾーン（必要に応じて）
 zone "v6connect.net" {
     type master;

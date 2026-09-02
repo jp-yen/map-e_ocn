@@ -62,6 +62,11 @@ sub generate_interfaces {
     my $mgt_gw            = $c->{mgt_gw};
     my $br_ipv4_addr      = $c->{br_ipv4_addr};
 
+    my $mgt_addr_cidr = $mgt_ip;
+    if ($mgt_ip && $mgt_ip !~ /\// && defined $mgt_mask && $mgt_mask ne '') {
+        $mgt_addr_cidr = "$mgt_ip/$mgt_mask";
+    }
+
     print "# =============================================================================\n";
     print "# /etc/network/interfaces (Generated via gen_configs.pl)\n";
     print "# =============================================================================\n\n";
@@ -70,7 +75,7 @@ sub generate_interfaces {
     print "# --- 管理用インターフェース ---\n";
     print "auto $mgt_if\n";
     print "iface $mgt_if inet static\n";
-    print "    address $mgt_ip/$mgt_mask\n";
+    print "    address $mgt_addr_cidr\n";
     print "    gateway $mgt_gw\n\n";
     print "iface $mape_if inet manual\n\n";
 

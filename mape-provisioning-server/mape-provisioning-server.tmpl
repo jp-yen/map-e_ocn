@@ -104,6 +104,8 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
             psid_val = target_psid if segment in ('slaac_dyn', 'pd_dyn') else 0 
 
             # 3. ルールは1つだけ定義し、eaBitLength, psIdOffset, psId を動的に差し替える
+            # FortiGate (FortiOS) は hostName フィールドを要求するため付与
+            hostname = f"ce-{target_ipv4}.map.ocn.ad.jp"
             rule = {
                 "brIpv6Address": BR_IPV6,
                 "ipv6Prefix": "${BASE_SUBNET}::",
@@ -112,9 +114,13 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
                 "ipv4PrefixLength": 32,
                 "eaBitLength": ea_len,
                 "psIdOffset": psid_offset,
-                "psId": psid_val
+                "psId": psid_val,
+                "hostName": hostname
             }
-            response_data = {"basicMapRules": [rule]} 
+            response_data = {
+                "hostName": hostname,
+                "basicMapRules": [rule]
+            } 
 
         except Exception as e:
             syslog.syslog(syslog.LOG_ERR, f"Calculation Error: {e}")
