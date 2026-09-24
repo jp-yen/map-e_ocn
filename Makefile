@@ -4,16 +4,28 @@
 
 CONFIG_FILE = map-e.conf
 
-REQUIRED_PACKAGES := python3 openssl radvd kea-dhcp6-server bind9 chrony syslog-ng logrotate
+# シェル変数名に使えないハイフンを含む変数名を自動的にアンダースコアに変換した
+# 一時設定ファイル。make 実行のたびに CONFIG_FILE から自動生成される。
+SAFE_CONFIG_FILE := .map-e.conf.safe
+$(shell sed 's/^\([A-Za-z0-9_]*\)-\([A-Za-z0-9_-]*\)=/\1_\2=/g;s/^\([A-Za-z0-9_]*\)-\([A-Za-z0-9_-]*\)=/\1_\2=/g;s/^\([A-Za-z0-9_]*\)-\([A-Za-z0-9_-]*\)=/\1_\2=/g' $(CONFIG_FILE) > $(SAFE_CONFIG_FILE) 2>/dev/null || cp $(CONFIG_FILE) $(SAFE_CONFIG_FILE))
 
-.DEFAULT_GOAL := all
-.PHONY: all clean generate check install packages archive check-root check-user
+# ホスト側構文検査・ツール用パッケージ（コンテナ稼働デーモンを除く）
+REQUIRED_PACKAGES := python3 openssl bind9-dnsutils radvd chrony
+
+.DEFAULT_GOAL := help
+.PHONY: help all clean generate check install packages archive check-root check-user \
+        generate_ddns_zones generate_pppoe_configs check_config web-dashboard up down
+
+check_config:
+	@perl generator/check_config.pl $(CONFIG_FILE)
 
 SYSTEM_TARGETS = \
     system/interfaces \
     system/99-network-routing.conf
 
 BIND_TARGETS = \
+    bind/named.conf \
+    bind/rndc.conf \
     bind/named.conf.local \
     bind/db.map.ocn.ad.jp \
     bind/db.v6connect.net
@@ -24,14 +36,15 @@ KEA_TARGETS = \
 
 MPE_TARGETS = \
     mape-provisioning-server/mape-provisioning-server \
-    mape-provisioning-server/mape_calc \
-    mape-provisioning-server/mape-provisioning-server.service \
-    mape-provisioning-server/mape-route-monitor \
-    mape-provisioning-server/mape-route-monitor.service \
+    mape-provisioning-server/mape_calc
+
+# 証明書は Perl 生成対象外 (openssl で生成)
+CERT_TARGETS = \
     mape-provisioning-server/server.crt \
     mape-provisioning-server/server.key
 
-TARGETS = \
+# Perl スクリプトで生成するターゲット (パターンルール適用対象)
+GEN_TARGETS = \
     $(SYSTEM_TARGETS) \
     radvd/radvd.conf \
     $(KEA_TARGETS) \
@@ -39,221 +52,347 @@ TARGETS = \
     chrony/chrony.conf \
     $(MPE_TARGETS)
 
-PERL_TARGETS = \
-	chrony/chrony.conf \
-	bind/named.conf.local \
-	bind/db.map.ocn.ad.jp \
-	bind/db.v6connect.net \
-	system/interfaces \
-	system/99-network-routing.conf \
-	radvd/radvd.conf \
-	kea-dhcp6/kea-dhcp6.conf \
-	kea-dhcp6/kea-map-e-hook \
-	mape-provisioning-server/mape_calc \
-	mape-provisioning-server/mape-provisioning-server \
-	mape-provisioning-server/mape-provisioning-server.service \
-	mape-provisioning-server/mape-route-monitor \
-	mape-provisioning-server/mape-route-monitor.service
+TARGETS = $(GEN_TARGETS) $(CERT_TARGETS)
 
 CUR_DIR = $(shell basename $(CURDIR))
 
+help:
+	@echo "================================================================="
+	@echo "  MAP-E / PPPoE エミュレーション環境 管理 Makefile"
+	@echo "================================================================="
+	@echo "使用方法: make [ターゲット]"
+	@echo ""
+	@echo "主なターゲット:"
+	@echo "  generate       : 各種設定ファイル（DNS, Kea, PPPoE, compose等）を一括生成 (一般ユーザー)"
+	@echo "  web-dashboard  : Web ダッシュボードのみ先行起動 (一般ユーザー)"
+	@echo "  install        : ホストネットワーク/sysctl設定を適用し、全コンテナを起動 (要 sudo)"
+	@echo "  up             : Docker コンテナを一括起動 (docker compose up -d)"
+	@echo "  down           : Docker コンテナを一括停止 (docker compose down)"
+	@echo "  check          : 各種設定ファイルの構文チェック (要 sudo / コンテナ活用)"
+	@echo "  clean          : 生成された設定ファイル・中間ファイルを削除"
+	@echo "  archive        : ソースコード一式のアーカイブ (MAP-E.tar.xz) を作成"
+	@echo "  packages       : ホスト側に必要な最小限の検証パッケージを導入 (要 sudo)"
+	@echo "  help           : このヘルプメッセージを表示 (デフォルト)"
+	@echo "================================================================="
+
 all: generate
 
-generate: $(TARGETS) generate_ddns_zones check-user
+generate: check-user check_config $(TARGETS) generate_ddns_zones generate_pppoe_configs
 	@echo "Successfully generated all configuration files."
 
 generate_ddns_zones:
-	@for domain in $$(perl generator/gen_bind_configs.pl list_domains 2>/dev/null); do \
-	        echo "Generating bind/db.$$domain via Perl"; \
-	        perl generator/gen_bind_configs.pl ddns_zone "$$domain" > "bind/db.$$domain"; \
+	@mkdir -p bind/dynamic
+	@chmod 777 bind/dynamic 2>/dev/null || true
+	@chmod 666 bind/dynamic/* 2>/dev/null || true
+	@set -a; . ./$(SAFE_CONFIG_FILE); \
+	for domain in $$(perl generator/gen_bind_configs.pl list_domains 2>/dev/null); do \
+	    if [ ! -f "bind/dynamic/db.$$domain" ]; then \
+	        echo "Generating bind/dynamic/db.$$domain via Perl"; \
+	        perl generator/gen_bind_configs.pl ddns_zone "$$domain" > "bind/dynamic/db.$$domain"; \
+	        chmod 666 "bind/dynamic/db.$$domain" 2>/dev/null || true; \
+	    fi; \
 	done
+	@chmod 666 bind/dynamic/* 2>/dev/null || true
 
-$(PERL_TARGETS): $(CONFIG_FILE)
+generate_pppoe_configs:
+	@set -a; . ./$(SAFE_CONFIG_FILE); \
+	echo "Generating unified PPPoE configs (srv-unified)"; \
+	mkdir -p "pppoe/srv-unified"; \
+	perl generator/gen_pppoe_configs.pl all_secrets   > "pppoe/srv-unified/chap-secrets"; \
+	cp "pppoe/srv-unified/chap-secrets" "pppoe/srv-unified/pap-secrets"; \
+	chmod 600 "pppoe/srv-unified/chap-secrets" "pppoe/srv-unified/pap-secrets"; \
+	perl generator/gen_pppoe_configs.pl all_routes    > "pppoe/srv-unified/routes.conf"; \
+	perl generator/gen_pppoe_configs.pl user_services > "pppoe/srv-unified/user-services.conf"; \
+	perl generator/gen_pppoe_configs.pl srv_options unified > "pppoe/srv-unified/pppoe-server-options"; \
+	echo "Generating docker-compose.yml via Perl"; \
+	perl generator/gen_pppoe_configs.pl compose > docker-compose.yml; \
+	echo "Updating syslog-ng.conf PPPoE socket via Perl"; \
+	perl generator/gen_pppoe_configs.pl syslog_update; \
+	if command -v docker > /dev/null 2>&1 && docker ps -q -f name=axosyslog | grep -q .; then \
+	    echo "Reloading axosyslog configuration..."; \
+	    docker exec axosyslog syslog-ng-ctl reload || true; \
+	fi; \
+	echo "Generating VRF setup script (system/vrf-setup.sh)..."; \
+	mkdir -p system; \
+	{ \
+	  echo '#!/bin/sh'; \
+	  echo '# system/vrf-setup.sh (Auto-generated by make generate -- DO NOT EDIT)'; \
+	  echo '# VRF デバイスを作成・UP するスクリプト。make install 時に実行される。'; \
+	  echo 'modprobe vrf 2>/dev/null || true'; \
+	  awk '!/^#/ && NF>=3 && $$3=="1" { print $$2 }' "pppoe/srv-unified/user-services.conf" | sort -u | \
+	  while read -r srv; do \
+	      s_short=$$(echo "$$srv" | cut -c1-11); \
+	      vrf_dev="vrf-$$s_short"; \
+	      table_id=$$(printf '%d' $$(( 1001 + ( $$(echo -n "$$srv" | cksum | cut -d' ' -f1) % 8999 ) ))); \
+	      echo "if ! ip link show '$$vrf_dev' > /dev/null 2>&1; then"; \
+	      echo "    echo 'Creating VRF: $$vrf_dev (table $$table_id)'"; \
+	      echo "    ip link add dev '$$vrf_dev' type vrf table $$table_id"; \
+	      echo "fi"; \
+	      echo "ip link set '$$vrf_dev' up"; \
+	      echo "ip route replace unreachable default table $$table_id"; \
+	      if [ -n "$$BR_IPV4_ADDR" ]; then \
+	          echo "ip route replace local $$BR_IPV4_ADDR dev lo table $$table_id"; \
+	      fi; \
+	  done; \
+	} > system/vrf-setup.sh; \
+	chmod +x system/vrf-setup.sh; \
+	echo "  -> system/vrf-setup.sh generated (run 'make install' to apply)"
+
+
+
+# -----------------------------------------------------------------------------
+# 汎用パターンルール: GEN_TARGETS の各ファイルを Perl スクリプトで生成
+#   各ターゲットに GEN_SCRIPT / GEN_MODE / GEN_CHMOD_AFTER を target-specific
+#   変数として指定する。
+#   スクリプトは perl 経由で呼ぶため実行ビット (+x) は不要。
+# -----------------------------------------------------------------------------
+$(GEN_TARGETS): $(CONFIG_FILE)
 	@mkdir -p $(dir $@)
-	$(if $(GEN_CHMOD_BEFORE),@chmod +x $(GEN_SCRIPT))
 	@echo "Generating $@ via Perl"
-	@set -a; . ./$(CONFIG_FILE); perl $(GEN_SCRIPT) $(GEN_MODE) > $@
+	@set -a; . ./$(SAFE_CONFIG_FILE); perl $(GEN_SCRIPT) $(GEN_MODE) > $@
 	$(if $(GEN_CHMOD_AFTER),@chmod +x $@)
 
 chrony/chrony.conf: GEN_SCRIPT = generator/gen_chrony_config.pl
-chrony/chrony.conf: GEN_MODE = chrony
+chrony/chrony.conf: GEN_MODE   = chrony
 
-bind/named.conf.local: GEN_SCRIPT = generator/gen_bind_configs.pl
-bind/named.conf.local: GEN_MODE = named_local
-bind/db.map.ocn.ad.jp: GEN_SCRIPT = generator/gen_bind_configs.pl
-bind/db.map.ocn.ad.jp: GEN_MODE = db_map
-bind/db.v6connect.net: GEN_SCRIPT = generator/gen_bind_configs.pl
-bind/db.v6connect.net: GEN_MODE = db_v6
+bind/named.conf:        GEN_SCRIPT = generator/gen_bind_configs.pl
+bind/named.conf:        GEN_MODE   = named_conf
+bind/rndc.conf:         GEN_SCRIPT = generator/gen_bind_configs.pl
+bind/rndc.conf:         GEN_MODE   = rndc_conf
+bind/named.conf.local:  GEN_SCRIPT = generator/gen_bind_configs.pl
+bind/named.conf.local:  GEN_MODE   = named_local
+bind/named.conf.local:  ddns.conf generator/gen_bind_configs.pl
+bind/db.map.ocn.ad.jp:  GEN_SCRIPT = generator/gen_bind_configs.pl
+bind/db.map.ocn.ad.jp:  GEN_MODE   = db_map
+bind/db.v6connect.net:  GEN_SCRIPT = generator/gen_bind_configs.pl
+bind/db.v6connect.net:  GEN_MODE   = db_v6
 
-system/interfaces: GEN_SCRIPT = generator/gen_system_mod.pl
-system/interfaces: GEN_MODE = interfaces
-system/interfaces: GEN_CHMOD_BEFORE = 1
+system/interfaces:             GEN_SCRIPT = generator/gen_system_mod.pl
+system/interfaces:             GEN_MODE   = interfaces
+system/interfaces:             generator/gen_system_mod.pl generator/MapeCommon.pm
 system/99-network-routing.conf: GEN_SCRIPT = generator/gen_system_mod.pl
-system/99-network-routing.conf: GEN_MODE = sysctl
-system/99-network-routing.conf: GEN_CHMOD_BEFORE = 1
+system/99-network-routing.conf: GEN_MODE   = sysctl
+system/99-network-routing.conf: generator/gen_system_mod.pl generator/MapeCommon.pm
 
 radvd/radvd.conf: GEN_SCRIPT = generator/gen_radvd_mod.pl
-radvd/radvd.conf: GEN_MODE = radvd
-radvd/radvd.conf: GEN_CHMOD_BEFORE = 1
+radvd/radvd.conf: GEN_MODE   = radvd
 
-kea-dhcp6/kea-dhcp6.conf: GEN_SCRIPT = generator/gen_kea_configs.pl
-kea-dhcp6/kea-dhcp6.conf: GEN_MODE = dhcp6
-kea-dhcp6/kea-map-e-hook: GEN_SCRIPT = generator/gen_kea_configs.pl
-kea-dhcp6/kea-map-e-hook: GEN_MODE = hook
+kea-dhcp6/kea-dhcp6.conf: GEN_SCRIPT     = generator/gen_kea_configs.pl
+kea-dhcp6/kea-dhcp6.conf: GEN_MODE       = dhcp6
+kea-dhcp6/kea-dhcp6.conf: generator/gen_kea_configs.pl generator/MapeCommon.pm kea-dhcp6/kea-dhcp6.conf.tmpl
+kea-dhcp6/kea-map-e-hook: GEN_SCRIPT     = generator/gen_kea_configs.pl
+kea-dhcp6/kea-map-e-hook: GEN_MODE       = hook
 kea-dhcp6/kea-map-e-hook: GEN_CHMOD_AFTER = 1
 
-mape-provisioning-server/mape_calc: GEN_SCRIPT = generator/gen_mape_mod.pl
-mape-provisioning-server/mape_calc: GEN_MODE = mape_calc
+mape-provisioning-server/mape_calc: GEN_SCRIPT      = generator/gen_mape_mod.pl
+mape-provisioning-server/mape_calc: GEN_MODE        = mape_calc
 mape-provisioning-server/mape_calc: mape-provisioning-server/mape_calc.tmpl
 mape-provisioning-server/mape_calc: GEN_CHMOD_AFTER = 1
 
-mape-provisioning-server/mape-provisioning-server: GEN_SCRIPT = generator/gen_mape_mod.pl
-mape-provisioning-server/mape-provisioning-server: GEN_MODE = provisioning-server
+mape-provisioning-server/mape-provisioning-server: GEN_SCRIPT      = generator/gen_mape_mod.pl
+mape-provisioning-server/mape-provisioning-server: GEN_MODE        = provisioning-server
 mape-provisioning-server/mape-provisioning-server: mape-provisioning-server/mape-provisioning-server.tmpl
 mape-provisioning-server/mape-provisioning-server: GEN_CHMOD_AFTER = 1
-
-mape-provisioning-server/mape-provisioning-server.service: GEN_SCRIPT = generator/gen_mape_mod.pl
-mape-provisioning-server/mape-provisioning-server.service: GEN_MODE = provisioning-server-service
-mape-provisioning-server/mape-provisioning-server.service: mape-provisioning-server/mape-provisioning-server.service.tmpl
-
-mape-provisioning-server/mape-route-monitor: GEN_SCRIPT = generator/gen_mape_mod.pl
-mape-provisioning-server/mape-route-monitor: GEN_MODE = route-monitor
-mape-provisioning-server/mape-route-monitor: mape-provisioning-server/mape-route-monitor.tmpl
-mape-provisioning-server/mape-route-monitor: GEN_CHMOD_AFTER = 1
-
-mape-provisioning-server/mape-route-monitor.service: GEN_SCRIPT = generator/gen_mape_mod.pl
-mape-provisioning-server/mape-route-monitor.service: GEN_MODE = route-monitor-service
-mape-provisioning-server/mape-route-monitor.service: mape-provisioning-server/mape-route-monitor.service.tmpl
 
 mape-provisioning-server/server.crt mape-provisioning-server/server.key:
 	@mkdir -p mape-provisioning-server
 	@if [ ! -f mape-provisioning-server/server.key ] || [ ! -f mape-provisioning-server/server.crt ]; then \
-	        echo "Generating self-signed certificate for *.ocn.ad.jp, *.map.ocn.ad.jp..."; \
-	        openssl req -x509 -newkey rsa:2048 -keyout mape-provisioning-server/server.key -out mape-provisioning-server/server.crt \
-	                -days 3650 -nodes \
-	                -subj "/C=JP/ST=Tokyo/L=Tokyo/O=OCN/CN=rule.map.ocn.ad.jp" \
-	                -addext "subjectAltName=DNS:rule.map.ocn.ad.jp,DNS:*.map.ocn.ad.jp,DNS:*.ocn.ad.jp,DNS:ocn.ad.jp"; \
-	        chmod 600 mape-provisioning-server/server.key; \
+	    echo "Generating ECDSA self-signed certificate (prime256v1, 365 days) for *.ocn.ad.jp, *.map.ocn.ad.jp..."; \
+	    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -keyout mape-provisioning-server/server.key -out mape-provisioning-server/server.crt \
+	        -days 365 -nodes \
+	        -subj "/C=JP/ST=Tokyo/L=Tokyo/O=OCN/CN=rule.map.ocn.ad.jp" \
+	        -addext "subjectAltName=DNS:rule.map.ocn.ad.jp,DNS:*.map.ocn.ad.jp,DNS:*.ocn.ad.jp,DNS:ocn.ad.jp"; \
+	    chmod 600 mape-provisioning-server/server.key; \
 	fi
 
 clean:
-	rm -f $(TARGETS) STATUS.TXT MAP-E.shar.* MAP-E.tar.xz
+	@echo "Cleaning generated files..."
+	@rm -rf $(TARGETS) \
+	    docker-compose.yml \
+	    system/vrf-setup.sh \
+	    bind/.rndc.key.secret \
+	    bind/dynamic \
+	    pppoe/srv-* \
+	    STATUS.TXT \
+	    MAP-E.shar* \
+	    MAP-E.tar.xz \
+	    web-dashboard/data \
+	    $(SAFE_CONFIG_FILE)
+	@find bind -maxdepth 1 -name 'db.*' ! -name '*.tmpl' -delete 2>/dev/null || true
+	@find . -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+	@find . -type f -name '*.pyc' -delete 2>/dev/null || true
+	@echo "Clean completed."
 
 check: check-root
 	@echo "--- Checking chronyd Syntax ---"
-	@cp /usr/sbin/chronyd /tmp/chronyd_check
-	@/tmp/chronyd_check -Q -u root -f chrony/chrony.conf; status=$$?; rm -f /tmp/chronyd_check; exit $$status
-	@echo "--- Checking syslog-ng ---"
-	@if [ -f syslog-ng/mape.conf ]; then syslog-ng --syntax-only --cfgfile=syslog-ng/mape.conf; fi
+	@if [ -x /usr/sbin/chronyd ]; then \
+	    cp /usr/sbin/chronyd /tmp/chronyd_check; \
+	    /tmp/chronyd_check -Q -u root -f chrony/chrony.conf; status=$$?; rm -f /tmp/chronyd_check; [ $$status -eq 0 ] || exit $$status; \
+	fi
+	@echo "--- Checking syslog-ng Syntax ---"
+	@if command -v syslog-ng >/dev/null 2>&1 && [ -f syslog-ng/syslog-ng.conf ]; then \
+	    syslog-ng --syntax-only --cfgfile=syslog-ng/syslog-ng.conf; \
+	fi
 	@echo "--- Checking BIND Syntax ---"
-	named-checkconf bind/named.conf.local
+	@if command -v named-checkconf >/dev/null 2>&1; then \
+	    named-checkconf bind/named.conf.local; \
+	fi
 	@echo "--- Checking BIND Zone Syntax ---"
-	named-checkzone map.ocn.ad.jp bind/db.map.ocn.ad.jp
-	named-checkzone v6connect.net bind/db.v6connect.net
-	@for domain in $$(perl generator/gen_bind_configs.pl list_domains 2>/dev/null); do \
-	        if [ -f "bind/db.$$domain" ]; then \
-	                named-checkzone "$$domain" "bind/db.$$domain" || exit 1; \
+	@if command -v named-checkzone >/dev/null 2>&1; then \
+	    named-checkzone map.ocn.ad.jp bind/db.map.ocn.ad.jp; \
+	    named-checkzone v6connect.net bind/db.v6connect.net; \
+	    for domain in $$(perl generator/gen_bind_configs.pl list_domains 2>/dev/null); do \
+	        if [ -f "bind/dynamic/db.$$domain" ]; then \
+	            named-checkzone "$$domain" "bind/dynamic/db.$$domain" || exit 1; \
 	        fi; \
-	done
+	    done; \
+	fi
 	@echo "--- Checking radvd Syntax ---"
-	radvd -c -C $$(pwd)/radvd/radvd.conf
+	@if command -v radvd >/dev/null 2>&1; then \
+	    radvd -c -C $$(pwd)/radvd/radvd.conf; \
+	fi
 	@echo "--- Checking Kea DHCPv6 Config Syntax ---"
 	@KEA_BIN=$$(which kea-dhcp6 2>/dev/null || for p in /usr/sbin/kea-dhcp6 /usr/local/sbin/kea-dhcp6; do [ -x "$$p" ] && echo "$$p" && break; done); \
-	if [ -z "$$KEA_BIN" ]; then \
-	        echo "Error: kea-dhcp6 binary not found." >&2; \
-	        exit 1; \
-	fi; \
-	$$KEA_BIN -t $$(pwd)/kea-dhcp6/kea-dhcp6.conf
+	if [ -n "$$KEA_BIN" ]; then \
+	    $$KEA_BIN -t $$(pwd)/kea-dhcp6/kea-dhcp6.conf; \
+	elif command -v docker >/dev/null 2>&1; then \
+	    echo "Checking via Docker container (kea-dhcp6)..."; \
+	    docker run --rm --network host -v $$(pwd)/kea-dhcp6/kea-dhcp6.conf:/etc/kea/kea-dhcp6.conf:ro docker.cloudsmith.io/isc/docker/kea-dhcp6:2.6.1 /usr/sbin/kea-dhcp6 -t /etc/kea/kea-dhcp6.conf; \
+	else \
+	    echo "Warning: kea-dhcp6 binary or Docker not available for syntax check." >&2; \
+	fi
 
-install: check-root
-	@echo "Installing configurations to system directories..."
-	@set -a; . ./$(CONFIG_FILE); \
+install: check-root check_config
+	@echo "Installing host network and kernel routing configurations..."
+	@set -a; . ./$(SAFE_CONFIG_FILE); \
+	if [ -z "$$MAPE_IF" ]; then echo "Error: MAPE_IF is not defined in $(CONFIG_FILE)" >&2; exit 1; fi; \
+	ACTIVE_VLANS="$$SLAAC_DYN_VLANS $$PD_DYN_VLANS $$SLAAC_FIX_VLANS $$PD_FIX_VLANS $$PPPOE_VLANS"; \
+	echo "Cleaning up unused VLAN interfaces on $$MAPE_IF..."; \
+	for vif in $$(ip -o link show 2>/dev/null | awk -F': ' '{print $$2}' | cut -d@ -f1 | grep -E "^$${MAPE_IF}\.[0-9]+$$" | sort -u); do \
+	    vid="$${vif#$${MAPE_IF}.}"; \
+	    is_active=0; \
+	    for avid in $$ACTIVE_VLANS; do \
+	        if [ "$$vid" = "$$avid" ]; then \
+	            is_active=1; \
+	            break; \
+	        fi; \
+	    done; \
+	    if [ "$$is_active" -eq 0 ]; then \
+	        echo "Deleting unused VLAN interface: $$vif"; \
+	        ip link del dev "$$vif" 2>/dev/null || true; \
+	    fi; \
+	done; \
 	if [ ! -f /etc/network/interfaces ] || ! cmp -s system/interfaces /etc/network/interfaces; then \
-	        install -o root -g root -m 644 system/interfaces /etc/network/interfaces; \
-	        echo "Reloading network interfaces..."; \
-	        if command -v ifdown >/dev/null 2>&1 && command -v ifup >/dev/null 2>&1; then \
-	                ifdown -a --interfaces /etc/network/interfaces >/dev/null 2>&1 || true; \
-	                ifup -a --interfaces /etc/network/interfaces >/dev/null 2>&1 || true; \
-	        elif command -v systemctl >/dev/null 2>&1 && systemctl is-active -q networking; then \
-	                systemctl restart networking || true; \
-	        fi; \
-	fi
-	install -o root -g root -m 644 system/99-network-routing.conf /etc/sysctl.d/99-network-routing.conf
-	sysctl -p /etc/sysctl.d/99-network-routing.conf || true
-	install -o root -g root -m 644 radvd/radvd.conf /etc/radvd.conf
-	install -d -o _kea -g _kea -m 755 /etc/kea
-	install -o root -g _kea -m 644 kea-dhcp6/kea-dhcp6.conf /etc/kea/kea-dhcp6.conf
-	install -o root -g root -m 755 kea-dhcp6/kea-map-e-hook /usr/local/bin/kea-map-e-hook
-	if [ -f kea-dhcp6/kea.sudoers ]; then install -o root -g root -m 440 kea-dhcp6/kea.sudoers /etc/sudoers.d/kea; fi
-	install -d -o _kea -g _kea -m 755 /var/log/kea
-	if [ -d /etc/apparmor.d ] && [ -f apparmor/usr.sbin.kea-dhcp6 ]; then \
-	        install -o root -g root -m 644 apparmor/usr.sbin.kea-dhcp6 /etc/apparmor.d/usr.sbin.kea-dhcp6 || true; \
-	        install -o root -g root -m 644 apparmor/usr.sbin.kea-lfc /etc/apparmor.d/usr.sbin.kea-lfc || true; \
-	        if command -v apparmor_parser >/dev/null 2>&1; then \
-	                apparmor_parser -r /etc/apparmor.d/usr.sbin.kea-dhcp6 || true; \
-	                apparmor_parser -r /etc/apparmor.d/usr.sbin.kea-lfc || true; \
-	        fi; \
-	fi
-	install -o root -g bind -m 644 bind/named.conf.local /etc/bind/named.conf.local
-	install -o root -g bind -m 644 bind/db.map.ocn.ad.jp /etc/bind/db.map.ocn.ad.jp
-	install -o root -g bind -m 644 bind/db.v6connect.net /etc/bind/db.v6connect.net
-	install -d -o bind -g bind -m 775 /var/lib/bind
-	@for domain in $$(perl generator/gen_bind_configs.pl list_domains 2>/dev/null); do \
-	        if [ -f "bind/db.$$domain" ]; then \
-	                if [ ! -f "/var/lib/bind/db.$$domain" ]; then \
-	                        install -o bind -g bind -m 644 "bind/db.$$domain" "/var/lib/bind/db.$$domain"; \
-	                fi; \
-	        fi; \
-	done
-	install -o root -g root -m 644 chrony/chrony.conf /etc/chrony/chrony.conf
-	@mkdir -p /usr/local/bin
-	install -o root -g root -m 644 mape-provisioning-server/mape_calc /usr/local/bin/mape_calc.py
-	install -o _kea -g _kea -m 755 mape-provisioning-server/mape-provisioning-server /usr/local/bin/mape-provisioning-server
-	install -o root -g root -m 644 mape-provisioning-server/mape-provisioning-server.service /etc/systemd/system/mape-provisioning-server.service
-	install -o root -g root -m 755 mape-provisioning-server/mape-route-monitor /usr/local/bin/mape-route-monitor
-	install -o root -g root -m 644 mape-provisioning-server/mape-route-monitor.service /etc/systemd/system/mape-route-monitor.service
-	install -o _kea -g _kea -m 600 mape-provisioning-server/server.crt /usr/local/bin/server.crt
-	install -o _kea -g _kea -m 600 mape-provisioning-server/server.key /usr/local/bin/server.key
-	if [ -f map-e-static-ip.conf ]; then install -o root -g root -m 644 map-e-static-ip.conf /etc/map-e-static-ip.conf; fi
-	if [ -f ddns.conf ]; then install -o root -g root -m 644 ddns.conf /etc/ddns.conf; fi
-	if [ -d /etc/syslog-ng/conf.d ] && [ -f syslog-ng/mape.conf ]; then install -o root -g root -m 644 syslog-ng/mape.conf /etc/syslog-ng/conf.d/; fi
-	if [ -d /etc/logrotate.d ] && [ -f syslog-ng/mape.logrotate ]; then install -o root -g root -m 644 syslog-ng/mape.logrotate /etc/logrotate.d/mape; fi
+	    install -o root -g root -m 644 system/interfaces /etc/network/interfaces; \
+	    echo "Reloading network interfaces..."; \
+	    if command -v ifdown >/dev/null 2>&1 && command -v ifup >/dev/null 2>&1; then \
+	        ifdown -a --interfaces /etc/network/interfaces >/dev/null 2>&1 || true; \
+	        ifup -a --interfaces /etc/network/interfaces >/dev/null 2>&1 || true; \
+	    elif command -v systemctl >/dev/null 2>&1 && systemctl is-active -q networking; then \
+	        systemctl restart networking || true; \
+	    fi; \
+	fi; \
+	install -o root -g root -m 644 system/99-network-routing.conf /etc/sysctl.d/99-network-routing.conf; \
+	sysctl -p /etc/sysctl.d/99-network-routing.conf || true; \
+	if [ -x system/vrf-setup.sh ]; then \
+	    echo "Applying VRF configuration (system/vrf-setup.sh)..."; \
+	    sh system/vrf-setup.sh; \
+	fi; \
+	echo "Disabling overlapping host systemd services..."; \
+	systemctl stop bind9 radvd kea-dhcp6-server chrony syslog-ng 2>/dev/null || true; \
+	systemctl disable bind9 radvd kea-dhcp6-server chrony syslog-ng 2>/dev/null || true; \
+	if command -v docker >/dev/null 2>&1 && [ -f docker-compose.yml ]; then \
+	    echo "Building and starting containers via docker compose..."; \
+	    docker compose up -d --build; \
+	fi; \
+	echo "Successfully installed host network settings and deployed Docker containers."
 
-	@if systemctl list-unit-files | grep -q 'kea-dhcp6-server'; then \
-	        echo "Reloading services..."; \
-	        systemctl daemon-reload; \
-	        rndc reload || true; \
-	        systemctl enable radvd || true; \
-	        systemctl stop radvd || true; \
-	        systemctl start radvd || true; \
-	        systemctl restart kea-dhcp6-server || true; \
-	        systemctl restart chrony || true; \
-	        systemctl enable mape-provisioning-server.service mape-route-monitor.service 2>/dev/null || true; \
-	        systemctl restart mape-provisioning-server.service mape-route-monitor.service || true; \
-	        if command -v syslog-ng-ctl >/dev/null 2>&1; then syslog-ng-ctl reload || true; fi; \
+web-dashboard: check-user
+	@if [ ! -f docker-compose.yml ]; then $(MAKE) generate; fi
+	@echo "Starting Web Dashboard container..."
+	docker compose up -d --build web-dashboard
+	@echo "Web Dashboard is ready: http://localhost:1600/"
+
+up:
+	@if [ -f docker-compose.yml ] && command -v docker >/dev/null 2>&1; then \
+	    echo "Starting containers via docker compose..."; \
+	    docker compose up -d; \
+	else \
+	    echo "docker-compose.yml not found. Run 'make generate' first."; \
+	fi
+
+down:
+	@if [ -f docker-compose.yml ] && command -v docker >/dev/null 2>&1; then \
+	    echo "Stopping containers via docker compose..."; \
+	    docker compose down; \
+	else \
+	    echo "docker-compose.yml not found."; \
 	fi
 
 packages: check-root
-	@echo "Ensuring required packages are installed..."
+	@echo "Ensuring required verification packages are installed..."
 	@for pkg in $(REQUIRED_PACKAGES); do \
-	        if ! dpkg -s "$$pkg" >/dev/null 2>&1; then \
-	                DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$$pkg"; \
-	        fi; \
+	    if ! dpkg -s "$$pkg" >/dev/null 2>&1; then \
+	        DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null && \
+	        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$$pkg"; \
+	    fi; \
 	done
 
 archive: check-user
-	-sudo sysctl net.ipv6.conf | grep -e forwarding -e disable_ipv6 > STATUS.TXT
-	printf '\n' >> STATUS.TXT 2>&1
-	-sudo sysctl net.ipv4.ip_forward net.ipv4.conf.default.rp_filter net.ipv4.conf.all.rp_filter >> STATUS.TXT
-	for srv in radvd kea-dhcp6-server mape-provisioning-server mape-route-monitor.service ufw; do \
-	        printf "\n\$$ systemctl status $$srv\n" >> STATUS.TXT 2>&1; \
-	        sudo systemctl status $$srv >> STATUS.TXT 2>&1 || true; \
-	done
-
-	printf '\n$$ iptables -L\n' >> STATUS.TXT 2>&1; sudo iptables -L >> STATUS.TXT 2>&1 || true
-	-rm -f MAP-E.shar.0*
-	( cd .. && find $(CUR_DIR) -type f \! -path '*/.vscode*' \! -name 'server.key' \! -name 'server.crt' \! -name 'MAP-E.shar*' \! -name 'STATUS.TXT' | xargs shar -T --whole-size-limit=50 --no-md5-digest -o $(CUR_DIR)/MAP-E.shar )
-	( cd .. && find $(CUR_DIR) -type f \! -path '*/.vscode*' \! -name 'server.key' \! -name 'server.crt' \! -name 'MAP-E.shar*' \! -name 'STATUS.TXT' | xargs tar cJvf $(CUR_DIR)/MAP-E.tar.xz )
+	@echo "Collecting environment status for archive..."
+	@echo "=== System Information ===" > STATUS.TXT
+	@date '+Timestamp: %Y-%m-%d %H:%M:%S %Z' >> STATUS.TXT
+	@uname -a >> STATUS.TXT 2>&1
+	@echo "" >> STATUS.TXT
+	@echo "=== Network Forwarding & IPv6 sysctl ===" >> STATUS.TXT
+	@sysctl net.ipv6.conf.all.forwarding net.ipv6.conf.all.disable_ipv6 net.ipv4.ip_forward >> STATUS.TXT 2>&1 || true
+	@if command -v docker >/dev/null 2>&1; then \
+	    echo -e "\n=== Docker Containers ===" >> STATUS.TXT; \
+	    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" >> STATUS.TXT 2>&1 || true; \
+	fi
+	@if command -v ip >/dev/null 2>&1; then \
+	    echo -e "\n=== Network Interfaces (Brief) ===" >> STATUS.TXT; \
+	    ip -br link show >> STATUS.TXT 2>&1 || true; \
+	    echo -e "\n=== IPv4 / IPv6 Addresses (Brief) ===" >> STATUS.TXT; \
+	    ip -br addr show >> STATUS.TXT 2>&1 || true; \
+	fi
+	@if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then \
+	    echo -e "\n=== Firewall (iptables) ===" >> STATUS.TXT; \
+	    sudo iptables -L -n -v >> STATUS.TXT 2>&1 || true; \
+	fi
+	@rm -f MAP-E.shar* MAP-E.tar.xz
+	@echo "Creating source archive MAP-E.tar.xz..."
+	@( cd .. && tar \
+	    --exclude='.git' \
+	    --exclude='.vscode' \
+	    --exclude='node_modules' \
+	    --exclude='__pycache__' \
+	    --exclude='*.pyc' \
+	    --exclude='*.bak*' \
+	    --exclude='server.key' \
+	    --exclude='server.crt' \
+	    --exclude='MAP-E.shar*' \
+	    --exclude='MAP-E.tar.xz' \
+	    --exclude='STATUS.TXT' \
+	    -cJf MAP-E.tar.xz $(CUR_DIR) && mv MAP-E.tar.xz $(CUR_DIR)/ )
+	@if command -v shar >/dev/null 2>&1; then \
+	    echo "Creating shell archive MAP-E.shar..."; \
+	    ( cd .. && find $(CUR_DIR) -type f \
+	        ! -path '*/.git*' \
+	        ! -path '*/.vscode*' \
+	        ! -path '*/node_modules*' \
+	        ! -path '*/__pycache__*' \
+	        ! -name '*.bak*' \
+	        ! -name '*.pyc' \
+	        ! -name 'server.key' \
+	        ! -name 'server.crt' \
+	        ! -name 'MAP-E.shar*' \
+	        ! -name 'MAP-E.tar.xz' \
+	        ! -name 'STATUS.TXT' \
+	        -print0 | xargs -0 -r shar -T --whole-size-limit=50 --no-md5-digest -o MAP-E.shar && \
+	        for f in MAP-E.shar*; do [ -f "$$f" ] && mv "$$f" $(CUR_DIR)/; done ); \
+	fi
+	@echo "Archive completed: MAP-E.tar.xz"
 
 check-root:
 	@if [ "$$(id -u)" -ne 0 ]; then echo "Error: root権限が必要です。"; exit 1; fi

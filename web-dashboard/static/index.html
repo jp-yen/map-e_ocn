@@ -1,0 +1,1147 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ISP Emulation Management Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="/css/main.css?v=20260909_theme2">
+  <style>
+    .cs-clickable-dot {
+      cursor: pointer;
+    }
+
+    .cs-clickable-dot .status-dot {
+      cursor: pointer;
+      transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease;
+    }
+
+    .cs-clickable-dot:hover .status-dot {
+      transform: scale(1.45);
+      box-shadow: 0 0 10px rgba(16, 185, 129, 0.85);
+    }
+
+    .cs-clickable-name {
+      cursor: pointer;
+      transition: color 0.15s ease;
+    }
+
+    .cs-clickable-name:hover {
+      color: var(--accent-cyan, #06b6d4) !important;
+      text-decoration: underline;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="container">
+    <!-- Header -->
+    <header>
+      <div class="brand">
+        <div class="brand-icon">🌐</div>
+        <div>
+          <div class="brand-title">MAP-E & PPPoE ISP Emulation</div>
+          <div class="brand-subtitle">接続クライアント監視・管理ダッシュボード</div>
+        </div>
+      </div>
+      <div class="header-tools">
+        <button class="btn-tool" onclick="openWindow('/tools/ping', 'PingTool', 780, 560)">
+          <span>📡</span> Ping ツール
+        </button>
+        <button class="btn-tool" onclick="openWindow('/tools/routes', 'RouteTable', 920, 680)">
+          <span>🗺️</span> ルーティングテーブル
+        </button>
+        <button class="btn-tool" onclick="openWindow('/tools/interfaces', 'Interfaces', 960, 680)">
+          <span>🔌</span> インターフェース一覧
+        </button>
+        <button class="btn-tool" onclick="openWindow('/tools/logs', 'LogViewer', 1000, 700)">
+          <span>📜</span> ログ閲覧
+        </button>
+        <button class="btn-tool" onclick="openWindow('/tools/mape-calc', 'MapECalc', 1040, 760)"
+          title="OpenWRT向け MAP-E パラメータ計算">
+          <span>🧮</span> MAP-E 計算
+        </button>
+        <button class="btn-tool btn-config" id="headerConfigBtn"
+          onclick="openWindow('/config', 'ConfigEditor', 1100, 800)" title="環境設定の編集・反映 (独立ウィンドウ)">
+          <span>⚙️</span> 設定変更 <span id="headerConfigDot"
+            style="display:none; width:8px; height:8px; border-radius:50%; background:#f59e0b; box-shadow:0 0 8px #f59e0b; margin-left: 4px;"></span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Metrics Cards -->
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-info">
+          <h3>PPPoE セッション</h3>
+          <div class="metric-value" id="val-pppoe">-</div>
+        </div>
+        <div class="metric-icon icon-pppoe">⚡</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-info">
+          <h3>MAP-E クライアント</h3>
+          <div class="metric-value" id="val-mape">-</div>
+        </div>
+        <div class="metric-icon icon-mape">🔗</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-info">
+          <h3>総接続数</h3>
+          <div class="metric-value" id="val-total">-</div>
+        </div>
+        <div class="metric-icon icon-total">👥</div>
+      </div>
+      <!-- Container Status Card (右から2番目) -->
+      <div class="metric-card container-status-card">
+        <table class="container-status-table">
+          <tbody>
+            <tr>
+              <td class="cs-name">radvd</td>
+              <td class="cs-dots-cell" id="cs-dot-radvd"><span class="status-dot dot-ok" title="radvd"></span></td>
+              <td class="cs-name" style="padding-left:14px;">bind9</td>
+              <td class="cs-dots-cell" id="cs-dot-bind9"><span class="status-dot dot-ok" title="bind9"></span></td>
+            </tr>
+            <tr>
+              <td class="cs-name">kea-dhcp6</td>
+              <td class="cs-dots-cell" id="cs-dot-kea"><span class="status-dot dot-ok" title="kea-dhcp6"></span></td>
+              <td class="cs-name" style="padding-left:14px;">axosyslog</td>
+              <td class="cs-dots-cell" id="cs-dot-axosyslog"><span class="status-dot dot-ok" title="axosyslog"></span>
+              </td>
+            </tr>
+            <tr>
+              <td class="cs-name">provisioning-server</td>
+              <td class="cs-dots-cell" id="cs-dot-prov"><span class="status-dot dot-ok"
+                  title="provisioning-server"></span></td>
+              <td class="cs-name cs-clickable-name" style="padding-left:14px;" onclick="openNtpStatusModal()"
+                title="クリックして NTP 同期状態を表示">chrony ⏱️</td>
+              <td class="cs-dots-cell cs-clickable-dot" id="cs-dot-chrony" onclick="openNtpStatusModal()"
+                title="クリックして NTP 同期状態を表示"><span class="status-dot dot-ok" title="クリックして NTP 同期状態を表示"></span></td>
+            </tr>
+            <tr>
+              <td class="cs-name">pppoe</td>
+              <td class="cs-dots-cell" id="cs-dot-pppoe">
+                <span class="status-dot dot-ok" title="pppoe"></span>
+                <span class="status-dot dot-ok" title="pppoe"></span>
+                <span class="status-dot dot-ok" title="pppoe"></span>
+              </td>
+              <td class="cs-name" style="padding-left:14px;"></td>
+              <td class="cs-dots-cell"></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 最終更新日時 (右端・2行表示で横幅節約) -->
+      <div class="metric-card">
+        <div class="metric-info">
+          <h3>最終更新日時</h3>
+          <div class="metric-time-wrap mono">
+            <span class="time-date" id="val-time-date">-</span>
+            <span class="time-clock" id="val-time-clock">-</span>
+          </div>
+        </div>
+        <div class="metric-icon icon-time">⏱️</div>
+      </div>
+    </div>
+
+    <!-- Controls Bar -->
+    <div class="controls-bar">
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="filterInput" class="search-input" placeholder="アカウント、IPアドレス、MAC、備考で絞り込み..."
+          oninput="applyFilter()">
+      </div>
+      <label class="filter-toggle"
+        style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px; font-weight:500; user-select:none; color:var(--text-main); margin-left:12px; background:var(--bg-card); padding:6px 12px; border-radius:6px; border:1px solid var(--border-color);">
+        <input type="checkbox" id="activeOnlyToggle" onchange="applyFilter()"
+          style="cursor:pointer; accent-color:var(--accent-cyan); width:15px; height:15px;">
+        <span>接続中のみ表示</span>
+      </label>
+      <div class="refresh-info">
+        <div class="pulse-dot"></div>
+        <span>5秒ごとに自動更新中</span>
+        <button class="btn-tool" style="padding: 6px 12px; font-size: 12px;" onclick="loadData(true)">手動更新</button>
+      </div>
+    </div>
+
+    <!-- Section 1: PPPoE Clients (Top Table) -->
+    <div class="section-card">
+      <div class="section-header">
+        <div class="section-title">
+          <span>⚡ PPPoE 接続クライアント</span>
+          <span class="badge-count" id="badge-pppoe">0</span>
+        </div>
+      </div>
+      <!-- PPPoE Server Info Banner (Service Name, VLAN, Server IP) -->
+      <div class="server-info-banner" id="pppoeServerInfoBanner">
+        <div class="server-info-item">
+          <span class="server-detail" style="color:var(--text-muted);">PPPoE サーバー情報を読み込み中...</span>
+        </div>
+      </div>
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th class="sortable col-status" onclick="sortPPPoE('status')">状態 <span class="sort-indicator"
+                  id="sort-pppoe-status"></span></th>
+              <th class="sortable" onclick="sortPPPoE('username')">アカウント <span class="sort-indicator"
+                  id="sort-pppoe-username"></span></th>
+              <th class="sortable" onclick="sortPPPoE('remote_ip')">クライアントIP <span class="sort-indicator"
+                  id="sort-pppoe-remote_ip"></span></th>
+              <th class="sortable" onclick="sortPPPoE('ac_name')">サービス名 <span class="sort-indicator"
+                  id="sort-pppoe-ac_name"></span></th>
+              <th class="sortable" onclick="sortPPPoE('note')">備考 <span class="sort-indicator"
+                  id="sort-pppoe-note"></span></th>
+              <th class="sortable" onclick="sortPPPoE('connect_time')">接続開始時刻 <span class="sort-indicator"
+                  id="sort-pppoe-connect_time"></span></th>
+              <th class="sortable" onclick="sortPPPoE('uptime_sec')">接続時間 <span class="sort-indicator"
+                  id="sort-pppoe-uptime_sec"></span></th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="tbody-pppoe">
+            <tr>
+              <td colspan="8" class="empty-state">データを読み込み中...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Section 2: MAP-E Clients (Bottom Table) -->
+    <div class="section-card">
+      <div class="section-header">
+        <div class="section-title">
+          <span>🔗 MAP-E (DHCPv6-PD / SLAAC) クライアント</span>
+          <span class="badge-count" id="badge-mape">0</span>
+        </div>
+        <div>
+          <button class="btn-tool btn-accent" style="padding: 6px 12px; font-size: 12px;" onclick="openCertModal()">
+            <span>🔐</span> FortiGate オレオレ証明書
+          </button>
+        </div>
+      </div>
+      <!-- MAP-E Border Relay (BR) & IPoE VLAN Info Banner -->
+      <div class="server-info-banner" id="mapeBrInfoBanner">
+        <div class="server-info-item">
+          <span class="server-ac-badge">BORDER RELAY</span>
+          <span class="server-detail">BR IPv6 アドレス: <strong class="mono"
+              style="color:var(--badge-accent-text); font-size:12.5px;" id="brIpv6Display">-</strong></span>
+          <span class="server-detail">BR IPv4 アドレス: <strong class="mono"
+              style="color:var(--accent-cyan); font-size:12.5px;" id="brIpv4Display">-</strong></span>
+        </div>
+        <div id="mapeVlanInfoItems" style="display:flex; flex-wrap:wrap; gap:12px; width:100%;">
+          <!-- Filled dynamically: SLAAC 動的, DHCP-PD 動的, SLAAC 固定, DHCP-PD 固定 -->
+        </div>
+      </div>
+      <div class="table-container">
+        <table class="mape-client-table">
+          <thead>
+            <tr>
+              <th class="sortable col-status" onclick="sortMAPE('status')">状態 <span class="sort-indicator"
+                  id="sort-mape-status"></span></th>
+              <th class="sortable col-vlan" onclick="sortMAPE('vlan')">VLAN <span class="sort-indicator"
+                  id="sort-mape-vlan"></span></th>
+              <th class="sortable" onclick="sortMAPE('mode_display')">接続方式 <span class="sort-indicator"
+                  id="sort-mape-mode_display"></span></th>
+              <th class="sortable" onclick="sortMAPE('prefix')">委任 IPv6 プレフィックス <span class="sort-indicator"
+                  id="sort-mape-prefix"></span></th>
+              <th class="sortable" onclick="sortMAPE('ipv4')">割当 IPv4 <span class="sort-indicator"
+                  id="sort-mape-ipv4"></span></th>
+              <th class="sortable" onclick="sortMAPE('ce_ipv6')">CE IPv6 アドレス <span class="sort-indicator"
+                  id="sort-mape-ce_ipv6"></span></th>
+              <th class="sortable" onclick="sortMAPE('note')">備考 <span class="sort-indicator"
+                  id="sort-mape-note"></span></th>
+              <th class="sortable" onclick="sortMAPE('lease_start')">接続開始 <span class="sort-indicator"
+                  id="sort-mape-lease_start"></span></th>
+              <th class="sortable" onclick="sortMAPE('lease_expire')">有効期限 <span class="sort-indicator"
+                  id="sort-mape-lease_expire"></span></th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="tbody-mape">
+            <tr>
+              <td colspan="10" class="empty-state">データを読み込み中...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- NTP Status Modal (chrony) -->
+  <div class="modal-overlay" id="ntpStatusModal" style="display:none; z-index: 2000;"
+    onclick="if(event.target===this) closeNtpStatusModal()">
+    <div class="modal-box"
+      style="max-width: 760px; width: 94%; padding: 20px 24px; max-height: 90vh; overflow-y: auto;">
+      <div class="modal-header"
+        style="border-bottom: 1px solid var(--border-subtle); padding-bottom: 12px; margin-bottom: 16px;">
+        <div style="font-size: 24px;">⏱️</div>
+        <div class="modal-title" style="font-size: 18px; font-weight: 700;">NTP 同期ステータス (chrony)</div>
+        <div style="margin-left: auto; display: flex; align-items: center; gap: 8px;">
+          <span id="ntpStratumBadge" class="badge-mode"
+            style="background: rgba(16, 185, 129, 0.18); color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.4); font-weight: 700;">Stratum
+            -</span>
+          <button class="btn-tool" onclick="refreshNtpStatus()" title="最新情報に更新"
+            style="padding: 4px 10px; font-size: 12px; height: 28px;">🔄 更新</button>
+        </div>
+      </div>
+      <div class="modal-body" id="ntpStatusModalBody">
+        <div id="ntpModalLoading" style="text-align: center; padding: 30px; color: var(--text-soft);">
+          <div>同期ステータスを取得中...</div>
+        </div>
+        <div id="ntpModalContent" style="display:none;">
+          <!-- 基本ステータスカード -->
+          <div class="detail-grid"
+            style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px;">
+            <div class="detail-card">
+              <div class="detail-label">システム同期状態</div>
+              <div class="detail-value mono" id="ntpValSyncStatus" style="font-weight: 700;">-</div>
+            </div>
+            <div class="detail-card">
+              <div class="detail-label">参照元 (Ref ID)</div>
+              <div class="detail-value mono" id="ntpValRefId" style="color: var(--accent-cyan); font-weight: 600;">-
+              </div>
+            </div>
+            <div class="detail-card">
+              <div class="detail-label">最終オフセット</div>
+              <div class="detail-value mono" id="ntpValOffset" style="font-weight: 600;">-</div>
+            </div>
+            <div class="detail-card">
+              <div class="detail-label">クロック周波数</div>
+              <div class="detail-value mono" id="ntpValFreq" style="font-size: 13px;">-</div>
+            </div>
+          </div>
+
+          <!-- 上位 NTP サーバー一覧 -->
+          <div style="margin-bottom: 16px;">
+            <div
+              style="font-size: 13px; font-weight: 700; color: var(--text-strong); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
+              <span>🌐 上位 NTP サーバー (chronyc sources)</span>
+              <span style="font-size: 11px; font-weight: normal; color: var(--text-faint);">★ マスター / ＋ 候補 / ？ 未達</span>
+            </div>
+            <div
+              style="overflow-x: auto; border: 1px solid var(--border-subtle); border-radius: 6px; background: rgba(0,0,0,0.15);">
+              <table style="width: 100%; border-collapse: collapse; font-size: 12px; text-align: left;">
+                <thead>
+                  <tr
+                    style="border-bottom: 1px solid var(--border-subtle); background: rgba(255,255,255,0.02); color: var(--text-soft);">
+                    <th style="padding: 8px 10px;">状態</th>
+                    <th style="padding: 8px 10px;">サーバー / IP</th>
+                    <th style="padding: 8px 10px;">Stratum</th>
+                    <th style="padding: 8px 10px;">到達性 (Reach)</th>
+                    <th style="padding: 8px 10px;">Poll</th>
+                    <th style="padding: 8px 10px;">最終オフセット / 誤差</th>
+                  </tr>
+                </thead>
+                <tbody id="ntpSourcesTableBody">
+                  <!-- filled dynamically -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 詳細ログ生データ (アコーディオン) -->
+          <details
+            style="border: 1px solid var(--border-subtle); border-radius: 6px; background: rgba(0,0,0,0.2); padding: 8px 12px;">
+            <summary style="cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text-soft);">
+              コマンド実行生データ (chronyc tracking / clients)
+            </summary>
+            <div style="margin-top: 10px;">
+              <div style="font-size: 11px; color: var(--text-faint); margin-bottom: 4px;">chronyc tracking:</div>
+              <pre id="ntpRawTracking" class="mono"
+                style="background: rgba(0,0,0,0.4); padding: 8px; border-radius: 4px; font-size: 11px; overflow-x: auto; max-height: 140px; color: var(--text-soft); margin-bottom: 8px;"></pre>
+              <div style="font-size: 11px; color: var(--text-faint); margin-bottom: 4px;">chronyc clients (直近アクセス端末):
+              </div>
+              <pre id="ntpRawClients" class="mono"
+                style="background: rgba(0,0,0,0.4); padding: 8px; border-radius: 4px; font-size: 11px; overflow-x: auto; max-height: 100px; color: var(--text-soft);"></pre>
+            </div>
+          </details>
+        </div>
+      </div>
+      <div class="modal-footer"
+        style="margin-top: 16px; border-top: 1px solid var(--border-subtle); padding-top: 12px;">
+        <button class="btn-cancel" onclick="closeNtpStatusModal()">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Client Detail Modal -->
+  <div class="modal-overlay" id="clientDetailModal" style="display:none;"
+    onclick="if(event.target===this) closeClientDetailModal()">
+    <div class="modal-box" style="max-width: 680px; width: 94%; padding: 18px 20px;">
+      <div class="modal-header">
+        <div id="detailModalIcon" style="font-size: 22px;">🔍</div>
+        <div class="modal-title" id="detailModalTitle">クライアント詳細情報</div>
+        <div style="margin-left: auto; display: flex; align-items: center; gap: 6px;">
+          <span id="detailModalVrfBadge" class="badge-mode"
+            style="display:none; background:rgba(245,158,11,0.18); color:var(--accent-amber); border-color:rgba(245,158,11,0.4); font-weight:700;">🔒
+            閉域 VRF</span>
+          <span id="detailModalModeBadge" class="badge-mode">方式</span>
+        </div>
+      </div>
+      <div class="modal-body" id="detailModalBody" style="margin-bottom: 16px;">
+        <!-- Filled dynamically -->
+      </div>
+      <div class="modal-footer" id="detailModalFooter">
+        <button class="btn-cancel" onclick="closeClientDetailModal()">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- RustScan Port Scan Modal -->
+  <div class="modal-overlay" id="rustscanModal" style="display:none;"
+    onclick="if(event.target===this) closeRustScanModal()">
+    <div class="modal-box" style="max-width: 840px; width: 94%; padding: 18px 20px;">
+      <div class="modal-header" style="align-items:flex-start;">
+        <div
+          style="width:36px; height:36px; border-radius:10px; background:rgba(249,115,22,0.2); color:#f97316; display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0;">
+          ⚡
+        </div>
+        <div>
+          <div class="modal-title" style="display:flex; align-items:center; gap:8px;">
+            <span>全ポートスキャン (RustScan)</span>
+          </div>
+          <div style="font-size:12px; color:var(--text-muted); margin-top:2px;">
+            ターゲット: <span id="rustscanTargetIp" class="mono" style="color:var(--accent-cyan); font-weight:600;">-</span>
+          </div>
+        </div>
+        <div style="margin-left: auto; display: flex; align-items: center; gap: 6px; flex-shrink:0;">
+          <span id="rustscanVrfBadge" class="badge-mode"
+            style="background:rgba(245,158,11,0.18); color:var(--accent-amber); border-color:rgba(245,158,11,0.4); font-weight:700;">Global</span>
+          <span id="rustscanStatusBadge" class="status-badge badge-active"><span class="pulse-dot"
+              style="width:6px;height:6px;"></span> 待機中</span>
+        </div>
+      </div>
+      <div class="modal-body" style="margin-bottom: 16px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <span style="font-size:12px; color:var(--text-soft);">実行コマンド: <code class="mono" id="rustscanCmdText"
+              style="color:var(--accent-amber); font-size:11px;">rustscan --accessible --no-banner -a &lt;IP&gt; -r 1-65535 -t 1000 -- -sV -Pn</code></span>
+          <button class="btn-cancel" style="padding:3px 8px; font-size:11px;"
+            onclick="copyRustScanOutput()">結果をコピー</button>
+        </div>
+        <pre id="rustscanOutput" class="mono"
+          style="background:#090d16; border:1px solid var(--border-subtle); border-radius:6px; padding:12px; font-size:12px; color:#e2e8f0; line-height:1.5; height:360px; overflow-y:auto; white-space:pre-wrap; word-break:break-all;"></pre>
+      </div>
+      <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="font-size:11px; color:var(--text-faint);">※ 全 65,535 ポートを高速走査し、検出されたオープンポートの詳細サービスを自動特定します。</div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn-cancel" id="rustscanStopBtn" onclick="stopRustScan()">スキャン停止</button>
+          <button class="btn-cancel" onclick="closeRustScanModal()">閉じる</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Disconnect Confirmation Modal -->
+  <div class="modal-overlay" id="disconnectModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-icon-warn">⚠️</div>
+        <div class="modal-title">クライアント強制切断の確認</div>
+      </div>
+      <div class="modal-body" id="modalMessage">
+        このセッションを強制切断しますか？
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" onclick="closeModal()">キャンセル</button>
+        <button class="btn-confirm-danger" id="modalConfirmBtn">切断を実行</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- FortiGate Certificate Import Modal -->
+  <div class="modal-overlay" id="certModal" style="display:none;">
+    <div class="modal-box" style="max-width: 680px; width: 90%;">
+      <div class="modal-header">
+        <div
+          style="width:36px; height:36px; border-radius:10px; background:rgba(99,102,241,0.2); color:var(--badge-accent-text); display:flex; align-items:center; justify-content:center; font-size:18px;">
+          🔐</div>
+        <div class="modal-title">FortiGate (FortiOS) オレオレ証明書インポートコマンド</div>
+      </div>
+      <div class="modal-body" style="font-size:13px; color:var(--text-soft); line-height:1.6;">
+        <p style="margin-bottom: 12px;">
+          FortiGate が MAP-E プロビジョニングサーバー (HTTPS) と通信するために必要な<strong>オレオレ証明書（検証用・有効期限1か月）</strong>のインポート用 CLI
+          コマンドです。FortiGate のコンソールへ貼り付けて実行してください。
+        </p>
+
+        <!-- Command Block 1: Certificate Import -->
+        <div style="margin-bottom: 16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <span style="font-weight:600; color:var(--badge-accent-text);">1. オレオレ証明書インポートコマンド (有効期限: 1か月)</span>
+            <button class="btn-copy-code" id="btnCopyCert" onclick="copyCertCommand()">📋 コピー</button>
+          </div>
+          <pre id="certCommandBox"
+            style="background:var(--bg-input); border:1px solid var(--border-color); border-radius:8px; padding:12px; font-family:'JetBrains Mono', Consolas, monospace; font-size:11px; color:var(--accent-cyan); max-height:160px; overflow-y:auto; white-space:pre-wrap; word-break:break-all;">読み込み中...</pre>
+        </div>
+
+        <!-- Command Block 2: Cache Refresh & Trigger -->
+        <div>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <span style="font-weight:600; color:var(--accent-emerald);">2. キャッシュクリア＆即時再プロビジョニング</span>
+            <button class="btn-copy-code" id="btnCopyRefresh" onclick="copyRefreshCommand()">📋 コピー</button>
+          </div>
+          <pre id="refreshCommandBox"
+            style="background:var(--bg-input); border:1px solid var(--border-color); border-radius:8px; padding:12px; font-family:'JetBrains Mono', Consolas, monospace; font-size:11px; color:var(--accent-emerald); white-space:pre-wrap; word-break:break-all;">config system vne-interface
+    edit "vne.wan1"
+        unset bmr-hostname
+    next
+end
+diagnose test application vned 99</pre>
+        </div>
+
+        <div
+          style="margin-top:14px; padding:10px; background:var(--bg-overlay); border-radius:8px; font-size:12px; color:var(--text-muted);">
+          💡 <strong>状態確認コマンド:</strong> <code>diagnose test application vned 1</code> で
+          <code>Map-e rule client: state=succeed reply_code=200</code> および <code>link=1</code> となればトンネル確立完了です。
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" onclick="closeCertModal()">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Config Editor Modal -->
+  <div class="modal-overlay" id="configModal" style="display:none;"
+    onclick="if(event.target===this) closeConfigModal()">
+    <div class="config-modal-box">
+      <!-- Config Header Bar -->
+      <div class="config-header-bar">
+        <div class="config-header-left">
+          <button class="btn-config-discard" id="btnConfigDiscard" style="display:none;"
+            onclick="promptDiscardConfig()">
+            <span>↺</span> 現在の設定へ戻す
+          </button>
+          <button class="btn-config-discard" id="btnConfigReset" onclick="promptResetConfig()"
+            title="テンプレートから設定を初期化（管理LAN設定は維持）">
+            <span>🔄</span> 設定を初期化
+          </button>
+          <button class="btn-config-discard btn-config-neutral" id="btnContainersRestart"
+            onclick="promptRestartContainers()" title="ネットワーク設定を再適用して Web ダッシュボード以外のコンテナを再起動">
+            <span>⟳</span> コンテナを再起動
+          </button>
+        </div>
+        <div class="config-header-center">
+          <div
+            style="font-size: 16px; font-weight: 700; color: var(--text-strong); display:flex; align-items:center; gap:8px;">
+            <span>⚙️</span> 環境設定 (Config Editor)
+          </div>
+          <span id="configSyncBadge" class="config-sync-badge synced">● 稼働設定と同期中</span>
+        </div>
+        <div class="config-header-right">
+          <button class="btn-config-apply" id="btnConfigApply" onclick="promptApplyConfig()">
+            <span>🚀</span> 設定を反映する
+          </button>
+          <button class="btn-cancel" style="padding: 7px 12px; font-size: 13px;" onclick="closeConfigModal()">✕</button>
+        </div>
+      </div>
+
+      <!-- Config Tabs Navigation -->
+      <div class="config-tabs-nav">
+        <button class="config-tab-btn active" onclick="switchConfigTab(1)">
+          <span>1️⃣</span> VLAN
+        </button>
+        <button class="config-tab-btn" onclick="switchConfigTab(2)">
+          <span>2️⃣</span> PPPoE 設定
+        </button>
+        <button class="config-tab-btn" onclick="switchConfigTab(3)">
+          <span>3️⃣</span> IPoE (MAP-E) 共通
+        </button>
+        <button class="config-tab-btn" onclick="switchConfigTab(4)">
+          <span>4️⃣</span> MAP-E (SLAAC)
+        </button>
+        <button class="config-tab-btn" onclick="switchConfigTab(5)">
+          <span>5️⃣</span> MAP-E (DHCP-PD)
+        </button>
+        <button class="config-tab-btn" onclick="switchConfigTab(6)">
+          <span>6️⃣</span> 外観
+        </button>
+      </div>
+
+      <!-- Config Tab Content Panels -->
+      <div class="config-modal-content">
+        <!-- Panel 1: Low Layer -->
+        <div class="config-tab-panel active" id="configPanel1">
+          <!-- Outbound NAT Toggle Card -->
+          <div class="config-toggle-card" style="margin-bottom: 24px;">
+            <div class="config-toggle-info">
+              <div class="config-toggle-title">
+                <span>🌐</span> 外部接続 Central NAT (NAT_ENABLED)
+              </div>
+              <div class="config-toggle-desc">
+                MAP-E (mpe-common) および PPPoE クライアントからの IPv4 トラフィックを、管理インターフェース (MGT_IF) 経由で外部ネットワークへ NAT (MASQUERADE)
+                接続します。
+              </div>
+            </div>
+            <label class="ui-toggle-switch">
+              <input type="checkbox" id="cfg_NAT_ENABLED" onchange="onConfigInputChanged()">
+              <span class="ui-toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="config-section-title"><span>🌐</span> 接続方式別 VLAN 番号設定</div>
+          <div class="config-section-desc">
+            接続を有効にする VLAN 番号を指定します。スペース区切りで複数指定可能です。<br>
+            <strong style="color:var(--accent-amber);">※ 不要な方式は空欄（省略）にすることで、関連するサーバーコンテナの起動を抑止できます。</strong>
+          </div>
+
+          <div class="config-grid-2">
+            <div class="config-form-group">
+              <label class="config-label">① SLAAC 動的 VLAN (SLAAC_DYN_VLANS)</label>
+              <input type="text" class="config-input" id="cfg_SLAAC_DYN_VLANS" placeholder="例: 841 842 843 844"
+                oninput="onConfigInputChanged()">
+              <div class="config-hint">ひかり電話なし動的 IPv4 (SLAAC WAN)</div>
+            </div>
+            <div class="config-form-group">
+              <label class="config-label">② DHCP-PD 動的 VLAN (PD_DYN_VLANS)</label>
+              <input type="text" class="config-input" id="cfg_PD_DYN_VLANS" placeholder="例: 845 846 947 948"
+                oninput="onConfigInputChanged()">
+              <div class="config-hint">ひかり電話あり動的 IPv4 (DHCPv6-PD)</div>
+            </div>
+            <div class="config-form-group">
+              <label class="config-label">③ SLAAC 固定IP VLAN (SLAAC_FIX_VLANS)</label>
+              <input type="text" class="config-input" id="cfg_SLAAC_FIX_VLANS" placeholder="例: 849"
+                oninput="onConfigInputChanged()">
+              <div class="config-hint">ひかり電話なし固定 IPv4 (SLAAC固定)</div>
+            </div>
+            <div class="config-form-group">
+              <label class="config-label">④ DHCP-PD 固定IP VLAN (PD_FIX_VLANS)</label>
+              <input type="text" class="config-input" id="cfg_PD_FIX_VLANS" placeholder="例: 850"
+                oninput="onConfigInputChanged()">
+              <div class="config-hint">ひかり電話あり固定 IPv4 (DHCPv6-PD固定)</div>
+            </div>
+            <div class="config-form-group" style="grid-column: 1 / -1;">
+              <label class="config-label">PPPoE 収容 VLAN (PPPOE_VLANS)</label>
+              <input type="text" class="config-input" id="cfg_PPPOE_VLANS" placeholder="例: 811"
+                oninput="onConfigInputChanged()">
+              <div class="config-hint">PPPoE 専用の収容 VLAN 番号（MAP-E 用の VLAN は自動的に合算されます）</div>
+            </div>
+          </div>
+
+          <!-- Accordion 1: Advanced Low Layer -->
+          <div class="config-accordion" id="acc_lowlayer">
+            <div class="config-accordion-header" onclick="toggleAccordion('acc_lowlayer')">
+              <span>🔧 拡張設定（管理用ネットワーク・物理IF・ベースIP）</span>
+              <span class="config-accordion-icon">▶</span>
+            </div>
+            <div class="config-accordion-body">
+              <div class="config-grid-2">
+                <div class="config-form-group">
+                  <label class="config-label">WAN 物理インターフェース名 (MAPE_IF)</label>
+                  <input type="text" class="config-input" id="cfg_MAPE_IF" placeholder="eth1"
+                    oninput="onConfigInputChanged()">
+                  <div class="config-hint">各 VLAN サブインターフェースの親となる物理NIC</div>
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">管理用 IF (MGT_IF)</label>
+                  <input type="text" class="config-input" id="cfg_MGT_IF" placeholder="eth0"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">管理用 IP (MGT_IP)</label>
+                  <input type="text" class="config-input" id="cfg_MGT_IP" placeholder="192.168.0.10/24"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">管理用 デフォルトGW (MGT_GW)</label>
+                  <input type="text" class="config-input" id="cfg_MGT_GW" placeholder="192.168.0.1"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">ダッシュボード ポート (WEB_DASHBOARD_PORT)</label>
+                  <input type="text" class="config-input" id="cfg_WEB_DASHBOARD_PORT" placeholder="1600"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">上位 DNS (SYSTEM_DNS)</label>
+                  <input type="text" class="config-input" id="cfg_SYSTEM_DNS" placeholder="192.0.2.1"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">上位 NTP (SYSTEM_NTP)</label>
+                  <input type="text" class="config-input" id="cfg_SYSTEM_NTP" placeholder="ntp.example.com 172.31.100.1"
+                    oninput="onConfigInputChanged()">
+                  <div class="config-hint">スペース区切りで複数指定。chrony.conf の server 行に反映されます。</div>
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">ドメイン名 (DOMAIN)</label>
+                  <input type="text" class="config-input" id="cfg_DOMAIN" placeholder="example.com"
+                    oninput="onConfigInputChanged()">
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Panel 2: PPPoE -->
+        <div class="config-tab-panel" id="configPanel2">
+          <div class="config-section-title"><span>⚡</span> PPPoE サーバー & クライアント認証設定</div>
+          <div class="config-section-desc">
+            サービス（インスタンス）ごとに提供する収容 VLAN、接続を許可するクライアント認証アカウントや固定IP/サブネット委任を設定します。
+          </div>
+
+          <!-- PPPoE Services Section -->
+          <div
+            style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+            <div style="font-weight:600; color:var(--text-strong); font-size:13.5px;">1. PPPoE サービス定義</div>
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <button type="button" class="btn-add-row" style="padding:4px 10px; font-size:11.5px;"
+                onclick="addPPPoEServerRow()">＋ サービス追加</button>
+            </div>
+          </div>
+          <div class="config-hint" style="margin-bottom:8px;">
+            ※ 接続を受け付ける PPPoE サービス名（半角英数字/_- 最大11文字）と閉域 VRF の有効/無効を定義します。PPPoE はすべての回線 VLAN で共通して提供され、サーバー IP
+            はセッションごとに動的に割り当てられます。
+          </div>
+
+          <div class="table-editor-container" style="overflow-x: auto; width: fit-content; max-width: 100%;">
+            <table class="table-editor" style="min-width: unset; width: auto;">
+              <thead>
+                <tr>
+                  <th class="config-sortable" style="min-width: 220px;" onclick="sortConfigTable('pppoeSrv','name')">
+                    サービス名 <small style="color:var(--text-muted);">(最大11文字)</small> <span class="config-sort-indicator"
+                      id="srvInd-name"></span></th>
+                  <th style="text-align:center; padding: 6px 20px;" title="同一サービス内クライアント同士のみ通信可能にする（Linux VRF による閉域分離）">
+                    閉域 VRF</th>
+                  <th style="text-align:center; padding: 6px 16px;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="cfg_pppoe_servers_tbody">
+                <!-- Filled dynamically -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- PPPoE Users Section -->
+          <div
+            style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+            <div style="font-weight:600; color:var(--text-strong); font-size:13.5px;">2. PPPoE クライアント登録</div>
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <button type="button" class="btn-primary" id="btn_pppoe_csv_toggle" onclick="togglePPPoEUserEditMode()"
+                style="padding:4px 10px; font-size:12px; background:linear-gradient(135deg, #0284c7, #0369a1); border:none; border-radius:4px; color:#fff; cursor:pointer; font-weight:600; display:flex; align-items:center; gap:4px;">
+                <span id="btn_pppoe_csv_toggle_text">📝 CSV編集モード</span>
+              </button>
+              <button type="button" class="btn-add-row" id="btn_pppoe_add_user" onclick="addPPPoEUserRow()">＋
+                ユーザー追加</button>
+            </div>
+          </div>
+
+          <!-- Table View Container -->
+          <div id="cfg_pppoe_users_table_container" class="table-editor-container">
+            <table class="table-editor">
+              <thead>
+                <tr>
+                  <th style="width: 18%;" class="config-sortable" onclick="sortConfigTable('pppoeUsr','username')">ユーザー名
+                    <span class="config-sort-indicator" id="usrInd-username"></span></th>
+                  <th style="width: 10%;" class="config-sortable" onclick="sortConfigTable('pppoeUsr','password')">パスワード
+                    <span class="config-sort-indicator" id="usrInd-password"></span></th>
+                  <th style="width: 14%;" class="config-sortable" onclick="sortConfigTable('pppoeUsr','ip')">割当 IP /
+                    サブネット <span class="config-sort-indicator" id="usrInd-ip"></span></th>
+                  <th style="width: 13%;" class="config-sortable" onclick="sortConfigTable('pppoeUsr','service_name')">
+                    サービス名 <span class="config-sort-indicator" id="usrInd-service_name"></span></th>
+                  <th style="width: 17%;" class="config-sortable" onclick="sortConfigTable('pppoeUsr','ddns_v4')">IPv4
+                    DDNS ホスト名 <span class="config-sort-indicator" id="usrInd-ddns_v4"></span></th>
+                  <th style="width: 22%;" class="config-sortable" onclick="sortConfigTable('pppoeUsr','note')">備考 <span
+                      class="config-sort-indicator" id="usrInd-note"></span></th>
+                  <th style="width: 6%; min-width: 52px; text-align:center;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="cfg_pppoe_users_tbody">
+                <!-- Filled dynamically -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- CSV Direct Edit Container (Hidden by default) -->
+          <div id="cfg_pppoe_users_csv_container" style="display:none; margin-top:8px;">
+            <div class="config-help-box">
+              <div style="font-size:12px; color:var(--text-muted); line-height:1.5;">
+                💡 <strong style="color:var(--text-strong);">書式:</strong> <code
+                  class="config-code-sample">ユーザー名, パスワード, 割当IP, サービス名, DDNSホスト名(任意), 備考(任意)</code><br>
+                <span style="font-size:11.5px; color:var(--text-faint);">※
+                  カンマ(CSV)、タブ(Excelからの貼り付け)、半角スペース区切りのいずれも自動認識します。行頭
+                  <code>#</code> や空行はコメントとして扱われます。サービス名未指定時は <code>*</code> となります。</span>
+              </div>
+            </div>
+            <textarea id="cfg_pppoe_users_csv_textarea" class="pppoe-csv-textarea" spellcheck="false"
+              placeholder="# ユーザー名, パスワード, 割当IP, サービス名, DDNSホスト名, 備考&#10;client01@example.jp, pass1234, 192.168.10.1/32, Service_A, , サンプル拠点1_VPN&#10;client02@example.jp, pass5678, 192.168.10.2/32, Service_B, , サンプル拠点2_VPN"
+              oninput="onPPPoECSVInputChanged()"></textarea>
+          </div>
+          <div class="config-hint" style="margin-top: 6px; line-height: 1.6;">
+            ※固定IP8&nbsp;&nbsp;= /29<br>
+            　固定IP16 = /28
+          </div>
+
+          <!-- PPPoE Advanced Settings Accordion -->
+          <div class="config-accordion" id="acc_pppoe_advanced" style="margin-top: 18px;">
+            <div class="config-accordion-header" onclick="toggleAccordion('acc_pppoe_advanced')">
+              <span>🔧 詳細設定（サーバー IP / IP プール）</span>
+              <span class="config-accordion-icon">▶</span>
+            </div>
+            <div class="config-accordion-body">
+              <div class="config-grid-2">
+                <div class="config-form-group">
+                  <label class="config-label">PPPoE サーバー起点 IP (PPPOE_SERVER_BASE_IP)</label>
+                  <input type="text" class="config-input" id="cfg_PPPOE_SERVER_BASE_IP" placeholder="203.0.113.0"
+                    oninput="onConfigInputChanged()">
+                  <div class="config-hint">サーバーローカルIP自動採番時のベースアドレス</div>
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label" style="color:var(--accent-cyan);">PPPoE IP プール (PPPOE_IP_POOL)</label>
+                  <input type="text" class="config-input" id="cfg_PPPOE_IP_POOL"
+                    placeholder="例: 10.9.0.0/24 (空欄でプール払い出しなし)"
+                    oninput="onConfigInputChanged(); validatePPPoEIPPool(this);">
+                  <div class="config-hint">
+                    固定IPを指定しないユーザー（IP欄を <code>*</code> または空欄に設定）へ払い出す IP プール（CIDR 形式）。<br>
+                    空欄の場合はプール払い出しが無効となり、全ユーザーに固定IPが必要になります。
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Panel 3: IPoE Common -->
+        <div class="config-tab-panel" id="configPanel3">
+          <div class="config-section-title"><span>🔗</span> IPoE (MAP-E) 共通パラメータ設定</div>
+          <div class="config-section-desc">
+            Border Relay (BR) およびプロビジョニングサーバーで共通して使用する IPv4/IPv6 パラメータと固定IP・端末備考・DDNS設定です。
+          </div>
+
+          <div class="config-form-group" style="max-width: 500px;">
+            <label class="config-label" style="font-size:13px; color:var(--accent-cyan);">動的 IPv4 払い出しプール
+              (BR_IPV4_POOL)</label>
+            <input type="text" class="config-input" id="cfg_BR_IPV4_POOL" placeholder="198.51.0.0/16"
+              style="font-size:14px; font-weight:600;" oninput="onConfigInputChanged()">
+            <div class="config-hint">動的クライアント（SLAAC動的 / DHCP-PD動的）へ払い出す IPv4 プール（CIDR表記）</div>
+          </div>
+
+          <!-- Static IP & Note Section -->
+          <div class="info-card-blue" style="margin-top: 20px; margin-bottom: 12px;">
+            <div style="font-weight:700; margin-bottom:4px; font-size:13.5px;">💡 固定IP・端末備考および DDNS（ホスト名）の登録について</div>
+            ・<strong>固定 IP を割り当てる場合</strong>: MAC アドレスと 固定 IPv4 アドレス（例: <code>198.51.100.1/32</code>）を入力します。<br>
+            ・<strong>動的 IP のまま備考や DDNS を登録する場合</strong>: 固定 IPv4 アドレスを<strong>空欄</strong>のまま入力してください（動的IP扱いとなります）。<br>
+            ・<strong>DDNS ホスト名</strong>: DNS に自動登録するホスト名（例: <code>cebox1.example.com</code>）を入力します（空欄可）。
+          </div>
+
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <div style="font-weight:600; color:var(--text-strong); font-size:13.5px;">IPoE クライアント登録</div>
+            <button class="btn-add-row" onclick="addStaticIPRow('ipoe')">＋ 端末追加</button>
+          </div>
+
+          <div class="table-editor-container" style="margin-bottom: 8px;">
+            <table class="table-editor">
+              <thead>
+                <tr>
+                  <th style="width: 16%;" class="config-sortable" onclick="sortConfigTable('ipoeStatic','mac')">端末 MAC
+                    アドレス <span class="config-sort-indicator" id="staticInd-mac"></span></th>
+                  <th style="width: 16%;" class="config-sortable" onclick="sortConfigTable('ipoeStatic','ip')">固定 IPv4
+                    (空欄で動的) <span class="config-sort-indicator" id="staticInd-ip"></span></th>
+                  <th style="width: 18%;" class="config-sortable" onclick="sortConfigTable('ipoeStatic','ddns_v6')">IPv6
+                    DDNS ホスト名 (FQDN) <span class="config-sort-indicator" id="staticInd-ddns_v6"></span></th>
+                  <th style="width: 18%;" class="config-sortable" onclick="sortConfigTable('ipoeStatic','ddns_v4')">IPv4
+                    DDNS ホスト名 (FQDN) <span class="config-sort-indicator" id="staticInd-ddns_v4"></span></th>
+                  <th style="width: 26%;" class="config-sortable" onclick="sortConfigTable('ipoeStatic','note')">備考
+                    (Note) <span class="config-sort-indicator" id="staticInd-note"></span></th>
+                  <th style="width: 6%; min-width: 52px; text-align:center;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="cfg_ipoe_static_tbody">
+                <!-- Filled dynamically -->
+              </tbody>
+            </table>
+          </div>
+          <div class="config-hint" style="margin-bottom: 20px; line-height: 1.6;">
+            ※固定IP8&nbsp;&nbsp;= /29<br>
+            　固定IP16 = /28
+          </div>
+
+          <!-- Accordion 3: Advanced IPoE -->
+          <div class="config-accordion" id="acc_ipoe">
+            <div class="config-accordion-header" onclick="toggleAccordion('acc_ipoe')">
+              <span>🔧 拡張設定（基幹 IPv6 サブネット・BR 固有設定・プロビジョニング）</span>
+              <span class="config-accordion-icon">▶</span>
+            </div>
+            <div class="config-accordion-body">
+              <div class="config-grid-2">
+                <div class="config-form-group">
+                  <label class="config-label">基幹 IPv6 プレフィックス (BASE_SUBNET)</label>
+                  <input type="text" class="config-input" id="cfg_BASE_SUBNET" placeholder="2001:db8"
+                    oninput="onConfigInputChanged()">
+                  <div class="config-hint">末尾にコロンを含めない基幹 /32 等のプレフィックス</div>
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">BR IPv6 プレフィックス (BR_PREFIX)</label>
+                  <input type="text" class="config-input" id="cfg_BR_PREFIX" placeholder="${BASE_SUBNET}:1"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">BR IPv4 アドレス (BR_IPV4_ADDR)</label>
+                  <input type="text" class="config-input" id="cfg_BR_IPV4_ADDR" placeholder="192.0.2.1"
+                    oninput="onConfigInputChanged()">
+                  <div class="config-hint">BR の Interface ID に埋め込まれる IPv4</div>
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">BR 仮想 IF / プロビジョニング IF</label>
+                  <div style="display:flex; gap:8px;">
+                    <input type="text" class="config-input" id="cfg_BR_IF" placeholder="dummy0" style="width:50%;"
+                      oninput="onConfigInputChanged()">
+                    <input type="text" class="config-input" id="cfg_PROV_IF" placeholder="dummy1" style="width:50%;"
+                      oninput="onConfigInputChanged()">
+                  </div>
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">プロビジョニング ドメイン (MAPE_DOMAIN_SEARCH)</label>
+                  <input type="text" class="config-input" id="cfg_MAPE_DOMAIN_SEARCH" placeholder="map.ocn.ad.jp"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">プロビジョニング プレフィックス (MAPE_PROV_PREFIX)</label>
+                  <input type="text" class="config-input" id="cfg_MAPE_PROV_PREFIX" placeholder="${BASE_SUBNET}:9999"
+                    oninput="onConfigInputChanged()">
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Panel 4: SLAAC -->
+        <div class="config-tab-panel" id="configPanel4">
+          <div class="config-section-title"><span>📡</span> MAP-E (SLAAC) 設定</div>
+
+          <!-- Dynamic Info Card -->
+          <div class="info-card-blue" style="margin-bottom: 16px;">
+            <div style="font-weight:700; margin-bottom:4px; font-size:13.5px;">ℹ️ SLAAC 動的 IP について（個別設定不要）</div>
+            CE（端末ルーター）は radvd が広告する IPv6 プレフィックスから自律的に IPv6 アドレスを生成します。<br>
+            プロビジョニングサーバーが <code>BR_IPV4_POOL</code> と CE IPv6 アドレスから機械的に IPv4 アドレスと PSID
+            を自動算出するため、<strong>端末ごとの事前個別設定は一切不要</strong>です。<br>
+            ※ 固定 IP や端末備考の登録は「<strong>3️⃣ IPoE (MAP-E) 共通</strong>」タブで行えます。
+          </div>
+
+          <!-- Accordion 4: SLAAC Advanced -->
+          <div class="config-accordion" id="acc_slaac">
+            <div class="config-accordion-header" onclick="toggleAccordion('acc_slaac')">
+              <span>🔧 拡張設定（SLAAC IPv6 プレフィックス計算用パラメータ）</span>
+              <span class="config-accordion-icon">▶</span>
+            </div>
+            <div class="config-accordion-body">
+              <div class="config-grid-2">
+                <div class="config-form-group">
+                  <label class="config-label">SLAAC 動的 ベース (SLAAC_BR_BASE)</label>
+                  <input type="text" class="config-input" id="cfg_SLAAC_BR_BASE" placeholder="1000"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">SLAAC 動的 サフィックス (SLAAC_BR_SUFFIX)</label>
+                  <input type="text" class="config-input" id="cfg_SLAAC_BR_SUFFIX" placeholder="::ff0a"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">SLAAC 固定 ベース (SLAAC_FIX_BR_PREFIX)</label>
+                  <input type="text" class="config-input" id="cfg_SLAAC_FIX_BR_PREFIX" placeholder="3000"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">SLAAC 固定 サフィックス (SLAAC_FIX_BR_SUFFIX)</label>
+                  <input type="text" class="config-input" id="cfg_SLAAC_FIX_BR_SUFFIX" placeholder="::ff0d"
+                    oninput="onConfigInputChanged()">
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Panel 5: DHCP-PD -->
+        <div class="config-tab-panel" id="configPanel5">
+          <div class="config-section-title"><span>📦</span> MAP-E (DHCP-PD) 設定</div>
+
+          <!-- Dynamic Info Card -->
+          <div class="info-card-blue" style="margin-bottom: 16px;">
+            <div style="font-weight:700; margin-bottom:4px; font-size:13.5px;">ℹ️ DHCP-PD 動的 IP について（個別設定不要）</div>
+            CE（端末ルーター）が DHCPv6-PD リクエストを送信すると、Kea DHCPv6 のプレフィックスプール（<code>PD_POOL</code>）から空きプレフィックス（/56）が動的に貸し出され、IPv4
+            と PSID が自動算出されます。<br>
+            そのため、<strong>端末ごとの事前個別設定は一切不要</strong>です。<br>
+            ※ 固定 IP や端末備考の登録は「<strong>3️⃣ IPoE (MAP-E) 共通</strong>」タブで行えます。
+          </div>
+
+          <!-- Accordion 5: DHCP-PD Advanced -->
+          <div class="config-accordion" id="acc_dhcppd">
+            <div class="config-accordion-header" onclick="toggleAccordion('acc_dhcppd')">
+              <span>🔧 拡張設定（Kea DHCP-PD プレフィックスプール）</span>
+              <span class="config-accordion-icon">▶</span>
+            </div>
+            <div class="config-accordion-body">
+              <div class="config-grid-2">
+                <div class="config-form-group">
+                  <label class="config-label">動的 プレフィックスプール (PD_POOL)</label>
+                  <input type="text" class="config-input" id="cfg_PD_POOL" placeholder="2000"
+                    oninput="onConfigInputChanged()">
+                  <div class="config-hint">動的 PD クライアントへ貸し出す /56 プール帯（第3ヘクステット）</div>
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">固定 プレフィックスプール (PD_FIX_POOL)</label>
+                  <input type="text" class="config-input" id="cfg_PD_FIX_POOL" placeholder="4000"
+                    oninput="onConfigInputChanged()">
+                  <div class="config-hint">固定 PD クライアント用プール帯（第3ヘクステット）</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Panel 6: Appearance / Theme -->
+        <div class="config-tab-panel" id="configPanel6">
+          <div class="config-section-title"><span>🎨</span> テーマ</div>
+
+          <div class="theme-picker-card">
+            <div class="theme-picker-card-head">
+              <span class="theme-picker-title">カラーパレット選択</span>
+            </div>
+            <div class="config-grid-2">
+              <div class="config-form-group">
+                <label class="config-label" for="themeSelect">配色テーマ (カラーパレット)</label>
+                <select id="themeSelect" class="theme-select" onchange="onThemeSelectChanged()"></select>
+                <div class="config-hint">ダークテーマ / ライトテーマの 65 種類から選択できます。</div>
+              </div>
+              <div class="config-form-group">
+                <label class="config-label">適用中のテーマ</label>
+                <div class="theme-meta" style="font-size: 13px;">
+                  <div class="theme-meta-row" style="gap: 8px;">
+                    <span class="theme-name-label">テーマ名:</span>
+                    <span id="themeName" class="theme-name">-</span>
+                  </div>
+                  <div class="theme-meta-row">
+                    <span class="theme-name-label">配色:</span>
+                    <span id="themeSwatches" class="theme-swatches" style="gap:4px;"></span>
+                  </div>
+                  <div class="theme-meta-row theme-links">
+                    <span class="theme-link-label">出典:</span>
+                    <a id="themeSourceLink" href="https://github.com/BeardedBear/bearded-theme" target="_blank"
+                      rel="noopener">Bearded Theme</a>
+                    <span>·</span>
+                    <a id="themeLicenseLink" href="https://github.com/BeardedBear/bearded-theme/blob/master/LICENSE"
+                      target="_blank" rel="noopener">GPL-3.0 ライセンス</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Apply Confirmation Modal -->
+  <div class="modal-overlay" id="applyConfirmModal" style="display:none; z-index:2100;">
+    <div class="modal-box" style="max-width: 480px;">
+      <div class="modal-header">
+        <div class="modal-icon-warn">🚀</div>
+        <div class="modal-title">設定の反映（Apply）</div>
+      </div>
+      <div class="modal-body" style="font-size:13.5px; line-height:1.6; color:var(--text-soft);">
+        設定を反映するためにサービスを再起動します。<br><br>
+        この処理には数秒〜10秒程度かかります。実行してもよろしいですか？
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" onclick="closeApplyConfirmModal()">キャンセル</button>
+        <button class="btn-confirm-danger" style="background:var(--accent-amber); border-color:var(--accent-amber);"
+          onclick="executeApplyConfig()">反映を実行</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Container Restart Confirmation Modal -->
+  <div class="modal-overlay" id="restartConfirmModal" style="display:none; z-index:2100;">
+    <div class="modal-box" style="max-width: 460px;">
+      <div class="modal-header">
+        <div class="modal-icon-warn" style="background:rgba(56,189,248,0.18); color:var(--accent-cyan,#38bdf8);">⟳</div>
+        <div class="modal-title">コンテナの再起動</div>
+      </div>
+      <div class="modal-body" style="font-size:13.5px; line-height:1.6; color:var(--text-soft);">
+        ネットワーク設定と sysctl パラメータを再適用し、Web ダッシュボード以外のサービスコンテナ（DNS, DHCP, PPPoE, MAP-E 等）を再起動します。<br><br>
+        実行しますか？
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" onclick="closeRestartConfirmModal()">キャンセル</button>
+        <button class="btn-confirm-danger" style="background:var(--accent-primary); border:none;"
+          onclick="executeRestartContainers()">再起動を実行</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Discard Confirmation Modal -->
+  <div class="modal-overlay" id="discardConfirmModal" style="display:none; z-index:2100;">
+    <div class="modal-box" style="max-width: 460px;">
+      <div class="modal-header">
+        <div class="modal-icon-warn" style="background:rgba(239,68,68,0.2); color:var(--accent-rose);">↺</div>
+        <div class="modal-title">現在の稼働中設定へ戻す</div>
+      </div>
+      <div class="modal-body" style="font-size:13.5px; line-height:1.6; color:var(--text-soft);">
+        画面上で変更した未反映の内容をすべて破棄し、現在稼働中の設定ファイルから再読み込みします。<br><br>
+        未反映の変更は失われますが、よろしいですか？
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" onclick="closeDiscardConfirmModal()">キャンセル</button>
+        <button class="btn-confirm-danger" onclick="executeDiscardConfig()">破棄して戻す</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Apply Progress / Log Modal -->
+  <div class="modal-overlay" id="resetConfirmModal" style="display:none; z-index:2100;">
+    <div class="config-modal-box" style="max-width:480px; padding:28px 32px;">
+      <div class="modal-title">設定の初期化</div>
+      <div style="color:var(--text-soft); font-size:13.5px; line-height:1.7; margin-bottom:20px;">
+        すべての設定をデフォルト値にリセットします。<br><br>
+        <strong style="color:var(--accent-amber);">⚠️ 管理LAN設定（IPアドレス・GW・DNS等）は現在の値が維持されます。</strong><br><br>
+        この操作は「設定を反映する」を実行するまでファイルには書き込まれません。
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel"
+          onclick="document.getElementById('resetConfirmModal').style.display='none'">キャンセル</button>
+        <button class="btn-confirm-danger" style="background:var(--accent-primary); border-color:var(--accent-primary);"
+          onclick="executeResetConfig()">初期化を実行</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="applyProgressModal" style="display:none; z-index:2200;">
+    <div class="modal-box" style="max-width: 640px;">
+      <div class="modal-header">
+        <div id="applyProgressIcon" style="font-size:22px;">⏳</div>
+        <div class="modal-title" id="applyProgressTitle">設定を反映中...</div>
+      </div>
+      <div class="modal-body">
+        <div id="applyProgressSpinner"
+          style="display:flex; align-items:center; gap:10px; margin-bottom:14px; font-size:13px; color:var(--accent-cyan);">
+          <div class="pulse-dot"></div> <span>サービスを再起動しています...</span>
+        </div>
+        <pre class="apply-log-box" id="applyLogBox">処理を開始しました...</pre>
+      </div>
+      <div class="modal-footer" id="applyProgressFooter" style="display:none;">
+        <button class="btn-cancel" onclick="closeApplyProgressModal()">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="/js/bearded-themes.js"></script>
+  <script src="/js/theme-manager.js"></script>
+  <!-- モジュール分割: tables.js → modals.js → config-editor.js → main.js の順で読み込む -->
+  <script src="/js/tables.js"></script>
+  <script src="/js/modals.js"></script>
+  <script src="/js/config-editor.js"></script>
+  <script src="/js/main.js"></script>
+</body>
+
+</html>

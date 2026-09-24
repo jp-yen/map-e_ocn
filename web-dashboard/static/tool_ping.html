@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Ping Diagnostic Tool</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@600;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      background: var(--bg-main, #0b0f19);
+      color: var(--text-main, #e2e8f0);
+      font-family: 'Inter', sans-serif;
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      box-sizing: border-box;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .title {
+      font-family: 'Outfit', sans-serif;
+      font-size: 18px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text-strong, #fff);
+    }
+    .form-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .input-host {
+      flex: 1;
+      background: var(--bg-input, #1e293b);
+      border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: var(--text-strong, #fff);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      outline: none;
+    }
+    .input-host:focus {
+      border-color: #6366f1;
+    }
+    .select-cnt {
+      background: var(--bg-input, #1e293b);
+      border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: var(--text-strong, #fff);
+      font-size: 13px;
+      outline: none;
+    }
+    .btn-exec {
+      background: #6366f1;
+      border: none;
+      color: var(--text-strong, #fff);
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: background 0.2s;
+    }
+    .btn-exec:hover {
+      background: #4f46e5;
+    }
+    .btn-exec:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .terminal-box {
+      flex: 1;
+      background: var(--bg-input, #020617);
+      border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+      border-radius: 10px;
+      padding: 16px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px;
+      color: var(--accent-cyan, #38bdf8);
+      overflow-y: auto;
+      white-space: pre-wrap;
+      line-height: 1.6;
+    }
+    .status-text {
+      font-size: 12px;
+      color: var(--text-muted, #94a3b8);
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">
+      <span>📡</span> Ping 疎通診断ツール
+    </div>
+    <div class="status-text" id="statusText">待機中</div>
+  </div>
+
+  <div class="form-row">
+    <input type="text" id="hostInput" class="input-host" placeholder="対象 IPv4 / IPv6 アドレスを入力 (例: 192.168.100.1, 2001:db8::...)">
+    <select id="vrfSelect" class="select-cnt" style="min-width: 150px;" title="実行する VRF を指定">
+      <option value="">VRF: なし (Default)</option>
+    </select>
+    <select id="countSelect" class="select-cnt">
+      <option value="4" selected>4 回送信</option>
+      <option value="2">2 回送信</option>
+      <option value="8">8 回送信</option>
+    </select>
+    <button class="btn-exec" id="execBtn" onclick="runPing()">
+      <span>実行</span>
+    </button>
+  </div>
+
+  <div class="terminal-box" id="termOutput">コマンド出力をここに表示します...</div>
+
+  <script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const hostParam = urlParams.get('host');
+    const vrfParam = urlParams.get('vrf');
+
+    async function loadVrfs() {
+      try {
+        const res = await fetch('/api/vrfs');
+        const data = await res.json();
+        const sel = document.getElementById('vrfSelect');
+        const vrfs = data.vrfs || [];
+        for (const v of vrfs) {
+          const opt = document.createElement('option');
+          opt.value = v;
+          opt.textContent = `🔒 VRF: ${v}`;
+          if (vrfParam && vrfParam === v) opt.selected = true;
+          sel.appendChild(opt);
+        }
+      } catch (e) {
+        console.warn('Failed to load VRFs:', e);
+      }
+    }
+    loadVrfs().then(() => {
+      if (hostParam) {
+        document.getElementById('hostInput').value = decodeURIComponent(hostParam);
+        runPing();
+      }
+    });
+
+    function runPing() {
+      // CIDR 記法（192.168.1.1/24 など）をペーストされた場合、/ 以降を無視してアドレス部のみを使用
+      const raw = document.getElementById('hostInput').value.trim();
+      const host = raw.split('/')[0].trim();
+      if (!host) return;
+
+      const vrf = document.getElementById('vrfSelect').value;
+      const count = document.getElementById('countSelect').value;
+      const btn = document.getElementById('execBtn');
+      const term = document.getElementById('termOutput');
+      const status = document.getElementById('statusText');
+
+      if (btn.disabled) return;
+      btn.disabled = true;
+      status.textContent = 'Ping 送信中... (リアルタイム表示)';
+      const vrfNote = vrf ? ` [VRF: ${vrf}]` : '';
+      term.textContent = `Pinging ${host}${vrfNote} with ${count} packets...\n`;
+
+      let finished = false;
+      let es = null;
+      try {
+        const vrfQuery = vrf ? `&vrf=${encodeURIComponent(vrf)}` : '';
+        es = new EventSource(
+          `/api/ping/stream?host=${encodeURIComponent(host)}&count=${count}${vrfQuery}`
+        );
+
+        es.addEventListener('message', (e) => {
+          // ping の出力行がリアルタイムに届くたびに追記
+          term.textContent += e.data + '\n';
+          term.scrollTop = term.scrollHeight;
+        });
+
+        es.addEventListener('done', (e) => {
+          const rc = parseInt(e.data, 10);
+          status.textContent = (rc === 0)
+            ? '🟢 応答あり (Success)'
+            : '🔴 応答なし (Failed)';
+          es.close();
+          btn.disabled = false;
+          finished = true;
+        });
+
+        es.addEventListener('error', (e) => {
+          term.textContent += (e.data || 'Error') + '\n';
+          status.textContent = 'エラー';
+          es.close();
+          btn.disabled = false;
+          finished = true;
+        });
+
+        // タイムアウト保証（SSE が終了しない場合の安全策）
+        setTimeout(() => {
+          if (!finished && es) {
+            es.close();
+            btn.disabled = false;
+            status.textContent = '⚠️ タイムアウト';
+          }
+        }, count * 5000 + 8000);
+      } catch (err) {
+        term.textContent += `Error: ${err.message}\n`;
+        status.textContent = 'エラー';
+        btn.disabled = false;
+      }
+    }
+  </script>
+  <script src="/js/bearded-themes.js"></script>
+  <script src="/js/theme-manager.js"></script>
+</body>
+</html>

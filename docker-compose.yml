@@ -1,0 +1,234 @@
+# docker-compose.yml (Generated via gen_pppoe_configs.pl)
+# Manages MAP-E Router services and PPPoE server containers
+x-docker-logging: &docker-logging
+  driver: syslog
+  options:
+    syslog-address: "udp://127.0.0.1:5514"
+    tag: "{{.Name}}"
+
+services:
+  # 1. Logging Daemon (AxoSyslog)
+  axosyslog:
+    image: map-e/axosyslog:latest
+    container_name: axosyslog
+    build:
+      context: ./syslog-ng
+      dockerfile: Dockerfile
+    network_mode: host
+    restart: always
+    logging: *docker-logging
+    environment:
+      - TZ=JST-9
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - syslog_socket:/run/syslog:rw
+      - ./syslog-ng/syslog-ng.conf:/etc/syslog-ng/syslog-ng.conf:ro
+      - ./syslog-ng/logrotate.conf:/etc/logrotate.d/syslog-ng:ro
+      - /var/log:/var/log:rw
+
+  # 2. NTP Server (Chrony)
+  chrony:
+    image: map-e/chrony:latest
+    container_name: chrony
+    build:
+      context: ./chrony
+      dockerfile: Dockerfile
+    network_mode: host
+    cap_add:
+      - SYS_TIME
+    restart: always
+    logging: *docker-logging
+    environment:
+      - TZ=JST-9
+    healthcheck:
+      test: ["CMD-SHELL", "chronyc tracking >/dev/null && chronyc sources >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./chrony/chrony.conf:/etc/chrony/chrony.conf:ro
+      - /var/log/chrony:/var/log/chrony:rw
+      - syslog_socket:/run/syslog:rw
+
+  # 3. DNS Server (BIND 9.21 Official)
+  bind9:
+    image: internetsystemsconsortium/bind9:9.21
+    container_name: bind9
+    command: ["-f", "-c", "/etc/bind/named.conf"]
+    network_mode: host
+    restart: always
+    logging: *docker-logging
+    environment:
+      - TZ=JST-9
+    healthcheck:
+      test: ["CMD", "rndc", "-c", "/etc/bind/rndc.conf", "status"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./bind/named.conf:/etc/bind/named.conf:ro
+      - ./bind/rndc.conf:/etc/bind/rndc.conf:ro
+      - ./bind/named.conf.local:/etc/bind/named.conf.local:ro
+      - ./bind/db.map.ocn.ad.jp:/etc/bind/db.map.ocn.ad.jp:ro
+      - ./bind/db.v6connect.net:/etc/bind/db.v6connect.net:ro
+      - ./bind/dynamic:/var/lib/bind:rw
+      - bind9_cache:/var/cache/bind:rw
+      - syslog_socket:/run/syslog:rw
+
+  # 4. IPv6 Router Advertisement (radvd)
+  radvd:
+    image: map-e/radvd:latest
+    container_name: radvd
+    build:
+      context: ./radvd
+      dockerfile: Dockerfile
+    network_mode: host
+    privileged: true
+    restart: always
+    logging: *docker-logging
+    environment:
+      - TZ=JST-9
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./radvd/radvd.conf:/etc/radvd.conf:ro
+      - syslog_socket:/run/syslog:rw
+
+  # 5. DHCPv6 Server (ISC Kea 2.6.1 Official)
+  kea-dhcp6:
+    image: docker.cloudsmith.io/isc/docker/kea-dhcp6:2.6.1
+    container_name: kea-dhcp6
+    command: ["/usr/sbin/kea-dhcp6", "-c", "/etc/kea/kea-dhcp6.conf"]
+    network_mode: host
+    privileged: true
+    restart: always
+    logging: *docker-logging
+    environment:
+      - TZ=JST-9
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket, json; s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect('/run/kea/kea-dhcp6-ctrl.sock'); s.sendall(json.dumps({'command': 'status-get'}).encode()); res=json.loads(s.recv(4096).decode()); exit(res.get('result', 1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./kea-dhcp6/kea-dhcp6.conf:/etc/kea/kea-dhcp6.conf:ro
+      - ./kea-dhcp6/kea-map-e-hook:/usr/local/bin/kea-map-e-hook:ro
+      - kea_leases:/var/lib/kea:rw
+      - syslog_socket:/run/syslog:rw
+
+  # 6. Provisioning server service
+  mape-provisioning-server:
+    image: map-e/provisioning-server:latest
+    container_name: mape-provisioning-server
+    build:
+      context: ./mape-provisioning-server
+      dockerfile: Dockerfile
+    network_mode: host
+    privileged: true
+    restart: always
+    logging: *docker-logging
+    environment:
+      - TZ=JST-9
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./mape-provisioning-server/mape-provisioning-server:/app/mape-provisioning-server:ro
+      - ./mape-provisioning-server/mape_calc:/usr/local/bin/mape_calc.py:ro
+      - ./mape-provisioning-server/server.crt:/usr/local/bin/server.crt:ro
+      - ./mape-provisioning-server/server.key:/usr/local/bin/server.key:ro
+      - ./map-e-static-ip.conf:/etc/map-e-static-ip.conf:ro
+      - ./ddns.conf:/etc/ddns.conf:ro
+      - kea_leases:/var/lib/kea:ro
+      - /var/log:/var/log:rw
+      - syslog_socket:/run/syslog:rw
+
+  # 7. PPPoE Server (統合型: 全サービスを単一コンテナで受け付け、ユーザー名で動的VRF振分け)
+  pppoe-server:
+    image: map-e/pppoe-server:latest
+    container_name: pppoe-server
+    build:
+      context: ./pppoe
+      dockerfile: Dockerfile
+    network_mode: host
+    privileged: true
+    restart: always
+    depends_on:
+      - axosyslog
+    logging: *docker-logging
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /dev/ppp:/dev/ppp
+      - ./pppoe/srv-unified/chap-secrets:/etc/ppp/chap-secrets:ro
+      - ./pppoe/srv-unified/pap-secrets:/etc/ppp/pap-secrets:ro
+      - ./pppoe/srv-unified/routes.conf:/etc/ppp/routes.conf:ro
+      - ./pppoe/srv-unified/pppoe-server-options:/etc/ppp/pppoe-server-options:ro
+      - ./pppoe/srv-unified/user-services.conf:/etc/ppp/user-services.conf:ro
+      - ./pppoe/entrypoint.sh:/entrypoint.sh:ro
+      - ./pppoe/ip-up:/etc/ppp/ip-up:ro
+      - ./pppoe/ip-down:/etc/ppp/ip-down:ro
+      - ./ddns.conf:/etc/ddns.conf:ro
+      - syslog_socket:/run/syslog:rw
+    environment:
+      - TZ=JST-9
+      - VLAN_IFS=ens19.60 ens19.61 ens19.62 ens19.63 ens19.64 ens19.65 ens19.66 ens19.67
+      - SERVICE_NAMES=OCN VPN_Gr1 VPN_Gr2 asahi-net hi-ho
+      - SERVER_IP=100.116.0.1
+      - INCR_LOCAL_IP=1
+      - PPPOE_IP_POOL=100.115.0.0/16
+      - BR_IPV4_ADDR=100.127.255.255
+
+  # 8. Web Dashboard Service (Client monitoring & management)
+  web-dashboard:
+    image: map-e/web-dashboard:latest
+    container_name: web-dashboard
+    build:
+      context: ./web-dashboard
+      dockerfile: Dockerfile
+    network_mode: host
+    pid: host
+    privileged: true
+    user: "1000:1000"
+    group_add:
+      - "989"
+      - "101"
+    restart: always
+    logging: *docker-logging
+    environment:
+      - TZ=JST-9
+      - PORT=1600
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./web-dashboard:/app
+      - .:/app/workspace:rw
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - /usr/bin/docker:/usr/bin/docker:ro
+      - /usr/libexec/docker/cli-plugins:/usr/libexec/docker/cli-plugins:ro
+      - /etc/network:/etc/network:rw
+      - /etc/sysctl.d:/etc/sysctl.d:rw
+      - /var/log:/var/log:ro
+      - kea_leases:/var/lib/kea:ro
+
+  # 9. Central NAT Service (Outbound NAT for MAP-E and PPPoE)
+  central-nat:
+    image: map-e/central-nat:latest
+    container_name: central-nat
+    build:
+      context: ./nat
+      dockerfile: Dockerfile
+    network_mode: host
+    privileged: true
+    restart: always
+    logging: *docker-logging
+    environment:
+      - TZ=JST-9
+      - MGT_IF=ens18
+      - NAT_ENABLED=0
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+
+volumes:
+  bind9_cache:
+  kea_leases:
+  syslog_socket:
+

@@ -17,6 +17,10 @@ rtcsync
 # 5. すべてのアクセス制限を解除
 allow all
 
+# 7. 上位NTPサーバーと同期できない場合でもローカル時計を配信する
+#    (エミュレーション環境向け: 上流サーバー不達でもCEへの時刻応答を可能にする)
+local stratum 10 orphan
+
 # 6. ログ出力設定
 logdir /var/log/chrony
 log measurements statistics tracking

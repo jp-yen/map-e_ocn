@@ -1,0 +1,87 @@
+# =============================================================================
+# Management Network Configuration (管理用ネットワーク)
+# ※ WebUI からのテンプレート初期化時、管理 LAN 設定は現在の値が自動維持されます。
+# =============================================================================
+MGT_IF="ens18"
+MGT_IP="192.168.0.107/24"
+MGT_GW="192.168.0.254"
+
+SYSTEM_DNS="192.168.0.252 192.168.0.254 1.0.0.1"
+SYSTEM_NTP="192.168.0.252 192.168.0.253 192.168.0.254"
+DOMAIN="my.home"
+
+# IPv6 アドレスの省略記法 :: は変数の後ろには置かない
+# PREFIX では省略記法を使わず :0: とする
+# =============================================================================
+# WAN & MAP-E Network Configuration
+# =============================================================================
+MAPE_IF="ens19"
+# それぞれの方式で接続するVLAN番号（接続宣言VLAN）
+# ①SLAAC動的 / ②PD動的 / ③SLAAC固定 / ④PD固定 / PPPoE
+SLAAC_DYN_VLANS="60 61"
+PD_DYN_VLANS="62 63"
+SLAAC_FIX_VLANS="64 65"
+PD_FIX_VLANS="66 67"
+PPPOE_VLANS=""
+
+# PPPoE Server Local IP Base
+PPPOE_SERVER_BASE_IP="100.116.0.0"
+
+# Web Dashboard Port
+WEB_DASHBOARD_PORT="1600"
+
+# 外部接続 NAT (1: 有効, 0: 無効)
+NAT_ENABLED="0"
+
+BR_IF="dummy0"
+PROV_IF="dummy1"
+
+# 基幹IPv6プレフィックス (末尾にコロンは含めない)
+BASE_SUBNET="2400:4150"
+
+# =============================================================================
+# 6. MAP-E (OCN Virtual Connect) Parameters
+# =============================================================================
+BR_PREFIX="${BASE_SUBNET}:3620"
+BR_IPV4_ADDR="100.127.255.255"
+# BR_IPV6 : 自動生成
+
+# 動的 IPv4 クライアント(CE)へ払い出すIPv4プールセグメント
+BR_IPV4_POOL="10.218.0.0/16"
+
+# プロビジョニング用ネットワーク (DNS, NTP, provisioning server)
+MAPE_PROV_PREFIX="${BASE_SUBNET}:99"
+MAPE_DNS_IP="${MAPE_PROV_PREFIX}::53"
+MAPE_NTP_IP="${MAPE_PROV_PREFIX}::123"
+MAPE_PROV_IP="${MAPE_PROV_PREFIX}::ff"
+MAPE_DOMAIN_SEARCH="map.ocn.ad.jp"
+
+# --- 1. ひかり電話無し動的 IPv4 SLAAC WAN ---
+SLAAC_BR_BASE="1000"
+SLAAC_BR_SUFFIX="::ff0a"
+
+# --- 2. ひかり電話あり動的 IPv4 DHCPv6-PD ---
+PD_POOL="2000"
+
+# --- 3. ひかり電話なし固定IP SLAAC ---
+SLAAC_FIX_BR_PREFIX="3000"
+SLAAC_FIX_BR_SUFFIX="::ff0d"
+
+# --- 4. ひかり電話あり・固定 IPv4 (DHCPv6-PD固定) ---
+PD_FIX_POOL="4000"
+
+# =============================================================================
+# PPPoE Multi-Service Configuration
+# =============================================================================
+PPPOE_SERVICES="VPN_Gr1 VPN_Gr2 OCN asahi-net hi-ho"
+
+# PPPoE Dynamic IP Pool (固定IPを指定しないユーザーへ払い出す範囲)
+# CIDR形式 (例: 10.9.0.0/24)  空欄時はプール払い出しなし (固定IP必須)
+PPPOE_IP_POOL="100.115.0.0/16"
+
+# --- Services VRF Settings ---
+PPPOE_VRF_ENABLED_VPN_Gr1="1"
+PPPOE_VRF_ENABLED_VPN_Gr2="1"
+PPPOE_VRF_ENABLED_OCN="0"
+PPPOE_VRF_ENABLED_asahi_net="0"
+PPPOE_VRF_ENABLED_hi_ho="0"

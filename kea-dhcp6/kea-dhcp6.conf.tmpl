@@ -1,9 +1,15 @@
 {
 "Dhcp6": {
+    # リース期間 (30分 = 1800秒)
+    "renew-timer": 900,
+    "rebind-timer": 1440,
+    "preferred-lifetime": 1500,
+    "valid-lifetime": 1800,
+
     # フックスクリプトの呼び出し設定
     "hooks-libraries": [
         {
-            "library": "/usr/lib/x86_64-linux-gnu/kea/hooks/libdhcp_flex_option.so",
+            "library": "${KEA_HOOKS_DIR}/libdhcp_flex_option.so",
             "parameters": {
                 "options": [
 ${KEA_FLEX_OPTIONS}
@@ -11,7 +17,10 @@ ${KEA_FLEX_OPTIONS}
             }
         },
         {
-            "library": "/usr/lib/x86_64-linux-gnu/kea/hooks/libdhcp_run_script.so",
+            "library": "${KEA_HOOKS_DIR}/libdhcp_lease_cmds.so"
+        },
+        {
+            "library": "${KEA_HOOKS_DIR}/libdhcp_run_script.so",
             "parameters": {
                 "name": "/usr/local/bin/kea-map-e-hook",
                 "sync": false
@@ -49,8 +58,23 @@ ${KEA_SUBNET6_BLOCKS}
     "loggers": [
         {
             "name": "kea-dhcp6",
-            "severity": "DEBUG",
-            "debuglevel": 99
+            "output_options": [
+                {
+                    "output": "syslog",
+                    "pattern": "%m\n"
+                }
+            ],
+            "severity": "INFO"
+        },
+        {
+            "name": "kea-dhcp6.commands",
+            "output_options": [
+                {
+                    "output": "syslog",
+                    "pattern": "%m\n"
+                }
+            ],
+            "severity": "WARN"
         }
     ],
 

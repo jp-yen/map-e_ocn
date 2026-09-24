@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="ja" style="background-color: var(--bg-main, #0b0f19); color: var(--text-main, #e2e8f0);">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>サービスログ閲覧 - Service Log Viewer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+  <style>
+    :root {
+      --bg-dark: var(--bg-main, #0b0f19);
+      --card-bg: var(--bg-panel, #131b2e);
+      --badge-pppoe: #3b82f6;
+      --badge-mape: #10b981;
+      --badge-kea: #a855f7;
+      --badge-bind: #f59e0b;
+      --badge-radvd: #22d3ee;
+      --badge-chrony: #a3e635;
+      --badge-messages: #64748b;
+    }
+
+    body {
+      background: var(--bg-dark);
+      color: var(--text-main, #e2e8f0);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      margin: 0;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      box-sizing: border-box;
+      overflow: hidden;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .title {
+      font-family: 'Outfit', sans-serif;
+      font-size: 18px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text-strong, #fff);
+    }
+
+    .controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--card-bg);
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+      border-radius: 10px;
+      padding: 10px 14px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .type-checkboxes {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .type-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted, #94a3b8);
+      margin-right: 4px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .chk-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-overlay, rgba(255, 255, 255, 0.04));
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      user-select: none;
+      transition: all 0.15s ease;
+      color: var(--text-soft, #cbd5e1);
+    }
+
+    .chk-pill:hover {
+      background: var(--bg-card-hover, rgba(255, 255, 255, 0.08));
+    }
+
+    .chk-pill input[type="checkbox"] {
+      cursor: pointer;
+      margin: 0;
+      accent-color: #6366f1;
+    }
+
+    /* アクティブ時は各ログ種別カラーのインパクトを残しつつ、テーマの明るさに連動して濃淡を調整 */
+    .chk-pill.active-pppoe { border-color: rgba(59, 130, 246, 0.5); background: rgba(59, 130, 246, 0.12); color: var(--badge-accent-text, #93c5fd); }
+    .chk-pill.active-mape { border-color: rgba(16, 185, 129, 0.5); background: rgba(16, 185, 129, 0.12); color: var(--accent-emerald, #6ee7b7); }
+    .chk-pill.active-kea { border-color: rgba(168, 85, 247, 0.5); background: rgba(168, 85, 247, 0.12); color: var(--accent-primary-hover, #d8b4fe); }
+    .chk-pill.active-bind { border-color: rgba(245, 158, 11, 0.5); background: rgba(245, 158, 11, 0.12); color: var(--accent-amber, #fcd34d); }
+    .chk-pill.active-radvd { border-color: rgba(34, 211, 238, 0.5); background: rgba(34, 211, 238, 0.12); color: var(--accent-cyan, #67e8f9); }
+    .chk-pill.active-chrony { border-color: rgba(163, 230, 53, 0.5); background: rgba(163, 230, 53, 0.12); color: var(--accent-lime, #bef264); }
+    .chk-pill.active-messages { border-color: rgba(148, 163, 184, 0.5); background: rgba(148, 163, 184, 0.12); color: var(--text-soft, #cbd5e1); }
+
+    .btn-quick {
+      background: var(--bg-overlay, rgba(255, 255, 255, 0.06));
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+      border-radius: 6px;
+      color: var(--text-muted, #94a3b8);
+      font-size: 11px;
+      padding: 4px 8px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn-quick:hover {
+      background: var(--bg-card-hover, rgba(255, 255, 255, 0.15));
+      color: var(--text-strong, #fff);
+    }
+
+    .select-ctl {
+      background: var(--bg-input, #1e293b);
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+      border-radius: 8px;
+      padding: 6px 10px;
+      color: var(--text-strong, #fff);
+      font-size: 12.5px;
+      outline: none;
+    }
+
+    .search-input {
+      background: var(--bg-input, #1e293b);
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+      border-radius: 8px;
+      padding: 6px 12px;
+      color: var(--text-main, #fff);
+      font-size: 12.5px;
+      outline: none;
+      width: 220px;
+      transition: border-color 0.2s;
+    }
+    .search-input:focus {
+      border-color: var(--accent-primary, #6366f1);
+    }
+
+    .btn-action {
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.35);
+      color: #a5b4fc;
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      user-select: none;
+    }
+    .btn-action:hover {
+      background: rgba(99, 102, 241, 0.25);
+      color: #fff;
+    }
+
+    /* Loading Hourglass Animation */
+    @keyframes hourglass-blink {
+      0%, 100% {
+        opacity: 1;
+        transform: scale(1) rotate(0deg);
+      }
+      50% {
+        opacity: 0.25;
+        transform: scale(0.9) rotate(180deg);
+      }
+    }
+
+    .loading-hourglass {
+      display: inline-block;
+      animation: hourglass-blink 0.85s ease-in-out infinite;
+      color: #f59e0b;
+      filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.6));
+    }
+
+    .loading-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(245, 158, 11, 0.15);
+      border: 1px solid rgba(245, 158, 11, 0.4);
+      color: #fbbf24;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      user-select: none;
+    }
+
+    .paused-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: var(--danger-bg, rgba(239, 68, 68, 0.15));
+      border: 1px solid var(--danger-border, rgba(239, 68, 68, 0.4));
+      color: var(--danger-text, #fca5a5);
+      padding: 2px 9px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      user-select: none;
+      cursor: default;
+      transition: all 0.15s ease;
+      animation: pulse-border 2s infinite;
+    }
+    .paused-tag:hover {
+      background: var(--danger-bg-hover, rgba(239, 68, 68, 0.28));
+      border-color: var(--danger-border, rgba(239, 68, 68, 0.8));
+      color: var(--text-strong, #ffffff);
+      transform: translateY(-1px);
+    }
+
+    @keyframes pulse-border {
+      0%, 100% { border-color: rgba(239, 68, 68, 0.4); }
+      50% { border-color: rgba(239, 68, 68, 0.8); }
+    }
+
+    .terminal-container {
+      position: relative;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .meta-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 11.5px;
+      color: var(--text-muted, #64748b);
+      padding: 0 4px;
+    }
+
+    .sources-list {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .source-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: var(--bg-overlay, rgba(255, 255, 255, 0.03));
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.05));
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text-soft, #cbd5e1);
+    }
+
+    .terminal-box {
+      flex: 1;
+      background: var(--bg-input, #020617);
+      border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      overflow-y: auto;
+      line-height: 1.55;
+      color: var(--text-soft, #cbd5e1);
+      box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.5);
+    }
+
+    .log-line {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 3px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+      word-break: break-all;
+    }
+    .log-line:hover {
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .log-line.highlight {
+      background: rgba(99, 102, 241, 0.22);
+      color: #fff;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      flex-shrink: 0;
+      text-align: center;
+      min-width: 52px;
+    }
+    .badge-pppoe { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
+    .badge-mape { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+    .badge-kea { background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); }
+    .badge-bind { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
+    .badge-radvd { background: rgba(34, 211, 238, 0.2); color: #67e8f9; border: 1px solid rgba(34, 211, 238, 0.4); }
+    .badge-chrony { background: rgba(163, 230, 53, 0.2); color: #bef264; border: 1px solid rgba(163, 230, 53, 0.4); }
+    .badge-messages { background: rgba(148, 163, 184, 0.2); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.4); }
+
+    /* ログレベルバッジ */
+    .lvl-badge {
+      display: inline-block;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      margin-right: 4px;
+      flex-shrink: 0;
+    }
+    .lvl-DEBUG { background: rgba(100, 116, 139, 0.2); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.4); }
+    .lvl-INFO  { background: rgba(14, 165, 233, 0.15); color: #38bdf8; border: 1px solid rgba(14, 165, 233, 0.3); }
+    .lvl-WARN  { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.5); }
+    .lvl-ERROR { background: rgba(239, 68, 68, 0.25); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.6); }
+
+    .log-time {
+      color: var(--text-muted, #64748b);
+      font-size: 11px;
+      flex-shrink: 0;
+      user-select: none;
+      white-space: nowrap;
+    }
+
+    .log-text {
+      flex: 1;
+      white-space: pre-wrap;
+    }
+
+    .mark-highlight {
+      background: #eab308;
+      color: #000;
+      padding: 0 2px;
+      border-radius: 2px;
+      font-weight: 600;
+    }
+
+    .skeleton-loader {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      min-height: 260px;
+      text-align: center;
+      padding: 40px 20px;
+      user-select: none;
+    }
+
+    .empty-state {
+      padding: 40px 20px;
+      text-align: center;
+      color: #64748b;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body style="background:var(--bg-dark, #0b0f19); color:var(--text-main, #e2e8f0); margin:0;">
+  <div class="header">
+    <div class="title">
+      <span id="titleIcon">⏳</span> サービスログ閲覧 (Service Logs)
+      <span id="loadingIndicator" class="loading-tag" style="display:inline-flex;">
+        <span class="loading-hourglass">⏳</span> 読み込み中...
+      </span>
+      <span id="scrollPausedTag" class="paused-tag" style="display:none;" title="末尾から離れているため自動更新が一時停止しています">
+        ⏸️ 自動更新一時停止中
+      </span>
+    </div>
+    <div class="controls">
+      <select id="levelSelect" class="select-ctl" onchange="handleLevelChange()" title="ログレベル絞り込み">
+        <option value="INFO" selected>INFO 以上</option>
+        <option value="ALL">全ログ (DEBUG含む)</option>
+        <option value="WARN">WARN 以上</option>
+        <option value="ERROR">ERROR 以上</option>
+      </select>
+      <select id="linesSelect" class="select-ctl" onchange="handleLinesChange()">
+        <option value="100">最新 100 行</option>
+        <option value="200" selected>最新 200 行</option>
+        <option value="500">最新 500 行</option>
+        <option value="1000">最新 1000 行</option>
+      </select>
+      <input type="text" id="filterInput" class="search-input" placeholder="キーワード絞り込み..." oninput="filterLines()">
+      <button class="btn-action" id="btnRefresh" onclick="manualRefresh()" title="最新ログを再取得">
+        <span id="refreshIcon">🔄</span> <span id="refreshText">更新</span>
+      </button>
+      <label style="font-size:12px; color:var(--text-muted, #94a3b8); display:flex; align-items:center; gap:6px; cursor:pointer;">
+        <input type="checkbox" id="autoRefreshCheck" checked> 自動更新 (4s)
+      </label>
+    </div>
+  </div>
+
+  <div class="filter-bar">
+    <div class="type-checkboxes">
+      <span class="type-label">表示ログ種別 (即時切り替え):</span>
+      <label class="chk-pill active-pppoe" id="pill_pppoe">
+        <input type="checkbox" name="logType" value="pppoe" checked onchange="handleTypeChange()">
+        <span>PPPoE サーバー</span>
+      </label>
+      <label class="chk-pill active-mape" id="pill_mape">
+        <input type="checkbox" name="logType" value="mape" checked onchange="handleTypeChange()">
+        <span>MAP-E (プロビ / トンネル)</span>
+      </label>
+      <label class="chk-pill active-kea" id="pill_kea">
+        <input type="checkbox" name="logType" value="kea" checked onchange="handleTypeChange()">
+        <span>Kea DHCPv6 (含むHook)</span>
+      </label>
+      <label class="chk-pill active-bind" id="pill_bind">
+        <input type="checkbox" name="logType" value="bind" onchange="handleTypeChange()">
+        <span>DNS (BIND9)</span>
+      </label>
+      <label class="chk-pill active-radvd" id="pill_radvd">
+        <input type="checkbox" name="logType" value="radvd" onchange="handleTypeChange()">
+        <span>radvd (Router Adv)</span>
+      </label>
+      <label class="chk-pill active-chrony" id="pill_chrony">
+        <input type="checkbox" name="logType" value="chrony" onchange="handleTypeChange()">
+        <span>Chrony (NTP)</span>
+      </label>
+      <label class="chk-pill active-messages" id="pill_messages">
+        <input type="checkbox" name="logType" value="messages" onchange="handleTypeChange()">
+        <span>システム (messages)</span>
+      </label>
+      <button class="btn-quick" onclick="selectAllTypes(true)">全選択</button>
+      <button class="btn-quick" onclick="selectAllTypes(false)">全解除</button>
+    </div>
+  </div>
+
+  <div class="meta-bar">
+    <div></div>
+    <div id="statusCounter" style="font-family:'JetBrains Mono', monospace; font-size:12px;">
+      読み込み中...
+    </div>
+  </div>
+
+  <div class="terminal-container">
+    <div class="terminal-box" id="logBox">
+      <div class="skeleton-loader">
+        <div class="loading-hourglass" style="font-size: 32px; margin-bottom: 14px;">⏳</div>
+        <div style="font-size: 14px; font-weight: 600; color: var(--text-strong, #f1f5f9); margin-bottom: 6px;">ログデータを非同期 (Ajax) で取得中...</div>
+        <div style="font-size: 11.5px; color: var(--text-muted, #64748b);">バックグラウンド通信で最新ログを読み込んでいます。少々お待ちください。</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // =========================================================================
+    // Client-side Log Cache System
+    // =========================================================================
+    const ALL_LOG_TYPES = ['pppoe', 'mape', 'kea', 'bind', 'radvd', 'chrony', 'messages'];
+    const BADGE_MAP = {
+      pppoe: 'PPPoE',
+      mape: 'MAP-E',
+      kea: 'Kea',
+      bind: 'DNS',
+      radvd: 'RADVD',
+      chrony: 'Chrony',
+      messages: 'System'
+    };
+
+    // 種別ごとのログキャッシュ保持ストア
+    const logCache = {
+      pppoe: [],
+      mape: [],
+      kea: [],
+      bind: [],
+      radvd: [],
+      chrony: [],
+      messages: []
+    };
+    let sourcesCache = {};
+    let isFetching = false;
+    let displayedEntries = [];
+
+    function getSelectedTypes() {
+      const cbs = document.querySelectorAll('input[name="logType"]:checked');
+      return Array.from(cbs).map(cb => cb.value);
+    }
+
+    function updatePillStyles() {
+      document.querySelectorAll('input[name="logType"]').forEach(cb => {
+        const pill = document.getElementById('pill_' + cb.value);
+        if (pill) {
+          if (cb.checked) {
+            pill.classList.add('active-' + cb.value);
+          } else {
+            pill.classList.remove('active-' + cb.value);
+          }
+        }
+      });
+    }
+
+    // 読み込み中インジケータ（砂時計 & 点滅）の制御
+    function setLoadingState(loading) {
+      isFetching = loading;
+      const refreshIcon = document.getElementById('refreshIcon');
+      const titleIcon = document.getElementById('titleIcon');
+      const loadingIndicator = document.getElementById('loadingIndicator');
+
+      if (loading) {
+        if (refreshIcon) {
+          refreshIcon.textContent = '⏳';
+          refreshIcon.className = 'loading-hourglass';
+        }
+        if (titleIcon) {
+          titleIcon.textContent = '⏳';
+          titleIcon.className = 'loading-hourglass';
+        }
+        if (loadingIndicator) {
+          loadingIndicator.style.display = 'inline-flex';
+        }
+      } else {
+        if (refreshIcon) {
+          refreshIcon.textContent = '🔄';
+          refreshIcon.className = '';
+        }
+        if (titleIcon) {
+          titleIcon.textContent = '📜';
+          titleIcon.className = '';
+        }
+        if (loadingIndicator) {
+          loadingIndicator.style.display = 'none';
+        }
+      }
+    }
+
+    // チェックボックス変更時のハンドラ (キャッシュから即時レンダリング & バックグラウンド最新化)
+    function handleTypeChange() {
+      updatePillStyles();
+      saveSettings();
+      // 1. キャッシュから待ち時間ゼロ (0ms) で即時画面更新！
+      renderFromCache();
+      // 2. バックグラウンドで最新を取得
+      fetchLogs(false);
+    }
+
+    function selectAllTypes(checkAll) {
+      document.querySelectorAll('input[name="logType"]').forEach(cb => {
+        cb.checked = checkAll;
+      });
+      updatePillStyles();
+      saveSettings();
+      renderFromCache();
+      fetchLogs(false);
+    }
+
+    function handleLinesChange() {
+      renderFromCache();
+      fetchLogs(true);
+    }
+
+    function handleLevelChange() {
+      saveSettings();
+      fetchLogs(true, true);
+    }
+
+    function manualRefresh() {
+      isInitialLoad = true;
+      scrollToBottomNow();
+      fetchLogs(true, true);
+    }
+
+    function saveSettings() {
+      const selected = getSelectedTypes();
+      localStorage.setItem('map_e_log_types', JSON.stringify(selected));
+      const lvl = document.getElementById('levelSelect').value;
+      localStorage.setItem('map_e_log_level', lvl);
+    }
+
+    function loadSettings() {
+      try {
+        const saved = localStorage.getItem('map_e_log_types');
+        if (saved) {
+          const list = JSON.parse(saved);
+          if (Array.isArray(list) && list.length > 0) {
+            document.querySelectorAll('input[name="logType"]').forEach(cb => {
+              cb.checked = list.includes(cb.value);
+            });
+          }
+        }
+        const savedLvl = localStorage.getItem('map_e_log_level');
+        if (savedLvl && document.getElementById('levelSelect')) {
+          document.getElementById('levelSelect').value = savedLvl;
+        }
+      } catch (e) {}
+      updatePillStyles();
+    }
+
+    // =========================================================================
+    // キャッシュからの高速描画 (ブラウザ完結・ノーウェイト)
+    // =========================================================================
+    function renderFromCache() {
+      const selectedTypes = getSelectedTypes();
+      const linesLimit = parseInt(document.getElementById('linesSelect').value, 10) || 200;
+      const box = document.getElementById('logBox');
+      const sourcesList = document.getElementById('sourcesList');
+
+      if (selectedTypes.length === 0) {
+        box.innerHTML = '<div class="empty-state">ログ種別が選択されていません。上部のチェックボックスから表示したいログを選択してください。</div>';
+        if (sourcesList) sourcesList.innerHTML = '<span>選択なし</span>';
+        document.getElementById('statusCounter').textContent = '0 件';
+        displayedEntries = [];
+        return;
+      }
+
+      // 選択された種別のログをマージ
+      const merged = [];
+      selectedTypes.forEach(t => {
+        const list = logCache[t] || [];
+        for (let i = 0; i < list.length; i++) {
+          merged.push(list[i]);
+        }
+      });
+
+      // タイムスタンプ順でソート
+      merged.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+
+      // 件数制限
+      displayedEntries = merged.slice(-linesLimit);
+
+      // ソース一覧の更新
+      const sourceItems = selectedTypes.map(k => {
+        const desc = sourcesCache[k] || '-';
+        return `<span class="source-item"><strong style="color:var(--text-soft, #cbd5e1);">[${BADGE_MAP[k] || k}]</strong> ${escapeHtml(desc)}</span>`;
+      });
+      if (sourcesList) sourcesList.innerHTML = sourceItems.length > 0 ? sourceItems.join(' ') : '<span>-</span>';
+
+      filterLines();
+    }
+
+    // =========================================================================
+    // サーバーからのフェッチ (全種別キャッシュをスマート更新)
+    // =========================================================================
+    async function fetchLogs(showLoading = true, fetchAll = false) {
+      if (isFetching && !fetchAll) return;
+      if (showLoading) setLoadingState(true);
+
+      const lines = document.getElementById('linesSelect').value;
+      const level = document.getElementById('levelSelect') ? document.getElementById('levelSelect').value : 'INFO';
+      const selectedTypes = getSelectedTypes();
+
+      // 初回または手動更新時は全種別を取得してキャッシュを完全充填
+      const typesToFetch = fetchAll ? ALL_LOG_TYPES : (selectedTypes.length > 0 ? selectedTypes : ALL_LOG_TYPES);
+
+      try {
+        const typesStr = typesToFetch.join(',');
+        const res = await fetch(`/api/logs?types=${encodeURIComponent(typesStr)}&lines=${lines}&level=${encodeURIComponent(level)}`);
+        const data = await res.json();
+
+        // 取得したソース情報をキャッシュに格納
+        if (data.sources) {
+          sourcesCache = Object.assign({}, sourcesCache, data.sources);
+        }
+
+        // 取得したエントリを種別ごとのキャッシュに格納
+        const entries = data.entries || [];
+        // フェッチ対象のキャッシュをクリアして新規エントリで置換
+        typesToFetch.forEach(t => {
+          logCache[t] = [];
+        });
+        entries.forEach(e => {
+          const t = e.type || 'pppoe';
+          if (logCache[t]) {
+            logCache[t].push(e);
+          }
+        });
+
+        // 画面を再描画
+        renderFromCache();
+      } catch (e) {
+        console.error('Fetch logs error:', e);
+        if (displayedEntries.length === 0) {
+          document.getElementById('logBox').innerHTML = `<div class="empty-state" style="color:var(--accent-rose, #ef4444);">取得エラー: ${escapeHtml(e.message)}</div>`;
+        }
+      } finally {
+        if (showLoading) setLoadingState(false);
+      }
+    }
+
+    // =========================================================================
+    // スクロール判定 & 自動更新制御
+    // =========================================================================
+    let isInitialLoad = true;
+
+    // ログボックスが最下部（またはその近傍）を表示しているかどうか判定
+    function isScrolledToBottom(threshold = 50) {
+      const box = document.getElementById('logBox');
+      if (!box || box.clientHeight === 0) return true;
+      const distanceFromBottom = box.scrollHeight - box.scrollTop - box.clientHeight;
+      return distanceFromBottom <= threshold;
+    }
+
+    // 最新ログ（最下部）へ即座かつ確実にスクロール
+    function scrollToBottomNow() {
+      const box = document.getElementById('logBox');
+      if (!box) return;
+      box.scrollTop = box.scrollHeight;
+      requestAnimationFrame(() => {
+        box.scrollTop = box.scrollHeight;
+        setTimeout(() => {
+          box.scrollTop = box.scrollHeight;
+          updateScrollUI();
+        }, 50);
+      });
+    }
+
+    // スクロール状態に応じたUI（上部の一時停止バッジ）の更新
+    function updateScrollUI() {
+      const atBottom = isScrolledToBottom(50);
+      const pausedTag = document.getElementById('scrollPausedTag');
+      const autoRefresh = document.getElementById('autoRefreshCheck').checked;
+
+      if (!atBottom && autoRefresh) {
+        if (pausedTag) pausedTag.style.display = 'inline-flex';
+      } else {
+        if (pausedTag) pausedTag.style.display = 'none';
+      }
+    }
+
+    // ボタンクリックで最下部に移動し、自動更新を即座に再開
+    function scrollToBottomAndResume() {
+      scrollToBottomNow();
+      // 一番下に戻ったので即座に最新ログを取得
+      fetchLogs(false, false);
+    }
+
+    // =========================================================================
+    // フィルタリングと HTML レンダリング
+    // =========================================================================
+    function filterLines() {
+      const box = document.getElementById('logBox');
+      const filter = document.getElementById('filterInput').value.toLowerCase().trim();
+      const autoScroll = true; // 末尾スクロールは常時有効
+      const counter = document.getElementById('statusCounter');
+
+      // 再描画前のスクロール位置と「最下部にいたか」を記録
+      const wasAtBottom = isScrolledToBottom(50);
+      const prevScrollTop = box.scrollTop;
+
+      if (displayedEntries.length === 0) {
+        box.innerHTML = '<div class="empty-state">表示可能なログデータがありません。</div>';
+        counter.textContent = '0 件';
+        updateScrollUI();
+        return;
+      }
+
+      let displayedCount = 0;
+      const htmlArray = [];
+
+      for (let i = 0; i < displayedEntries.length; i++) {
+        const entry = displayedEntries[i];
+        const type = entry.type || 'pppoe';
+        const label = entry.label || BADGE_MAP[type] || type.toUpperCase();
+        const time = entry.time || '';
+        const text = entry.text || '';
+
+        const fullStr = `${label} ${time} ${text}`.toLowerCase();
+        const isMatch = filter ? fullStr.includes(filter) : true;
+
+        if (!isMatch) continue;
+        displayedCount++;
+
+        let renderedText = escapeHtml(text);
+        if (filter) {
+          const re = new RegExp(escapeRegex(filter), 'gi');
+          renderedText = renderedText.replace(re, m => `<span class="mark-highlight">${m}</span>`);
+        }
+
+        const lvl = entry.level || 'INFO';
+        htmlArray.push(`
+          <div class="log-line ${filter ? 'highlight' : ''}">
+            <span class="badge badge-${escapeHtml(type)}">[${escapeHtml(label)}]</span>
+            <span class="lvl-badge lvl-${escapeHtml(lvl)}">${escapeHtml(lvl)}</span>
+            <span class="log-time">${escapeHtml(time)}</span>
+            <span class="log-text">${renderedText}</span>
+          </div>
+        `);
+      }
+
+      counter.textContent = `${displayedCount} 件表示`;
+
+      if (displayedCount === 0) {
+        box.innerHTML = `<div class="empty-state">「${escapeHtml(filter)}」に一致するログは見つかりませんでした。</div>`;
+      } else {
+        box.innerHTML = htmlArray.join('');
+      }
+
+      // 末尾スクロール判定（常時有効）：
+      // 初回表示時 (isInitialLoad) は必ず最新ログ（最下部）を表示。
+      // 以降も最下部を表示中は常に最新行へ自動追従スクロール。
+      // ユーザーが上方を閲覧中の場合は勝手に最下部へ飛ばず、閲覧中のスクロール位置を維持！
+      if (isInitialLoad || wasAtBottom) {
+        scrollToBottomNow();
+        isInitialLoad = false;
+      } else if (!wasAtBottom) {
+        box.scrollTop = prevScrollTop;
+      }
+
+      updateScrollUI();
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function escapeRegex(string) {
+      return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    // =========================================================================
+    // イベントリスナーと起動時初期化
+    // =========================================================================
+    const logBoxEl = document.getElementById('logBox');
+    if (logBoxEl) {
+      logBoxEl.addEventListener('scroll', updateScrollUI);
+    }
+    const autoRefreshCheckEl = document.getElementById('autoRefreshCheck');
+    if (autoRefreshCheckEl) {
+      autoRefreshCheckEl.addEventListener('change', updateScrollUI);
+    }
+
+    loadSettings();
+    // 初回は選択されている種別のみを最優先で高速非同期 (Ajax) 取得！
+    fetchLogs(true, false).then(() => {
+      scrollToBottomNow();
+      // 初回表示が完了した直後に、裏で残りの種別を静かにプリフェッチ (キャッシュ充填)
+      setTimeout(() => {
+        if (!isFetching) {
+          fetchLogs(false, true);
+        }
+      }, 1500);
+    });
+
+    window.addEventListener('load', () => {
+      scrollToBottomNow();
+    });
+
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(() => {
+        if (isInitialLoad || isScrolledToBottom(50)) {
+          scrollToBottomNow();
+        }
+      });
+    }
+
+    // 定期バックグラウンド自動更新
+    setInterval(() => {
+      const autoRefresh = document.getElementById('autoRefreshCheck').checked;
+      // ★一番下を表示していないときは再読み込みをスキップ（停止）する！
+      if (autoRefresh && !isFetching && isScrolledToBottom(50)) {
+        fetchLogs(false, false);
+      }
+    }, 4000);
+  </script>
+  <script src="/js/bearded-themes.js"></script>
+  <script src="/js/theme-manager.js"></script>
+</body>
+</html>

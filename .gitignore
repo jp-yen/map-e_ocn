@@ -1,9 +1,13 @@
 # Makefile で自動生成される設定ファイル・証明書
 system/interfaces
 system/99-network-routing.conf
+system/vrf-setup.sh
 radvd/radvd.conf
 kea-dhcp6/kea-dhcp6.conf
 kea-dhcp6/kea-map-e-hook
+bind/named.conf
+bind/rndc.conf
+bind/.rndc.key.secret
 bind/named.conf.local
 bind/db.*
 chrony/chrony.conf
@@ -14,6 +18,7 @@ mape-provisioning-server/mape-route-monitor
 mape-provisioning-server/mape-route-monitor.service
 mape-provisioning-server/server.crt
 mape-provisioning-server/server.key
+pppoe/srv-*
 
 # アーカイブ・作業用ファイル
 STATUS.TXT
@@ -21,3 +26,24 @@ MAP-E.shar*
 MAP-E.tar.xz
 __pycache__/
 *.pyc
+*.bak*
+
+# 検証ツールの生成物
+tools/node_modules/
+tools/package-lock.json
+
+# Web ダッシュボードのランタイムデータ
+web-dashboard/data/
+.map-e.conf.safe
+bind/dynamic/
+dashboard_screenshot.png
+
+# 外部テーマ・スクリプト類 (必要時に git clone)
+bearded-theme/
+
+# 各種機器設定ファイル（リポジトリ管理外）
+CE-setting/
+
+# Playwright テスト環境 (README.md 以外は再現可能なため除外)
+playwright/*
+!playwright/README.md

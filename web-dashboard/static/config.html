@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>環境設定 (Config Editor) - MAP-E & PPPoE Emulation</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚙️</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/main.css">
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+      overflow: hidden;
+      background: var(--bg-panel);
+      display: flex;
+      flex-direction: column;
+    }
+    .config-page-wrapper {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      max-height: 100vh;
+      overflow: hidden;
+      background: var(--bg-panel);
+    }
+    .config-page-wrapper .config-modal-box {
+      width: 100% !important;
+      max-width: 100% !important;
+      height: 100vh !important;
+      max-height: 100vh !important;
+      margin: 0 !important;
+      border: none !important;
+      border-radius: 0 !important;
+      box-shadow: none !important;
+      animation: none !important;
+    }
+  </style>
+</head>
+<body>
+  <div class="config-page-wrapper">
+    <div class="config-modal-box">
+      <!-- Config Header Bar -->
+      <div class="config-header-bar">
+        <div class="config-header-left">
+          <button class="btn-config-discard" id="btnConfigDiscard" style="display:none;"
+            onclick="promptDiscardConfig()">
+            <span>↺</span> 現在の設定へ戻す
+          </button>
+          <button class="btn-config-discard" id="btnConfigReset" onclick="promptResetConfig()"
+            title="テンプレートから設定を初期化（管理LAN設定は維持）">
+            <span>🔄</span> 設定を初期化
+          </button>
+          <button class="btn-config-discard btn-config-neutral" id="btnContainersRestart" onclick="promptRestartContainers()"
+            title="ネットワーク設定を再適用して Web ダッシュボード以外のコンテナを再起動">
+            <span>⟳</span> コンテナを再起動
+          </button>
+        </div>
+        <div class="config-header-center">
+          <div style="font-size: 16px; font-weight: 700; color: var(--text-strong); display:flex; align-items:center; gap:8px;">
+            <span>⚙️</span> 環境設定 (Config Editor)
+          </div>
+          <span id="configSyncBadge" class="config-sync-badge synced">● 稼働設定と同期中</span>
+        </div>
+        <div class="config-header-right">
+          <button class="btn-config-apply" id="btnConfigApply" onclick="promptApplyConfig()">
+            <span>🚀</span> 設定を反映する
+          </button>
+          <button class="btn-cancel" style="padding: 7px 12px; font-size: 13px;" onclick="window.close()">✕</button>
+        </div>
+      </div>
+
+      <!-- Config Tabs Navigation -->
+      <div class="config-tabs-nav">
+        <button class="config-tab-btn active" onclick="switchConfigTab(1)">
+          <span>1️⃣</span> VLAN
+        </button>
+        <button class="config-tab-btn" onclick="switchConfigTab(2)">
+          <span>2️⃣</span> PPPoE 設定
+        </button>
+        <button class="config-tab-btn" onclick="switchConfigTab(3)">
+          <span>3️⃣</span> IPoE (MAP-E) 共通
+        </button>
+        <button class="config-tab-btn" onclick="switchConfigTab(4)">
+          <span>4️⃣</span> MAP-E (SLAAC)
+        </button>
+        <button class="config-tab-btn" onclick="switchConfigTab(5)">
+          <span>5️⃣</span> MAP-E (DHCP-PD)
+        </button>
+        <button class="config-tab-btn" onclick="switchConfigTab(6)">
+          <span>6️⃣</span> 外観
+        </button>
+      </div>
+
+      <!-- Config Tab Content Panels -->
+      <div class="config-modal-content">
+        <!-- Panel 1: Low Layer -->
+        <div class="config-tab-panel active" id="configPanel1">
+          <!-- Outbound NAT Toggle Card -->
+          <div class="config-toggle-card" style="margin-bottom: 24px;">
+            <div class="config-toggle-info">
+              <div class="config-toggle-title">
+                <span>🌐</span> 外部接続 Central NAT (NAT_ENABLED)
+              </div>
+              <div class="config-toggle-desc">
+                MAP-E (mpe-common) および PPPoE クライアントからの IPv4 トラフィックを、管理インターフェース (MGT_IF) 経由で外部ネットワークへ NAT (MASQUERADE) 接続します。
+              </div>
+            </div>
+            <label class="ui-toggle-switch">
+              <input type="checkbox" id="cfg_NAT_ENABLED" onchange="onConfigInputChanged()">
+              <span class="ui-toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="config-section-title"><span>🌐</span> 接続方式別 VLAN 番号設定</div>
+          <div class="config-section-desc">
+            接続を有効にする VLAN 番号を指定します。スペース区切りで複数指定可能です。<br>
+            <strong style="color:var(--accent-amber);">※ 不要な方式は空欄（省略）にすることで、関連するサーバーコンテナの起動を抑止できます。</strong>
+          </div>
+
+          <div class="config-grid-2">
+            <div class="config-form-group">
+              <label class="config-label">① SLAAC 動的 VLAN (SLAAC_DYN_VLANS)</label>
+              <input type="text" class="config-input" id="cfg_SLAAC_DYN_VLANS" placeholder="例: 841 842 843 844"
+                oninput="onConfigInputChanged()">
+              <div class="config-hint">ひかり電話なし動的 IPv4 (SLAAC WAN)</div>
+            </div>
+            <div class="config-form-group">
+              <label class="config-label">② DHCP-PD 動的 VLAN (PD_DYN_VLANS)</label>
+              <input type="text" class="config-input" id="cfg_PD_DYN_VLANS" placeholder="例: 845 846 947 948"
+                oninput="onConfigInputChanged()">
+              <div class="config-hint">ひかり電話あり動的 IPv4 (DHCPv6-PD)</div>
+            </div>
+            <div class="config-form-group">
+              <label class="config-label">③ SLAAC 固定IP VLAN (SLAAC_FIX_VLANS)</label>
+              <input type="text" class="config-input" id="cfg_SLAAC_FIX_VLANS" placeholder="例: 849"
+                oninput="onConfigInputChanged()">
+              <div class="config-hint">ひかり電話なし固定 IPv4 (SLAAC固定)</div>
+            </div>
+            <div class="config-form-group">
+              <label class="config-label">④ DHCP-PD 固定IP VLAN (PD_FIX_VLANS)</label>
+              <input type="text" class="config-input" id="cfg_PD_FIX_VLANS" placeholder="例: 850"
+                oninput="onConfigInputChanged()">
+              <div class="config-hint">ひかり電話あり固定 IPv4 (DHCPv6-PD固定)</div>
+            </div>
+            <div class="config-form-group" style="grid-column: 1 / -1;">
+              <label class="config-label">PPPoE 収容 VLAN (PPPOE_VLANS)</label>
+              <input type="text" class="config-input" id="cfg_PPPOE_VLANS" placeholder="例: 811"
+                oninput="onConfigInputChanged()">
+              <div class="config-hint">PPPoE 専用の収容 VLAN 番号（MAP-E 用の VLAN は自動的に合算されます）</div>
+            </div>
+          </div>
+
+          <!-- Accordion 1: Advanced Low Layer -->
+          <div class="config-accordion" id="acc_lowlayer">
+            <div class="config-accordion-header" onclick="toggleAccordion('acc_lowlayer')">
+              <span>🔧 拡張設定（管理用ネットワーク・物理IF）</span>
+              <span class="config-accordion-icon">▶</span>
+            </div>
+            <div class="config-accordion-body">
+              <div class="config-grid-2">
+                <div class="config-form-group">
+                  <label class="config-label">WAN 物理インターフェース名 (MAPE_IF)</label>
+                  <input type="text" class="config-input" id="cfg_MAPE_IF" placeholder="eth1"
+                    oninput="onConfigInputChanged()">
+                  <div class="config-hint">各 VLAN サブインターフェースの親となる物理NIC</div>
+                </div>
+<div class="config-form-group">
+                  <label class="config-label">管理用 IF (MGT_IF)</label>
+                  <input type="text" class="config-input" id="cfg_MGT_IF" placeholder="eth0"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">管理用 IP (MGT_IP)</label>
+                  <input type="text" class="config-input" id="cfg_MGT_IP" placeholder="192.168.0.10/24"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">管理用 デフォルトGW (MGT_GW)</label>
+                  <input type="text" class="config-input" id="cfg_MGT_GW" placeholder="192.168.0.1"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">ダッシュボード ポート (WEB_DASHBOARD_PORT)</label>
+                  <input type="text" class="config-input" id="cfg_WEB_DASHBOARD_PORT" placeholder="1600"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">上位 DNS (SYSTEM_DNS)</label>
+                  <input type="text" class="config-input" id="cfg_SYSTEM_DNS" placeholder="192.168.0.1 1.1.1.1"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">上位 NTP (SYSTEM_NTP)</label>
+                  <input type="text" class="config-input" id="cfg_SYSTEM_NTP" placeholder="ntp.example.com 172.31.100.1"
+                    oninput="onConfigInputChanged()">
+                  <div class="config-hint">スペース区切りで複数指定。chrony.conf の server 行に反映されます。</div>
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">ドメイン名 (DOMAIN)</label>
+                  <input type="text" class="config-input" id="cfg_DOMAIN" placeholder="example.com"
+                    oninput="onConfigInputChanged()">
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Panel 2: PPPoE -->
+        <div class="config-tab-panel" id="configPanel2">
+          <div class="config-section-title"><span>⚡</span> PPPoE サーバー &amp; クライアント認証設定</div>
+          <div class="config-section-desc">
+            サービス（インスタンス）ごとに提供する収容 VLAN、接続を許可するクライアント認証アカウントや固定IP/サブネット委任を設定します。
+          </div>
+
+          <!-- PPPoE Services Section -->
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+            <div style="font-weight:600; color:var(--text-strong); font-size:13.5px;">1. PPPoE サービス定義</div>
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <button type="button" class="btn-add-row" style="padding:4px 10px; font-size:11.5px;"
+                onclick="addPPPoEServerRow()">＋ サービス追加</button>
+            </div>
+          </div>
+          <div class="config-hint" style="margin-bottom:8px;">
+            ※ 接続を受け付ける PPPoE サービス名（半角英数字/_- 最大11文字）と閉域 VRF の有効/無効を定義します。PPPoE はすべての回線 VLAN で共通して提供され、サーバー IP はセッションごとに動的に割り当てられます。
+          </div>
+
+          <div class="table-editor-container" style="overflow-x: auto; width: fit-content; max-width: 100%;">
+            <table class="table-editor" style="min-width: unset; width: auto;">
+              <thead>
+                <tr>
+                  <th class="config-sortable" style="min-width: 220px;" onclick="sortConfigTable('pppoeSrv','name')">サービス名 <small style="color:var(--text-muted);">(最大11文字)</small> <span class="config-sort-indicator" id="srvInd-name"></span></th>
+                  <th style="text-align:center; padding: 6px 20px;" title="同一サービス内クライアント同士のみ通信可能にする（Linux VRF による閉域分離）">閉域 VRF</th>
+                  <th style="text-align:center; padding: 6px 16px;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="cfg_pppoe_servers_tbody">
+                <!-- Filled dynamically -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- PPPoE Users Section -->
+          <div
+            style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+            <div style="font-weight:600; color:var(--text-strong); font-size:13.5px;">2. PPPoE クライアント登録</div>
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <button type="button" class="btn-primary" id="btn_pppoe_csv_toggle" onclick="togglePPPoEUserEditMode()"
+                style="padding:4px 10px; font-size:12px; background:linear-gradient(135deg, #0284c7, #0369a1); border:none; border-radius:4px; color:#fff; cursor:pointer; font-weight:600; display:flex; align-items:center; gap:4px;">
+                <span id="btn_pppoe_csv_toggle_text">📝 CSV編集モード</span>
+              </button>
+              <button type="button" class="btn-add-row" id="btn_pppoe_add_user" onclick="addPPPoEUserRow()">＋
+                ユーザー追加</button>
+            </div>
+          </div>
+
+          <!-- Table View Container -->
+          <div id="cfg_pppoe_users_table_container" class="table-editor-container">
+            <table class="table-editor">
+              <thead>
+                <tr>
+                  <th style="width: 18%;" class="config-sortable" onclick="sortConfigTable('pppoeUsr','username')">ユーザー名 <span class="config-sort-indicator" id="usrInd-username"></span></th>
+                  <th style="width: 10%;" class="config-sortable" onclick="sortConfigTable('pppoeUsr','password')">パスワード <span class="config-sort-indicator" id="usrInd-password"></span></th>
+                  <th style="width: 14%;" class="config-sortable" onclick="sortConfigTable('pppoeUsr','ip')">割当 IP / サブネット <small style="color:var(--accent-cyan);" title="空欄または * でIPプールから自動払い出し">(空欄/* でプール)</small> <span class="config-sort-indicator" id="usrInd-ip"></span></th>
+                  <th style="width: 13%;" class="config-sortable" onclick="sortConfigTable('pppoeUsr','service_name')">サービス名 <span class="config-sort-indicator" id="usrInd-service_name"></span></th>
+                  <th style="width: 17%;" class="config-sortable" onclick="sortConfigTable('pppoeUsr','ddns_v4')">IPv4 DDNS ホスト名 <span class="config-sort-indicator" id="usrInd-ddns_v4"></span></th>
+                  <th style="width: 22%;" class="config-sortable" onclick="sortConfigTable('pppoeUsr','note')">備考 <span class="config-sort-indicator" id="usrInd-note"></span></th>
+                  <th style="width: 6%; min-width: 52px; text-align:center;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="cfg_pppoe_users_tbody">
+                <!-- Filled dynamically -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- CSV Direct Edit Container (Hidden by default) -->
+          <div id="cfg_pppoe_users_csv_container" style="display:none; margin-top:8px;">
+            <div class="config-help-box">
+              <div style="font-size:12px; color:var(--text-muted); line-height:1.5;">
+                💡 <strong style="color:var(--text-strong);">書式:</strong> <code class="config-code-sample">ユーザー名, パスワード, 割当IP, サービス名, DDNSホスト名(任意), 備考(任意)</code><br>
+                <span style="font-size:11.5px; color:var(--text-faint);">※ カンマ(CSV)、タブ(Excelからの貼り付け)、半角スペース区切りのいずれも自動認識します。行頭
+                  <code>#</code> や空行はコメントとして扱われます。サービス名未指定時は <code>*</code> となります。</span>
+              </div>
+            </div>
+            <textarea id="cfg_pppoe_users_csv_textarea" class="pppoe-csv-textarea" spellcheck="false"
+              placeholder="# ユーザー名, パスワード, 割当IP, サービス名, DDNSホスト名, 備考&#10;client01@example.jp, pass1234, 192.168.10.1/32, Service_A, , サンプル拠点1_VPN&#10;client02@example.jp, pass5678, 192.168.10.2/32, Service_B, , サンプル拠点2_VPN"
+              oninput="onPPPoECSVInputChanged()"></textarea>
+          </div>
+          <div class="config-hint" style="margin-top: 6px; line-height: 1.6;">
+            ※固定IP8&nbsp;&nbsp;= /29<br>
+            　固定IP16 = /28
+          </div>
+
+          <!-- PPPoE Advanced Settings Accordion -->
+          <div class="config-accordion" id="acc_pppoe_advanced" style="margin-top: 18px;">
+            <div class="config-accordion-header" onclick="toggleAccordion('acc_pppoe_advanced')">
+              <span>🔧 詳細設定（サーバー IP / IP プール）</span>
+              <span class="config-accordion-icon">▶</span>
+            </div>
+            <div class="config-accordion-body">
+              <div class="config-grid-2">
+                <div class="config-form-group">
+                  <label class="config-label">PPPoE サーバー起点 IP (PPPOE_SERVER_BASE_IP)</label>
+                  <input type="text" class="config-input" id="cfg_PPPOE_SERVER_BASE_IP" placeholder="203.0.113.0"
+                    oninput="onConfigInputChanged()">
+                  <div class="config-hint">サーバーローカルIP自動採番時のベースアドレス</div>
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label" style="color:var(--accent-cyan);">PPPoE IP プール (PPPOE_IP_POOL)</label>
+                  <input type="text" class="config-input" id="cfg_PPPOE_IP_POOL" placeholder="例: 10.9.0.0/24 (空欄でプール払い出しなし)"
+                    oninput="onConfigInputChanged(); validatePPPoEIPPool(this);">
+                  <div class="config-hint">
+                    固定IPを指定しないユーザー（IP欄を <code>*</code> または空欄に設定）へ払い出す IP プール（CIDR 形式）。<br>
+                    空欄の場合はプール払い出しが無効となり、全ユーザーに固定IPが必要になります。
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Panel 3: IPoE Common -->
+        <div class="config-tab-panel" id="configPanel3">
+          <div class="config-section-title"><span>🔗</span> IPoE (MAP-E) 共通パラメータ設定</div>
+          <div class="config-section-desc">
+            Border Relay (BR) およびプロビジョニングサーバーで共通して使用する IPv4/IPv6 パラメータと固定IP・端末備考・DDNS設定です。
+          </div>
+
+          <div class="config-form-group" style="max-width: 500px;">
+            <label class="config-label" style="font-size:13px; color:var(--accent-cyan);">動的 IPv4 払い出しプール (BR_IPV4_POOL)</label>
+            <input type="text" class="config-input" id="cfg_BR_IPV4_POOL" placeholder="198.51.0.0/16"
+              style="font-size:14px; font-weight:600;" oninput="onConfigInputChanged()">
+            <div class="config-hint">動的クライアント（SLAAC動的 / DHCP-PD動的）へ払い出す IPv4 プール（CIDR表記）</div>
+          </div>
+
+          <!-- Static IP & Note Section -->
+          <div class="info-card-blue" style="margin-top: 20px; margin-bottom: 12px;">
+            <div style="font-weight:700; margin-bottom:4px; font-size:13.5px;">💡 固定IP・端末備考および DDNS（ホスト名）の登録について</div>
+            ・<strong>固定 IP を割り当てる場合</strong>: VLAN 番号（例: <code>841</code>）または MAC アドレスと 固定 IPv4 アドレス（例: <code>192.168.200.1/32</code>）を入力します。<br>
+            ・<strong>動的 IP のまま備考や DDNS を登録する場合</strong>: 固定 IPv4 アドレスを<strong>空欄</strong>のまま入力してください（動的IP扱いとなります）。<br>
+            ・<strong>DDNS ホスト名</strong>: DNS に自動登録するホスト名（例: <code>cebox1.p-ns.flets-west.jp</code>）を入力します（空欄可）。
+          </div>
+
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <div style="font-weight:600; color:var(--text-strong); font-size:13.5px;">IPoE クライアント登録</div>
+            <button class="btn-add-row" onclick="addStaticIPRow('ipoe')">＋ 端末追加</button>
+          </div>
+
+          <div class="table-editor-container" style="margin-bottom: 8px;">
+            <table class="table-editor">
+              <thead>
+                <tr>
+                  <th style="width: 16%;" class="config-sortable" onclick="sortConfigTable('ipoeStatic','mac')">VLAN・MACアドレス <span class="config-sort-indicator" id="staticInd-mac"></span></th>
+                  <th style="width: 16%;" class="config-sortable" onclick="sortConfigTable('ipoeStatic','ip')">固定 IPv4 (空欄で動的) <span class="config-sort-indicator" id="staticInd-ip"></span></th>
+                  <th style="width: 18%;" class="config-sortable" onclick="sortConfigTable('ipoeStatic','ddns_v6')">IPv6 DDNS ホスト名 (FQDN) <span class="config-sort-indicator" id="staticInd-ddns_v6"></span></th>
+                  <th style="width: 18%;" class="config-sortable" onclick="sortConfigTable('ipoeStatic','ddns_v4')">IPv4 DDNS ホスト名 (FQDN) <span class="config-sort-indicator" id="staticInd-ddns_v4"></span></th>
+                  <th style="width: 26%;" class="config-sortable" onclick="sortConfigTable('ipoeStatic','note')">備考 (Note) <span class="config-sort-indicator" id="staticInd-note"></span></th>
+                  <th style="width: 6%; min-width: 52px; text-align:center;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="cfg_ipoe_static_tbody">
+                <!-- Filled dynamically -->
+              </tbody>
+            </table>
+          </div>
+          <div class="config-hint" style="margin-bottom: 20px; line-height: 1.6;">
+            ※固定IP8&nbsp;&nbsp;= /29<br>
+            　固定IP16 = /28
+          </div>
+
+          <!-- Accordion 3: Advanced IPoE -->
+          <div class="config-accordion" id="acc_ipoe">
+            <div class="config-accordion-header" onclick="toggleAccordion('acc_ipoe')">
+              <span>🔧 拡張設定（基幹 IPv6 サブネット・BR 固有設定・プロビジョニング）</span>
+              <span class="config-accordion-icon">▶</span>
+            </div>
+            <div class="config-accordion-body">
+              <div class="config-grid-2">
+                <div class="config-form-group">
+                  <label class="config-label">基幹 IPv6 プレフィックス (BASE_SUBNET)</label>
+                  <input type="text" class="config-input" id="cfg_BASE_SUBNET" placeholder="2001:db8"
+                    oninput="onConfigInputChanged()">
+                  <div class="config-hint">末尾にコロンを含めない基幹 /32 等のプレフィックス</div>
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">BR IPv6 プレフィックス (BR_PREFIX)</label>
+                  <input type="text" class="config-input" id="cfg_BR_PREFIX" placeholder="${BASE_SUBNET}:aaaa"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">BR IPv4 アドレス (BR_IPV4_ADDR)</label>
+                  <input type="text" class="config-input" id="cfg_BR_IPV4_ADDR" placeholder="192.0.2.1"
+                    oninput="onConfigInputChanged()">
+                  <div class="config-hint">BR の Interface ID に埋め込まれる IPv4</div>
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">BR 仮想 IF / プロビジョニング IF</label>
+                  <div style="display:flex; gap:8px;">
+                    <input type="text" class="config-input" id="cfg_BR_IF" placeholder="dummy0" style="width:50%;"
+                      oninput="onConfigInputChanged()">
+                    <input type="text" class="config-input" id="cfg_PROV_IF" placeholder="dummy1" style="width:50%;"
+                      oninput="onConfigInputChanged()">
+                  </div>
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">プロビジョニング ドメイン (MAPE_DOMAIN_SEARCH)</label>
+                  <input type="text" class="config-input" id="cfg_MAPE_DOMAIN_SEARCH" placeholder="map.ocn.ad.jp"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">プロビジョニング プレフィックス (MAPE_PROV_PREFIX)</label>
+                  <input type="text" class="config-input" id="cfg_MAPE_PROV_PREFIX" placeholder="${BASE_SUBNET}:9999"
+                    oninput="onConfigInputChanged()">
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Panel 4: SLAAC -->
+        <div class="config-tab-panel" id="configPanel4">
+          <div class="config-section-title"><span>📡</span> MAP-E (SLAAC) 設定</div>
+
+          <!-- Dynamic Info Card -->
+          <div class="info-card-blue" style="margin-bottom: 16px;">
+            <div style="font-weight:700; margin-bottom:4px; font-size:13.5px;">ℹ️ SLAAC 動的 IP について（個別設定不要）</div>
+            CE（端末ルーター）は radvd が広告する IPv6 プレフィックスから自律的に IPv6 アドレスを生成します。<br>
+            プロビジョニングサーバーが <code>BR_IPV4_POOL</code> と CE IPv6 アドレスから機械的に IPv4 アドレスと PSID
+            を自動算出するため、<strong>端末ごとの事前個別設定は一切不要</strong>です。<br>
+            ※ 固定 IP や端末備考の登録は「<strong>3️⃣ IPoE (MAP-E) 共通</strong>」タブで行えます。
+          </div>
+
+          <!-- Accordion 4: SLAAC Advanced -->
+          <div class="config-accordion" id="acc_slaac">
+            <div class="config-accordion-header" onclick="toggleAccordion('acc_slaac')">
+              <span>🔧 拡張設定（SLAAC IPv6 プレフィックス計算用パラメータ）</span>
+              <span class="config-accordion-icon">▶</span>
+            </div>
+            <div class="config-accordion-body">
+              <div class="config-grid-2">
+                <div class="config-form-group">
+                  <label class="config-label">SLAAC 動的 ベース (SLAAC_BR_BASE)</label>
+                  <input type="text" class="config-input" id="cfg_SLAAC_BR_BASE" placeholder="1000"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">SLAAC 動的 サフィックス (SLAAC_BR_SUFFIX)</label>
+                  <input type="text" class="config-input" id="cfg_SLAAC_BR_SUFFIX" placeholder="::ff0a"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">SLAAC 固定 ベース (SLAAC_FIX_BR_PREFIX)</label>
+                  <input type="text" class="config-input" id="cfg_SLAAC_FIX_BR_PREFIX" placeholder="3000"
+                    oninput="onConfigInputChanged()">
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">SLAAC 固定 サフィックス (SLAAC_FIX_BR_SUFFIX)</label>
+                  <input type="text" class="config-input" id="cfg_SLAAC_FIX_BR_SUFFIX" placeholder="::ff0d"
+                    oninput="onConfigInputChanged()">
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Panel 5: DHCP-PD -->
+        <div class="config-tab-panel" id="configPanel5">
+          <div class="config-section-title"><span>📦</span> MAP-E (DHCP-PD) 設定</div>
+
+          <!-- Dynamic Info Card -->
+          <div class="info-card-blue" style="margin-bottom: 16px;">
+            <div style="font-weight:700; margin-bottom:4px; font-size:13.5px;">ℹ️ DHCP-PD 動的 IP について（個別設定不要）</div>
+            CE（端末ルーター）が DHCPv6-PD リクエストを送信すると、Kea DHCPv6 のプレフィックスプール（<code>PD_POOL</code>）から空きプレフィックス（/56）が動的に貸し出され、IPv4
+            と PSID が自動算出されます。<br>
+            そのため、<strong>端末ごとの事前個別設定は一切不要</strong>です。<br>
+            ※ 固定 IP や端末備考の登録は「<strong>3️⃣ IPoE (MAP-E) 共通</strong>」タブで行えます。
+          </div>
+
+          <!-- Accordion 5: DHCP-PD Advanced -->
+          <div class="config-accordion" id="acc_dhcppd">
+            <div class="config-accordion-header" onclick="toggleAccordion('acc_dhcppd')">
+              <span>🔧 拡張設定（Kea DHCP-PD プレフィックスプール）</span>
+              <span class="config-accordion-icon">▶</span>
+            </div>
+            <div class="config-accordion-body">
+              <div class="config-grid-2">
+                <div class="config-form-group">
+                  <label class="config-label">動的 プレフィックスプール (PD_POOL)</label>
+                  <input type="text" class="config-input" id="cfg_PD_POOL" placeholder="2000"
+                    oninput="onConfigInputChanged()">
+                  <div class="config-hint">動的 PD クライアントへ貸し出す /56 プール帯（第3ヘクステット）</div>
+                </div>
+                <div class="config-form-group">
+                  <label class="config-label">固定 プレフィックスプール (PD_FIX_POOL)</label>
+                  <input type="text" class="config-input" id="cfg_PD_FIX_POOL" placeholder="4000"
+                    oninput="onConfigInputChanged()">
+                  <div class="config-hint">固定 PD クライアント用プール帯（第3ヘクステット）</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Panel 6: Appearance / Theme -->
+        <div class="config-tab-panel" id="configPanel6">
+          <div class="config-section-title"><span>🎨</span> テーマ</div>
+
+          <div class="theme-picker-card">
+            <div class="theme-picker-card-head">
+              <span class="theme-picker-title">カラーパレット選択</span>
+            </div>
+            <div class="config-grid-2">
+              <div class="config-form-group">
+                <label class="config-label" for="themeSelect">配色テーマ (カラーパレット)</label>
+                <select id="themeSelect" class="theme-select" onchange="onThemeSelectChanged()"></select>
+                <div class="config-hint">ダークテーマ / ライトテーマの 65 種類から選択できます。</div>
+              </div>
+              <div class="config-form-group">
+                <label class="config-label">適用中のテーマ</label>
+                <div class="theme-meta" style="font-size: 13px;">
+                  <div class="theme-meta-row" style="gap: 8px;">
+                    <span class="theme-name-label">テーマ名:</span>
+                    <span id="themeName" class="theme-name">-</span>
+                  </div>
+                  <div class="theme-meta-row">
+                    <span class="theme-name-label">配色:</span>
+                    <span id="themeSwatches" class="theme-swatches" style="gap:4px;"></span>
+                  </div>
+                  <div class="theme-meta-row theme-links">
+                    <span class="theme-link-label">出典:</span>
+                    <a id="themeSourceLink" href="https://github.com/BeardedBear/bearded-theme" target="_blank" rel="noopener">Bearded Theme</a>
+                    <span>·</span>
+                    <a id="themeLicenseLink" href="https://github.com/BeardedBear/bearded-theme/blob/master/LICENSE" target="_blank" rel="noopener">GPL-3.0 ライセンス</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="modal-overlay" id="applyConfirmModal" style="display:none; z-index:2100;">
+    <div class="modal-box" style="max-width: 480px;">
+      <div class="modal-header">
+        <div class="modal-icon-warn">🚀</div>
+        <div class="modal-title">設定の反映（Apply）</div>
+      </div>
+      <div class="modal-body" style="font-size:13.5px; line-height:1.6; color:var(--text-soft);">
+        設定を反映するためにサービスを再起動します。<br><br>
+        この処理には数秒〜10秒程度かかります。実行してもよろしいですか？
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" onclick="closeApplyConfirmModal()">キャンセル</button>
+        <button class="btn-confirm-danger"
+          style="background:var(--accent-amber); border-color:var(--accent-amber);"
+          onclick="executeApplyConfig()">反映を実行</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Container Restart Confirmation Modal -->
+  <div class="modal-overlay" id="restartConfirmModal" style="display:none; z-index:2100;">
+    <div class="modal-box" style="max-width: 460px;">
+      <div class="modal-header">
+        <div class="modal-icon-warn" style="background:rgba(56,189,248,0.18); color:var(--accent-cyan,#38bdf8);">⟳</div>
+        <div class="modal-title">コンテナの再起動</div>
+      </div>
+      <div class="modal-body" style="font-size:13.5px; line-height:1.6; color:var(--text-soft);">
+        ネットワーク設定と sysctl パラメータを再適用し、Web ダッシュボード以外のサービスコンテナ（DNS, DHCP, PPPoE, MAP-E 等）を再起動します。<br><br>
+        実行しますか？
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" onclick="closeRestartConfirmModal()">キャンセル</button>
+        <button class="btn-confirm-danger" style="background:var(--accent-primary); border:none;" onclick="executeRestartContainers()">再起動を実行</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Discard Confirmation Modal -->
+  <div class="modal-overlay" id="discardConfirmModal" style="display:none; z-index:2100;">
+    <div class="modal-box" style="max-width: 460px;">
+      <div class="modal-header">
+        <div class="modal-icon-warn" style="background:rgba(239,68,68,0.2); color:var(--accent-rose);">↺</div>
+        <div class="modal-title">現在の稼働中設定へ戻す</div>
+      </div>
+      <div class="modal-body" style="font-size:13.5px; line-height:1.6; color:var(--text-soft);">
+        画面上で変更した未反映の内容をすべて破棄し、現在稼働中の設定ファイルから再読み込みします。<br><br>
+        未反映の変更は失われますが、よろしいですか？
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" onclick="closeDiscardConfirmModal()">キャンセル</button>
+        <button class="btn-confirm-danger" onclick="executeDiscardConfig()">破棄して戻す</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Apply Progress / Log Modal -->
+  <div class="modal-overlay" id="resetConfirmModal" style="display:none; z-index:2100;">
+    <div class="config-modal-box" style="max-width:480px; padding:28px 32px;">
+      <div class="modal-title">設定の初期化</div>
+      <div style="color:var(--text-soft); font-size:13.5px; line-height:1.7; margin-bottom:20px;">
+        すべての設定をデフォルト値にリセットします。<br><br>
+        <strong style="color:var(--accent-amber);">⚠️ 管理LAN設定（IPアドレス・GW・DNS等）は現在の値が維持されます。</strong><br><br>
+        この操作は「設定を反映する」を実行するまでファイルには書き込まれません。
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel"
+          onclick="document.getElementById('resetConfirmModal').style.display='none'">キャンセル</button>
+        <button class="btn-confirm-danger"
+          style="background:var(--accent-primary); border-color:var(--accent-primary);"
+          onclick="executeResetConfig()">初期化を実行</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="applyProgressModal" style="display:none; z-index:2200;">
+    <div class="modal-box" style="max-width: 640px;">
+      <div class="modal-header">
+        <div id="applyProgressIcon" style="font-size:22px;">⏳</div>
+        <div class="modal-title" id="applyProgressTitle">設定を反映中...</div>
+      </div>
+      <div class="modal-body">
+        <div id="applyProgressSpinner"
+          style="display:flex; align-items:center; gap:10px; margin-bottom:14px; font-size:13px; color:var(--accent-cyan);">
+          <div class="pulse-dot"></div> <span>サービスを再起動しています...</span>
+        </div>
+        <pre class="apply-log-box" id="applyLogBox">処理を開始しました...</pre>
+      </div>
+      <div class="modal-footer" id="applyProgressFooter" style="display:none;">
+        <button class="btn-cancel" onclick="closeApplyProgressModal()">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="/js/bearded-themes.js"></script>
+  <script src="/js/theme-manager.js"></script>
+  <script src="/js/tables.js"></script>
+  <script src="/js/config-editor.js"></script>
+  <script>
+    function showToast(message, isSuccess = true) {
+      const container = document.getElementById("toastContainer");
+      if (!container) return;
+      const toast = document.createElement("div");
+      toast.className = `toast ${isSuccess ? "toast-success" : "toast-error"}`;
+      toast.innerHTML = `<span>${isSuccess ? "✓" : "⚠️"}</span> <span>${message}</span>`;
+      container.appendChild(toast);
+      setTimeout(() => {
+        toast.style.opacity = "0";
+        toast.style.transform = "translateY(10px)";
+        toast.style.transition = "all 0.3s";
+        setTimeout(() => toast.remove(), 300);
+      }, 3500);
+    }
+
+    document.addEventListener("DOMContentLoaded", async () => {
+      await loadConfigData();
+      const hash = window.location.hash;
+      let tab = 1;
+      if (hash.startsWith("#tab=")) {
+        tab = parseInt(hash.replace("#tab=", ""), 10) || 1;
+      }
+      switchConfigTab(tab);
+    });
+  </script>
+</body>
+</html>

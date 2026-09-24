@@ -5,17 +5,15 @@ use warnings;
 use File::Basename;
 use FindBin qw($RealBin);
 use lib $RealBin;
-use MapeCommon qw(calc_br_ipv6 calc_vlan_prefix build_vlan_segments load_conf_file);
+use MapeCommon qw(calc_br_ipv6 calc_vlan_prefix build_vlan_segments load_conf_file check_config);
 
 my $mode = $ARGV[0] || '';
 
 # ----------------------------------------------------------------------------
-# map-e.conf の読み込み (共通ロジックは MapeCommon::load_conf_file)
-#   Makefile経由 (set -a; . ./map-e.conf) で既に%ENVに展開済みの場合は
-#   同じ内容で上書きされるだけなので無害。単体実行時のフォールバックとして働く。
+# map-e.conf の読み込みと検証 (共通ロジックは MapeCommon::check_config)
 # ----------------------------------------------------------------------------
 my $script_dir = dirname(__FILE__);
-load_conf_file("$script_dir/../map-e.conf");
+check_config("$script_dir/../map-e.conf");
 
 # 以降の generate_sysctl / generate_interfaces は小文字キーの
 # ハッシュを前提にしているため、%ENV を小文字化して %config を作る。
@@ -24,10 +22,10 @@ my %config = map { lc($_) => $ENV{$_} } keys %ENV;
 # --- 99-network-routing.conf の生成関数 ---
 sub generate_sysctl {
     my ($c) = @_;
-    my $mgt_if = $c->{mgt_if} || 'eth0';
+    my $mgt_if = $c->{mgt_if};
 
     print "# =============================================================================\n";
-    print "# /etc/sysctl.d/99-network-routing.conf (Generated via gen_configs.pl)\n";
+    print "# /etc/sysctl.d/99-network-routing.conf (Generated via gen_system_mod.pl)\n";
     print "# =============================================================================\n\n";
     print "# --- パケット転送設定 (Routing & Forwarding) ---\n";
     print "net.ipv6.conf.all.forwarding = 1\n";
@@ -37,7 +35,10 @@ sub generate_sysctl {
     print "net.ipv6.conf.${mgt_if}.disable_ipv6 = 1\n\n";
     print "# --- 逆経路フィルタ (rp_filter) の最適化 ---\n";
     print "net.ipv4.conf.default.rp_filter = 0\n";
-    print "net.ipv4.conf.all.rp_filter = 0\n";
+    print "net.ipv4.conf.all.rp_filter = 0\n\n";
+    print "# --- VRF間サービス通信許可 (L3 Master Device) ---\n";
+    print "net.ipv4.udp_l3mdev_accept = 1\n";
+    print "net.ipv4.tcp_l3mdev_accept = 1\n";
 }
 
 # --- /etc/network/interfaces の生成関数 ---
@@ -57,6 +58,7 @@ sub generate_interfaces {
     my $pd_dyn_vlans      = $c->{pd_dyn_vlans};
     my $slaac_fix_vlans   = $c->{slaac_fix_vlans};
     my $pd_fix_vlans      = $c->{pd_fix_vlans};
+    my $pppoe_vlans       = $c->{pppoe_vlans};
     my $mgt_ip            = $c->{mgt_ip};
     my $mgt_mask          = $c->{mgt_mask};
     my $mgt_gw            = $c->{mgt_gw};
@@ -68,7 +70,7 @@ sub generate_interfaces {
     }
 
     print "# =============================================================================\n";
-    print "# /etc/network/interfaces (Generated via gen_configs.pl)\n";
+    print "# /etc/network/interfaces (Generated via gen_system_mod.pl)\n";
     print "# =============================================================================\n\n";
 
     print "auto lo\niface lo inet loopback\n\n";
@@ -79,77 +81,130 @@ sub generate_interfaces {
     print "    gateway $mgt_gw\n\n";
     print "iface $mape_if inet manual\n\n";
 
-    # ①～④ セグメント定義
+    my %seen_vlan;
     foreach my $seg (build_vlan_segments([
         { vlans => $slaac_dyn_vlans, type => 'slaac', base => $slaac_br_base },
         { vlans => $pd_dyn_vlans,    type => 'pd',    base => undef },
         { vlans => $slaac_fix_vlans, type => 'slaac', base => $slaac_fix_br_prefix },
         { vlans => $pd_fix_vlans,    type => 'pd',    base => undef },
+        { vlans => $pppoe_vlans,     type => 'pppoe', base => undef },
     ])) {
         my $vlan = $seg->{v};
-        my $vif  = "$mape_if.$vlan";
+        next if $seen_vlan{$vlan}++;
+        my $vif = "$mape_if.$vlan";
 
         if ($seg->{t} eq 'slaac') {
-            my $prefix = calc_vlan_prefix($base_subnet, $seg->{b}, $vlan);
-            my $suffix = $slaac_br_suffix;
-            $suffix =~ s/^:+//;
-            my $ip = "${prefix}::${suffix}";
-
-            # 動的セグメントと同じ理由(旧アドレス/旧経路の確実な削除)で post-down を付与
-            print "auto $vif\niface $vif inet6 static\n";
-            print "    address ${ip}/64\n";
-            print "    accept_ra 0\n";
-            print "    pre-up ip link add link $mape_if name $vif type vlan id $vlan || true\n\n";
-            print "    post-down ip link del $vif || true\n";
+            _iface_slaac($vif, $mape_if, $vlan, $base_subnet, $seg->{b},
+                         $slaac_br_suffix, $slaac_fix_br_prefix, $slaac_fix_br_suffix);
+        } elsif ($seg->{t} eq 'pppoe') {
+            _iface_pppoe($vif, $mape_if, $vlan);
         } else {
-            print "auto $vif\niface $vif inet6 manual\n";
-            print "    pre-up ip link add link $mape_if name $vif type vlan id $vlan || true\n";
-            print "    up ip link set dev $vif up\n";
-            print "    up sysctl -w net.ipv6.conf.${vif}.accept_ra=0\n";
-            print "    up sysctl -w net.ipv6.conf.${vif}.autoconf=0\n\n";
+            _iface_pd($vif, $mape_if, $vlan);
         }
     }
 
-    # サービスIP
-    my $mape_dns_ip         = $c->{mape_dns_ip};
-    my $mape_prov_ip        = $c->{mape_prov_ip};
-    my $mape_ntp_ip         = $c->{mape_ntp_ip};
-
-    # --- BR_IPV6 の算出 (共通ロジックは MapeCommon::calc_br_ipv6) ---
-    my $br_ipv6 = calc_br_ipv6(
+    my $mape_dns_ip  = $c->{mape_dns_ip};
+    my $mape_prov_ip = $c->{mape_prov_ip};
+    my $mape_ntp_ip  = $c->{mape_ntp_ip};
+    my $br_ipv6      = calc_br_ipv6(
         br_ipv6      => $c->{br_ipv6},
         br_prefix    => $c->{br_prefix},
         br_ipv4_addr => $c->{br_ipv4_addr},
     );
-    # ----------------------------------------
+
     print "# =============================================================================\n";
     print "# Services & Provisioning Network\n";
     print "# =============================================================================\n";
+    _iface_br($br_if, $br_ipv4_addr, $br_ipv6);
+    _iface_prov($prov_if, $mape_dns_ip, $mape_prov_ip, $mape_ntp_ip);
+}
 
-    # dummy0 は MAP-Eトンネル終端 (BRのIPv6/IPv4両エンドポイント)。
-    # IPv4側 (BR_IPV4_ADDR) はCEから見たGW/BR_IPV6合成元のBR自身の
-    # アドレスであり、サブネットを持たない単一ホストアドレスのため /32 で
-    # 付与する。link自体の作成/削除はinet/inet6どちらのスタンザからでも
-    # 実行され得るため、両方に (冪等な) pre-up/post-down を持たせる。
+# ---------------------------------------------------------------------------
+# _iface_slaac: SLAAC セグメント用 VLAN インターフェース stanza を出力
+# ---------------------------------------------------------------------------
+sub _iface_slaac {
+    my ($vif, $mape_if, $vlan, $base_subnet, $base,
+        $slaac_br_suffix, $slaac_fix_br_prefix, $slaac_fix_br_suffix) = @_;
+    my $prefix = calc_vlan_prefix($base_subnet, $base, $vlan);
+    my $suffix = (defined $slaac_fix_br_prefix && $base eq $slaac_fix_br_prefix
+                  && defined $slaac_fix_br_suffix && $slaac_fix_br_suffix ne '')
+        ? $slaac_fix_br_suffix
+        : $slaac_br_suffix;
+    $suffix =~ s/^:+//;
+    my $ip = "${prefix}::${suffix}";
+    print <<~"STANZA";
+        auto $vif
+        iface $vif inet6 static
+            address ${ip}/64
+            accept_ra 0
+            pre-up ip link add link $mape_if name $vif type vlan id $vlan || true
+
+            post-down ip link del $vif || true
+        STANZA
+}
+
+# ---------------------------------------------------------------------------
+# _iface_pd: PD（DHCPv6-PD）セグメント用 VLAN インターフェース stanza を出力
+# ---------------------------------------------------------------------------
+sub _iface_pd {
+    my ($vif, $mape_if, $vlan) = @_;
+    print <<~"STANZA";
+        auto $vif
+        iface $vif inet6 manual
+            pre-up ip link add link $mape_if name $vif type vlan id $vlan || true
+            up ip link set dev $vif up
+            up printf 0 > /proc/sys/net/ipv6/conf/${vif}/accept_ra
+            up printf 0 > /proc/sys/net/ipv6/conf/${vif}/autoconf
+
+        STANZA
+}
+
+# ---------------------------------------------------------------------------
+# _iface_pppoe: PPPoE 専用 VLAN インターフェース stanza を出力（IP アドレスなし）
+# ---------------------------------------------------------------------------
+sub _iface_pppoe {
+    my ($vif, $mape_if, $vlan) = @_;
+    print <<~"STANZA";
+        auto $vif
+        iface $vif inet manual
+            pre-up ip link add link $mape_if name $vif type vlan id $vlan || true
+            up ip link set dev $vif up
+            up printf 0 > /proc/sys/net/ipv6/conf/${vif}/disable_ipv6
+            post-down ip link del $vif || true
+
+        STANZA
+}
+
+# ---------------------------------------------------------------------------
+# _iface_br: BR（dummy0）インターフェース stanza を出力
+#   dummy0 は MAP-E トンネル終端。IPv4/IPv6 両スタンザで冪等に作成・削除する。
+# ---------------------------------------------------------------------------
+sub _iface_br {
+    my ($br_if, $br_ipv4_addr, $br_ipv6) = @_;
     print "auto $br_if\n";
     print "iface $br_if inet manual\n";
     print "    pre-up ip link add $br_if type dummy || true\n";
     print "    post-up ip addr add $br_ipv4_addr/32 dev $br_if || true\n" if $br_ipv4_addr;
     print "    post-up sysctl -w net.ipv4.conf.$br_if.rp_filter=0 || true\n";
     print "    post-down ip link del $br_if || true\n\n";
-
     print "iface $br_if inet6 manual\n";
     print "    pre-up ip link add $br_if type dummy || true\n";
     print "    post-up ip -6 addr add $br_ipv6/64 dev $br_if || true\n" if $br_ipv6;
     print "    post-up sysctl -w net.ipv4.conf.$br_if.rp_filter=0 || true\n";
     print "    post-down ip link del $br_if || true\n\n";
+}
 
+# ---------------------------------------------------------------------------
+# _iface_prov: プロビジョニング用 dummy インターフェース stanza を出力
+# ---------------------------------------------------------------------------
+sub _iface_prov {
+    my ($prov_if, $mape_dns_ip, $mape_prov_ip, $mape_ntp_ip) = @_;
     print "auto $prov_if\n";
     print "iface $prov_if inet6 manual\n";
     print "    pre-up ip link add $prov_if type dummy || true\n";
-    print "    post-up ip -6 addr add $mape_dns_ip/64 dev $prov_if || true\n" if $mape_dns_ip;
+    print "    post-up ip -6 addr add $mape_dns_ip/64 dev $prov_if || true\n"  if $mape_dns_ip;
     print "    post-up ip -6 addr add $mape_prov_ip/64 dev $prov_if || true\n" if $mape_prov_ip;
-    print "    post-up ip -6 addr add $mape_ntp_ip/64 dev $prov_if || true\n" if $mape_ntp_ip;
+    print "    post-up ip -6 addr add $mape_ntp_ip/64 dev $prov_if || true\n"  if $mape_ntp_ip;
     print "    post-down ip link del $prov_if || true\n";
 }
 

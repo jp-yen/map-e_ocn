@@ -1,9 +1,11 @@
-# gen_radvd_mod.pl
+#!/usr/bin/perl
+# generator/gen_radvd_mod.pl
 use strict;
 use warnings;
+use File::Basename;
 use FindBin qw($RealBin);
 use lib $RealBin;
-use MapeCommon qw(calc_vlan_prefix build_vlan_segments);
+use MapeCommon qw(calc_vlan_prefix build_vlan_segments check_config);
 
 sub generate_radvd {
     my ($c) = @_;
@@ -20,7 +22,7 @@ sub generate_radvd {
     my $domain              = $c->{domain};
 
     print "# =============================================================================\n";
-    print "# /etc/radvd.conf (Generated via gen_configs.pl)\n";
+    print "# /etc/radvd.conf (Generated via gen_radvd_mod.pl)\n";
     print "# =============================================================================\n\n";
 
     foreach my $seg (build_vlan_segments([
@@ -74,29 +76,27 @@ sub _print_radvd_block {
     print "};\n\n";
 }
 
-# --- 以下のメイン処理を追記 ---
-if (!defined caller) {
-    my $mode = $ARGV[0] || '';
-    if ($mode ne 'radvd') {
-        die "Usage: $0 radvd\n";
-    }
-
-    # Makefileで読み込まれた環境変数をハッシュにマッピング
-    my %config = (
-        mape_if             => $ENV{MAPE_IF}             || '',
-        base_subnet         => $ENV{BASE_SUBNET}         || '',
-        slaac_br_base       => $ENV{SLAAC_BR_BASE}       || 0,
-        slaac_fix_br_prefix => $ENV{SLAAC_FIX_BR_PREFIX} || 0,
-        slaac_dyn_vlans     => $ENV{SLAAC_DYN_VLANS}     || '',
-        pd_dyn_vlans        => $ENV{PD_DYN_VLANS}        || '',
-        slaac_fix_vlans     => $ENV{SLAAC_FIX_VLANS}     || '',
-        pd_fix_vlans        => $ENV{PD_FIX_VLANS}        || '',
-        mape_dns_ip         => $ENV{MAPE_DNS_IP}         || '',
-        domain              => $ENV{DOMAIN}              || '',
-    );
-
-    # 生成関数の実行
-    generate_radvd(\%config);
+# --- メイン処理 ---
+my $mode = $ARGV[0] || '';
+if ($mode ne 'radvd') {
+    die "Usage: $0 radvd\n";
 }
 
-1;
+my $script_dir = dirname(__FILE__);
+check_config("$script_dir/../map-e.conf");
+
+# 設定変数をハッシュにマッピング
+my %config = (
+    mape_if             => $ENV{MAPE_IF},
+    base_subnet         => $ENV{BASE_SUBNET},
+    slaac_br_base       => $ENV{SLAAC_BR_BASE},
+    slaac_fix_br_prefix => $ENV{SLAAC_FIX_BR_PREFIX},
+    slaac_dyn_vlans     => $ENV{SLAAC_DYN_VLANS},
+    pd_dyn_vlans        => $ENV{PD_DYN_VLANS},
+    slaac_fix_vlans     => $ENV{SLAAC_FIX_VLANS},
+    pd_fix_vlans        => $ENV{PD_FIX_VLANS},
+    mape_dns_ip         => $ENV{MAPE_DNS_IP},
+    domain              => $ENV{DOMAIN},
+);
+
+generate_radvd(\%config);

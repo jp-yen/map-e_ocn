@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Routing Tables - IPv4 / IPv6</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@600;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      background: var(--bg-main, #0b0f19);
+      color: var(--text-main, #e2e8f0);
+      font-family: 'Inter', sans-serif;
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      box-sizing: border-box;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .title {
+      font-family: 'Outfit', sans-serif;
+      font-size: 18px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text-strong, #fff);
+    }
+    .tabs-bar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .tab-btn {
+      background: var(--bg-overlay, rgba(255,255,255,0.06));
+      border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+      color: var(--text-muted, #94a3b8);
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .tab-btn.active {
+      background: #6366f1;
+      color: var(--text-strong, #fff);
+      border-color: #6366f1;
+    }
+    .search-row {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .search-input {
+      flex: 1;
+      background: var(--bg-input, #1e293b);
+      border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+      border-radius: 8px;
+      padding: 9px 14px;
+      color: var(--text-strong, #fff);
+      font-size: 13px;
+      outline: none;
+    }
+    .search-input:focus {
+      border-color: #6366f1;
+    }
+    .routes-container {
+      flex: 1;
+      background: var(--bg-input, #020617);
+      border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+      border-radius: 10px;
+      padding: 14px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--text-main, #e2e8f0);
+      overflow-y: auto;
+      line-height: 1.6;
+    }
+    .route-item {
+      padding: 6px 10px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid var(--border-faint, rgba(255,255,255,0.03));
+    }
+    .route-item:hover {
+      background: var(--bg-overlay, rgba(255,255,255,0.03));
+    }
+    .dst-prefix {
+      color: var(--accent-cyan, #38bdf8);
+      font-weight: 600;
+      min-width: 220px;
+    }
+    .route-detail {
+      color: var(--text-soft, #cbd5e1);
+      flex: 1;
+    }
+    .dev-tag {
+      color: #a78bfa;
+      background: rgba(167, 139, 250, 0.1);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">
+      <span>🗺️</span> ルーティングテーブル (Routing Table)
+    </div>
+    <div class="tabs-bar">
+      <button class="tab-btn active" id="tab4" onclick="setMode('ipv4')">IPv4 ルート</button>
+      <button class="tab-btn" id="tab6" onclick="setMode('ipv6')">IPv6 ルート</button>
+      <div style="display:flex; align-items:center; gap:6px; margin-left:4px;">
+        <span style="font-size:12px; font-weight:600; color:var(--text-muted);">VRF:</span>
+        <select id="vrfSelect" class="search-input" style="padding:6px 10px; font-size:12.5px; width:auto; min-width:140px; cursor:pointer;" onchange="onVrfChanged()">
+          <option value="">Default (main)</option>
+        </select>
+      </div>
+      <button class="tab-btn" style="padding: 8px 12px;" onclick="fetchRoutes()">🔄 更新</button>
+    </div>
+  </div>
+
+  <div class="search-row">
+    <input type="text" id="filterInput" class="search-input" placeholder="プレフィックス、デバイス名、ゲートウェイで絞り込み..." oninput="render()">
+  </div>
+
+  <div class="routes-container" id="routesList">読み込み中...</div>
+
+  <script>
+    let currentMode = 'ipv4';
+    let currentVrf = '';
+    let ipv4Routes = [];
+    let ipv6Routes = [];
+
+    function setMode(mode) {
+      currentMode = mode;
+      document.getElementById('tab4').className = mode === 'ipv4' ? 'tab-btn active' : 'tab-btn';
+      document.getElementById('tab6').className = mode === 'ipv6' ? 'tab-btn active' : 'tab-btn';
+      render();
+    }
+
+    function onVrfChanged() {
+      currentVrf = document.getElementById('vrfSelect').value;
+      fetchRoutes();
+    }
+
+    function updateVrfOptions(vrfs, activeVrf) {
+      const sel = document.getElementById('vrfSelect');
+      const curVal = activeVrf !== undefined ? activeVrf : sel.value;
+      sel.innerHTML = '<option value="">Default (main)</option>';
+      for (const v of vrfs) {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = `🔒 ${v}`;
+        if (v === curVal) opt.selected = true;
+        sel.appendChild(opt);
+      }
+    }
+
+    async function fetchRoutes() {
+      try {
+        const vrfParam = currentVrf ? `?vrf=${encodeURIComponent(currentVrf)}` : '';
+        const res = await fetch('/api/routes' + vrfParam);
+        const data = await res.json();
+        ipv4Routes = data.ipv4_routes || [];
+        
+        if (data.vrfs) {
+          updateVrfOptions(data.vrfs, currentVrf);
+        }
+
+        const rawV6 = data.ipv6_routes || [];
+        const cleanV6 = [];
+        let fe80Done = false;
+        for (const r of rawV6) {
+          if (r.startsWith('fe80::/64')) {
+            if (!fe80Done) {
+              cleanV6.push('fe80::/64 (省略)');
+              fe80Done = true;
+            }
+          } else {
+            cleanV6.push(r);
+          }
+        }
+        ipv6Routes = cleanV6;
+        render();
+      } catch (e) {
+        document.getElementById('routesList').textContent = 'エラー: ' + e.message;
+      }
+    }
+
+    // ---- IP アドレス検索ユーティリティ ----
+
+    // IPv4 アドレス文字列を 32bit 整数に変換
+    function ip4ToInt(ip) {
+      const p = ip.split('.');
+      if (p.length !== 4) return null;
+      let v = 0;
+      for (const o of p) {
+        const n = parseInt(o, 10);
+        if (isNaN(n) || n < 0 || n > 255) return null;
+        v = (v << 8) | n;
+      }
+      return v >>> 0;
+    }
+
+    // CIDR 文字列（例: "192.168.1.0/24"）をパースして {net, mask} を返す
+    function parseCidr4(cidr) {
+      const [addr, lenStr] = cidr.split('/');
+      const net = ip4ToInt(addr);
+      if (net === null) return null;
+      const len = lenStr !== undefined ? parseInt(lenStr, 10) : 32;
+      if (isNaN(len) || len < 0 || len > 32) return null;
+      const mask = len === 0 ? 0 : (0xFFFFFFFF << (32 - len)) >>> 0;
+      return { net: net & mask, mask };
+    }
+
+    // addr が cidr のサブネット内にあるかを判定
+    function ip4InCidr(addr, cidr) {
+      const c = parseCidr4(cidr);
+      const a = ip4ToInt(addr);
+      if (c === null || a === null) return false;
+      return (a & c.mask) >>> 0 === c.net;
+    }
+
+    // routePrefix（例: "10.0.0.0/8", "192.168.1.1"）が、入力 queryAddr を含むかどうか判定
+    function routeMatchesAddr(routePrefix, queryAddr) {
+      // queryAddr が CIDR 形式の場合は / 以降を除去
+      const addr = queryAddr.split('/')[0];
+      return ip4InCidr(addr, routePrefix);
+    }
+
+    // ルート行テキスト全体に対する IP ベースの一致を判定
+    // routeLine の先頭プレフィックスが queryAddr を含む → true
+    function routeLineMatchesQuery(routeLine, query) {
+      if (!query) return true;
+
+      // ルート行の先頭トークンがプレフィックス
+      const prefix = routeLine.split(/\s+/)[0] || '';
+
+      // query が有効な IP/CIDR に見える場合はアドレスベース検索
+      const queryAddr = query.split('/')[0];
+      const asInt = ip4ToInt(queryAddr);
+      if (asInt !== null) {
+        // prefix が CIDR → query の IP がそのサブネット内にあるか
+        if (prefix.includes('/')) {
+          if (routeMatchesAddr(prefix, query)) return true;
+        } else {
+          // ホストルートとの完全一致
+          if (ip4ToInt(prefix) === asInt) return true;
+        }
+        // IPv4 ベース検索で一致なしでも文字列フォールバックはしない
+        return false;
+      }
+
+      // query が IP でない場合（デバイス名・ゲートウェイ等）は従来の文字列一致
+      return routeLine.toLowerCase().includes(query.toLowerCase());
+    }
+
+    function render() {
+      const list = document.getElementById('routesList');
+      const filter = document.getElementById('filterInput').value.trim();
+      const routes = currentMode === 'ipv4' ? ipv4Routes : ipv6Routes;
+
+      const filtered = routes.filter(r => routeLineMatchesQuery(r, filter));
+
+      if (filtered.length === 0) {
+        list.innerHTML = `<div style="padding: 20px; color:var(--text-faint, #64748b); text-align:center;">一致するルートはありません</div>`;
+        return;
+      }
+
+      list.innerHTML = filtered.map(r => {
+        const parts = r.split(/\s+/);
+        const prefix = parts[0] || '';
+        const rest = parts.slice(1).join(' ').replace(/dev\s+([^\s]+)/g, '<span class="dev-tag">dev $1</span>');
+        const isOmitted = rest.includes('(省略)');
+        return `
+          <div class="route-item" style="${isOmitted ? 'opacity: 0.75; background: rgba(255,255,255,0.01);' : ''}">
+            <div class="dst-prefix" style="${isOmitted ? 'color: var(--text-muted, #94a3b8);' : ''}">${prefix}</div>
+            <div class="route-detail" style="${isOmitted ? 'color: var(--text-faint, #64748b); font-style: italic;' : ''}">${rest}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    fetchRoutes();
+  </script>
+  <script src="/js/bearded-themes.js"></script>
+  <script src="/js/theme-manager.js"></script>
+</body>
+</html>

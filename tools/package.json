@@ -1,0 +1,18 @@
+{
+  "name": "mape-dashboard-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Static validation tools for the MAP-E web-dashboard frontend",
+  "type": "module",
+  "scripts": {
+    "validate:css": "node validate_css.mjs ../web-dashboard/static/css/main.css",
+    "validate:js": "node validate.mjs ../web-dashboard/static/js/main.js ../web-dashboard/static/js/theme-manager.js ../web-dashboard/static/js/bearded-themes.js",
+    "validate": "npm run validate:js && npm run validate:css"
+  },
+  "dependencies": {
+    "postcss": "^8.4.49"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}

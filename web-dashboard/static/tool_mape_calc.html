@@ -1,0 +1,1559 @@
+<!DOCTYPE html>
+<html lang="ja" style="background-color: var(--bg-main, #0b0f19); color: var(--text-main, #e2e8f0);">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MAP-E パラメータ計算 (OpenWRT)</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-main: #0b0f19;
+      --bg-panel: #111827;
+      --bg-card: #1e293b;
+      --bg-card-hover: #26354a;
+      --bg-input: #0f172a;
+      --bg-overlay: rgba(255, 255, 255, 0.05);
+      --bg-banner: rgba(15, 23, 42, 0.5);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --border-strong: rgba(255, 255, 255, 0.16);
+      --border-focus: #6366f1;
+      --text-main: #94a3b8;
+      --text-strong: #f8fafc;
+      --text-muted: #64748b;
+      --text-faint: #475569;
+      --accent-primary: #6366f1;
+      --accent-cyan: #38bdf8;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+      --badge-accent-bg: rgba(99, 102, 241, 0.15);
+      --badge-accent-border: rgba(99, 102, 241, 0.4);
+      --badge-accent-text: #a5b4fc;
+      --code-bg: var(--bg-input, #030712);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg-main);
+      color: var(--text-main);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 20px;
+      transition: background-color 0.2s ease, color 0.2s ease;
+    }
+
+    .mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border-color);
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-icon {
+      font-size: 26px;
+      background: var(--badge-accent-bg);
+      border: 1px solid var(--badge-accent-border);
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .title {
+      font-family: 'Outfit', sans-serif;
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-strong);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .theme-select-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      padding: 2px 8px;
+    }
+
+    .theme-select-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .theme-select {
+      background: transparent;
+      border: none;
+      color: var(--text-strong);
+      font-size: 12px;
+      padding: 6px 20px 6px 4px;
+      cursor: pointer;
+      outline: none;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 4px center;
+    }
+
+    .theme-select option {
+      background: var(--bg-card);
+      color: var(--text-strong);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.2s ease;
+      text-decoration: none;
+      color: var(--text-strong);
+    }
+
+    .btn-secondary {
+      background: var(--bg-card);
+      border-color: var(--border-strong);
+    }
+
+    .btn-secondary:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--accent-primary);
+    }
+
+    .btn-primary {
+      background: var(--accent-primary);
+      border-color: rgba(255, 255, 255, 0.15);
+      color: #fff;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    }
+
+    .btn-primary:hover {
+      filter: brightness(1.1);
+      transform: translateY(-1px);
+    }
+
+    /* Main Layout */
+    .calc-container {
+      display: grid;
+      grid-template-columns: 420px 1fr;
+      gap: 20px;
+      flex: 1;
+      align-items: start;
+    }
+
+    @media (max-width: 1080px) {
+      .calc-container {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Panels */
+    .panel {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 12px;
+    }
+
+    .panel-title {
+      font-family: 'Outfit', sans-serif;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-strong);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Form Controls */
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-strong);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .form-label .badge {
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+
+    .badge-required {
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--accent-rose, #f87171);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    .badge-optional {
+      background: var(--bg-overlay);
+      color: var(--text-muted);
+    }
+
+    .badge-mode {
+      background: var(--badge-accent-bg);
+      color: var(--badge-accent-text);
+      border: 1px solid var(--badge-accent-border);
+    }
+
+    .form-control {
+      background: var(--bg-input);
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: var(--text-strong);
+      font-size: 13px;
+      outline: none;
+      transition: all 0.2s ease;
+      width: 100%;
+    }
+
+    .form-control:focus {
+      border-color: var(--border-focus, var(--accent-primary));
+      box-shadow: 0 0 0 2px var(--badge-accent-bg);
+    }
+
+    select.form-control {
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      padding-right: 32px;
+    }
+
+    select.form-control option {
+      background: var(--bg-card);
+      color: var(--text-strong);
+    }
+
+    .input-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    .quick-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 4px;
+    }
+
+    .chip {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      color: var(--text-main);
+      transition: all 0.15s ease;
+    }
+
+    .chip:hover {
+      background: var(--badge-accent-bg);
+      border-color: var(--badge-accent-border);
+      color: var(--text-strong);
+    }
+
+    .chip.active {
+      background: var(--badge-accent-bg);
+      border-color: var(--accent-primary);
+      color: var(--text-strong);
+      font-weight: 600;
+    }
+
+    /* Mode Banner */
+    .mode-banner {
+      background: var(--bg-banner, rgba(15, 23, 42, 0.5));
+      border: 1px solid var(--border-color);
+      border-left: 4px solid var(--accent-primary);
+      border-radius: 8px;
+      padding: 12px 14px;
+      font-size: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .mode-banner-title {
+      font-weight: 600;
+      color: var(--text-strong);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .mode-banner-desc {
+      color: var(--text-main);
+      line-height: 1.4;
+    }
+
+    /* Accordion Details */
+    details.accordion {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 8px 12px;
+    }
+
+    details.accordion summary {
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-strong);
+      user-select: none;
+      outline: none;
+    }
+
+    details.accordion .accordion-body {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border-color);
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    /* Output Results Grid (8 Target Items) */
+    .results-hero {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 12px;
+    }
+
+    .result-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 12px 14px;
+      position: relative;
+      transition: all 0.2s ease;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .result-card:hover {
+      border-color: var(--badge-accent-border);
+      background: var(--bg-card-hover);
+    }
+
+    .result-card.highlight {
+      border-color: var(--badge-accent-border);
+      background: var(--bg-card);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    }
+
+    .result-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+
+    .result-label .uci-opt {
+      font-size: 10px;
+      color: var(--badge-accent-text);
+      text-transform: none;
+      background: var(--badge-accent-bg);
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+
+    .result-value-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .result-value {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-strong);
+      word-break: break-all;
+    }
+
+    .result-value.accent-cyan {
+      color: var(--accent-cyan);
+    }
+
+    .result-value.accent-green {
+      color: var(--accent-emerald);
+    }
+
+    .result-value.accent-amber {
+      color: var(--accent-amber);
+    }
+
+    .btn-copy-mini {
+      background: var(--bg-overlay);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      color: var(--text-main);
+      padding: 4px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      flex-shrink: 0;
+    }
+
+    .btn-copy-mini:hover {
+      background: var(--badge-accent-bg);
+      border-color: var(--accent-primary);
+      color: var(--text-strong);
+    }
+
+    /* Extra Details Table */
+    .extra-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 12px;
+      margin-top: 4px;
+    }
+
+    .extra-item {
+      background: var(--bg-input);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+
+    .extra-title {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    .extra-val {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-strong);
+      word-break: break-all;
+    }
+
+    /* Code Generator Section */
+    .code-container {
+      background: var(--code-bg);
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .code-header {
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border-color);
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .code-tabs {
+      display: flex;
+      gap: 6px;
+    }
+
+    .code-tab {
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      color: var(--text-muted);
+      font-weight: 500;
+      transition: all 0.15s ease;
+    }
+
+    .code-tab:hover {
+      color: var(--text-strong);
+    }
+
+    .code-tab.active {
+      background: var(--bg-panel);
+      border-color: var(--border-color);
+      color: var(--accent-primary);
+      font-weight: 600;
+    }
+
+    pre.code-block {
+      padding: 14px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-strong);
+      overflow-x: auto;
+      margin: 0;
+      tab-size: 4;
+      white-space: pre;
+    }
+
+    /* Toast Notification */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--bg-card);
+      border: 1px solid var(--accent-primary);
+      color: var(--text-strong);
+      padding: 10px 18px;
+      border-radius: 8px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+      font-size: 13px;
+      opacity: 0;
+      transform: translateY(10px);
+      transition: all 0.2s ease;
+      pointer-events: none;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="brand">
+      <div class="brand-icon">🧮</div>
+      <div>
+        <div class="title">OpenWRT MAP-E パラメータ計算</div>
+        <div class="subtitle">OCN仕様 (RFC 7597) 準拠 — 4つの接続方式に対応した即時計算＆UCI出力</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <!-- Theme Selector -->
+      <div class="theme-select-wrap">
+        <span class="theme-select-label">🎨 テーマ:</span>
+        <select id="themeSelect" class="theme-select" onchange="onThemeSelectChanged()"></select>
+      </div>
+
+      <button class="btn btn-secondary" onclick="loadMapeConf(true)" title="map-e.confから最新設定を再取得">
+        <span>🔄</span> 設定を再読込
+      </button>
+      <button class="btn btn-secondary" onclick="window.close()">
+        <span>✕</span> 閉じる
+      </button>
+    </div>
+  </div>
+
+  <!-- Main Calculator -->
+  <div class="calc-container">
+
+    <!-- Left Column: Input Parameters -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>⚙️</span> 入力パラメータ
+        </div>
+        <span class="badge badge-mode" id="modeBadge">① SLAAC 動的</span>
+      </div>
+
+      <!-- Mode Selector (Pull-down) -->
+      <div class="form-group">
+        <label class="form-label" for="calcMode">
+          <span>接続方式の選択</span>
+          <span class="badge badge-required">必須</span>
+        </label>
+        <select class="form-control" id="calcMode" onchange="onModeChange()">
+          <option value="slaac_dyn">① SLAAC (動的)</option>
+          <option value="pd_dyn">② DHCPv6-PD (動的)</option>
+          <option value="slaac_fix">③ SLAAC (固定IP)</option>
+          <option value="pd_fix">④ DHCPv6-PD (固定IP)</option>
+        </select>
+      </div>
+
+      <!-- Mode Banner -->
+      <div class="mode-banner" id="modeBanner">
+        <div class="mode-banner-title">
+          <span>ℹ️</span> <span id="bannerTitle">SLAAC 動的セグメント</span>
+        </div>
+        <div class="mode-banner-desc" id="bannerDesc">
+          VLANごとの RA プレフィックス (SLAAC_BR_BASE + VLAN) からIPv6を構成。EA-bits=8, Offset=4 によりポート共有を行います。
+        </div>
+      </div>
+
+      <!-- VLAN ID Field -->
+      <div class="form-group" id="vlanGroup">
+        <label class="form-label" for="vlanInput">
+          <span>VLAN ID</span>
+          <span class="badge badge-required" id="vlanBadge">必須</span>
+        </label>
+        <input type="number" class="form-control mono" id="vlanInput" value="62" min="1" max="4094" oninput="calculate()">
+        <div class="input-hint" id="vlanHint">map-e.conf の VLAN 番号を指定してください。</div>
+        <div class="quick-chips" id="vlanChips"></div>
+      </div>
+
+      <!-- Client MAC Address Field -->
+      <div class="form-group" id="macGroup">
+        <label class="form-label" for="macInput">
+          <span>クライアント MAC アドレス</span>
+          <span class="badge badge-optional" id="macBadge">任意</span>
+        </label>
+        <input type="text" class="form-control mono" id="macInput" placeholder="例: bc:24:11:27:64:90" oninput="onMacInput()">
+        <div class="input-hint" id="macHint">入力すると EUI-64 による CE IPv6 / 個別 IPv4 / ポート範囲を算出します。</div>
+        <!-- Static IP Presets / Registered MACs -->
+        <div class="quick-chips" id="macChips"></div>
+      </div>
+
+      <!-- Static IPv4 Address / Prefix Field (Fixed IP only) -->
+      <div class="form-group" id="staticIpGroup" style="display: none;">
+        <label class="form-label" for="staticIpInput">
+          <span>固定 IPv4 アドレス / プレフィックス長</span>
+          <span class="badge badge-required">必須 (固定IP)</span>
+        </label>
+        <input type="text" class="form-control mono" id="staticIpInput" placeholder="例: 172.16.18.64/28" oninput="calculate()">
+        <div class="input-hint">map-e-static-ip.conf の登録値、または割り当て固定 IPv4 (CIDR) を入力。</div>
+      </div>
+
+      <!-- Custom Delegated IPv6 Prefix (PD only) -->
+      <div class="form-group" id="pdPrefixGroup" style="display: none;">
+        <label class="form-label" for="pdPrefixInput">
+          <span>委譲 IPv6 プレフィックス (手動指定)</span>
+          <span class="badge badge-optional">未入力時は自動生成</span>
+        </label>
+        <input type="text" class="form-control mono" id="pdPrefixInput" placeholder="例: 2400:4150:2000:0100::/56" oninput="calculate()">
+        <div class="input-hint">OpenWRT WAN6 に委譲された /56 プレフィックスを入力。</div>
+      </div>
+
+      <!-- Accordion: map-e.conf Base Variables (Editable) -->
+      <details class="accordion">
+        <summary>🔧 プロバイダ基準パラメータ (map-e.conf より読込)</summary>
+        <div class="accordion-body">
+          <div class="form-group">
+            <label class="form-label">BASE_SUBNET</label>
+            <input type="text" class="form-control mono" id="cfg_base_subnet" value="2400:4150" oninput="calculate()">
+          </div>
+          <div class="form-group">
+            <label class="form-label">BR_PREFIX</label>
+            <input type="text" class="form-control mono" id="cfg_br_prefix" value="2400:4150:3620" oninput="calculate()">
+          </div>
+          <div class="form-group">
+            <label class="form-label">BR_IPV4_ADDR</label>
+            <input type="text" class="form-control mono" id="cfg_br_ipv4_addr" value="100.127.255.255" oninput="calculate()">
+          </div>
+          <div class="form-group">
+            <label class="form-label">BR_IPV4_POOL</label>
+            <input type="text" class="form-control mono" id="cfg_br_ipv4_pool" value="10.248.0.0/16" oninput="calculate()">
+          </div>
+          <div class="form-group">
+            <label class="form-label">SLAAC_BR_BASE</label>
+            <input type="text" class="form-control mono" id="cfg_slaac_br_base" value="1000" oninput="calculate()">
+          </div>
+          <div class="form-group">
+            <label class="form-label">SLAAC_FIX_BR_PREFIX</label>
+            <input type="text" class="form-control mono" id="cfg_slaac_fix_br_prefix" value="3000" oninput="calculate()">
+          </div>
+          <div class="form-group">
+            <label class="form-label">PD_POOL</label>
+            <input type="text" class="form-control mono" id="cfg_pd_pool" value="2000" oninput="calculate()">
+          </div>
+          <div class="form-group">
+            <label class="form-label">PD_FIX_POOL</label>
+            <input type="text" class="form-control mono" id="cfg_pd_fix_pool" value="4000" oninput="calculate()">
+          </div>
+        </div>
+      </details>
+
+    </div>
+
+    <!-- Right Column: Results & OpenWRT Configuration -->
+    <div style="display: flex; flex-direction: column; gap: 20px;">
+
+      <!-- 8 Target Parameters Section -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span>🎯</span> OpenWRT MAP-E パラメータ (8項目)
+          </div>
+          <span style="font-size: 12px; color: var(--text-muted);">クリックで個別コピー</span>
+        </div>
+
+        <div class="results-hero">
+          <!-- 1. BR -->
+          <div class="result-card highlight">
+            <div class="result-label">
+              <span>1. BR (Border Relay)</span>
+              <span class="uci-opt">peeraddr</span>
+            </div>
+            <div class="result-value-row">
+              <span class="result-value mono accent-cyan" id="res_br">-</span>
+              <button class="btn-copy-mini" onclick="copyText('res_br', this)">コピー</button>
+            </div>
+          </div>
+
+          <!-- 2. IPv4 prefix -->
+          <div class="result-card">
+            <div class="result-label">
+              <span>2. IPv4 Prefix</span>
+              <span class="uci-opt">ipaddr</span>
+            </div>
+            <div class="result-value-row">
+              <span class="result-value mono" id="res_v4_prefix">-</span>
+              <button class="btn-copy-mini" onclick="copyText('res_v4_prefix', this)">コピー</button>
+            </div>
+          </div>
+
+          <!-- 3. IPv4 prefix length -->
+          <div class="result-card">
+            <div class="result-label">
+              <span>3. IPv4 Prefix Length</span>
+              <span class="uci-opt">ip4prefixlen</span>
+            </div>
+            <div class="result-value-row">
+              <span class="result-value mono accent-green" id="res_v4_len">-</span>
+              <button class="btn-copy-mini" onclick="copyText('res_v4_len', this)">コピー</button>
+            </div>
+          </div>
+
+          <!-- 4. IPv6 prefix -->
+          <div class="result-card highlight">
+            <div class="result-label">
+              <span>4. IPv6 Prefix</span>
+              <span class="uci-opt">ip6prefix</span>
+            </div>
+            <div class="result-value-row">
+              <span class="result-value mono accent-cyan" id="res_v6_prefix">-</span>
+              <button class="btn-copy-mini" onclick="copyText('res_v6_prefix', this)">コピー</button>
+            </div>
+          </div>
+
+          <!-- 5. IPv6 prefix length -->
+          <div class="result-card">
+            <div class="result-label">
+              <span>5. IPv6 Prefix Length</span>
+              <span class="uci-opt">ip6prefixlen</span>
+            </div>
+            <div class="result-value-row">
+              <span class="result-value mono accent-green" id="res_v6_len">-</span>
+              <button class="btn-copy-mini" onclick="copyText('res_v6_len', this)">コピー</button>
+            </div>
+          </div>
+
+          <!-- 6. EA-bits length -->
+          <div class="result-card">
+            <div class="result-label">
+              <span>6. EA-bits Length</span>
+              <span class="uci-opt">ealen</span>
+            </div>
+            <div class="result-value-row">
+              <span class="result-value mono accent-amber" id="res_ea_len">-</span>
+              <button class="btn-copy-mini" onclick="copyText('res_ea_len', this)">コピー</button>
+            </div>
+          </div>
+
+          <!-- 7. PSID-bits length -->
+          <div class="result-card">
+            <div class="result-label">
+              <span>7. PSID-bits Length</span>
+              <span class="uci-opt">psidlen</span>
+            </div>
+            <div class="result-value-row">
+              <span class="result-value mono accent-amber" id="res_psid_len">-</span>
+              <button class="btn-copy-mini" onclick="copyText('res_psid_len', this)">コピー</button>
+            </div>
+          </div>
+
+          <!-- 8. PSID offset -->
+          <div class="result-card">
+            <div class="result-label">
+              <span>8. PSID Offset</span>
+              <span class="uci-opt">offset</span>
+            </div>
+            <div class="result-value-row">
+              <span class="result-value mono" id="res_psid_offset">-</span>
+              <button class="btn-copy-mini" onclick="copyText('res_psid_offset', this)">コピー</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Additional Analysis Info -->
+        <div class="extra-grid">
+          <div class="extra-item">
+            <div class="extra-title">割り当て 個別 IPv4 (CE用)</div>
+            <div class="extra-val mono" id="detail_assigned_v4">-</div>
+          </div>
+          <div class="extra-item">
+            <div class="extra-title">割り当て PSID (10進 / 16進)</div>
+            <div class="extra-val mono" id="detail_psid">-</div>
+          </div>
+          <div class="extra-item">
+            <div class="extra-title">利用可能ポート範囲 & ポート数</div>
+            <div class="extra-val mono" id="detail_ports">-</div>
+          </div>
+          <div class="extra-item">
+            <div class="extra-title">CE IPv6 (データ通信アドレス)</div>
+            <div class="extra-val mono" id="detail_ce_v6">-</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- OpenWRT Configuration Code Generator -->
+      <div class="code-container">
+        <div class="code-header">
+          <div class="code-tabs">
+            <button class="code-tab active" onclick="switchCodeTab('json', this)">📡 プロビジョニング JSON (商用OCN実機仕様)</button>
+            <button class="code-tab" onclick="switchCodeTab('uci', this)">UCI コマンド (/etc/config/network)</button>
+            <button class="code-tab" onclick="switchCodeTab('file', this)">設定ブロック (ファイル直書き)</button>
+          </div>
+          <button class="btn btn-primary" onclick="copyActiveCode(this)" style="padding: 4px 12px; font-size: 12px;">
+            <span>📋</span> すべてコピー
+          </button>
+        </div>
+        <pre class="code-block mono" id="codeOutput"># 計算結果がここに表示されます</pre>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast">
+    <span>✅</span> <span id="toastMsg">クリップボードにコピーしました</span>
+  </div>
+
+  <script>
+    // State
+    let confVars = {
+      BASE_SUBNET: "2400:4150",
+      BR_PREFIX: "2400:4150:3620",
+      BR_IPV4_ADDR: "100.127.255.255",
+      BR_IPV4_POOL: "10.218.0.0/16",
+      BR_IPV6: "2400:4150:3620::647f:ffff",
+      SLAAC_BR_BASE: "1000",
+      SLAAC_FIX_BR_PREFIX: "3000",
+      PD_POOL: "2000",
+      PD_FIX_POOL: "4000",
+      SLAAC_DYN_VLANS: "60 61",
+      PD_DYN_VLANS: "62 63",
+      SLAAC_FIX_VLANS: "64 65",
+      PD_FIX_VLANS: "66 67",
+      static_entries: []
+    };
+
+    let activeTab = 'json';
+
+    // 接続方式メタデータ
+    const MODE_INFO = {
+      slaac_dyn: {
+        title: "① SLAAC (動的)",
+        badge: "① SLAAC 動的",
+        bannerTitle: "SLAAC 動的セグメント",
+        bannerDesc: "VLANごとの RA プレフィックス (SLAAC_BR_BASE + VLAN) からIPv6を構成。EA-bits=8, Offset=4 によりポート共有を行います。",
+        vlanRequired: true,
+        macRequired: false,
+        macHint: "入力すると EUI-64 による CE IPv6 / 個別 IPv4 / ポート範囲を算出します。",
+        showStaticIp: false,
+        showPdPrefix: false,
+        eaLen: 8,
+        psidLen: 8,
+        psidOffset: 4
+      },
+      pd_dyn: {
+        title: "② DHCPv6-PD (動的)",
+        badge: "② PD 動的",
+        bannerTitle: "DHCPv6-PD 動的セグメント",
+        bannerDesc: "Kea DHCPv6 から /56 プレフィックスを委譲。EA-bits=8, Offset=4 による動的ポート共有を行います。",
+        vlanRequired: false,
+        macRequired: false,
+        macHint: "CE の MAC アドレス (DUID 計算・個別IP特定用)",
+        showStaticIp: false,
+        showPdPrefix: true,
+        eaLen: 8,
+        psidLen: 8,
+        psidOffset: 4
+      },
+      slaac_fix: {
+        title: "③ SLAAC (固定IP)",
+        badge: "③ SLAAC 固定IP",
+        bannerTitle: "SLAAC 固定IPセグメント",
+        bannerDesc: "SLAAC_FIX_BR_PREFIX + VLAN にて固定IPv4アドレスを1台専有。EA-bits=0, ポート全開放 (1-65535) です。",
+        vlanRequired: true,
+        macRequired: true,
+        macHint: "固定IP割り当てを map-e-static-ip.conf から引くための識別子です。",
+        showStaticIp: true,
+        showPdPrefix: false,
+        eaLen: 0,
+        psidLen: 0,
+        psidOffset: 0
+      },
+      pd_fix: {
+        title: "④ DHCPv6-PD (固定IP)",
+        badge: "④ PD 固定IP",
+        bannerTitle: "DHCPv6-PD 固定IPセグメント",
+        bannerDesc: "固定用プール (PD_FIX_POOL) から /56 委譲を受け、固定IPv4アドレスを1台専有。EA-bits=0, ポート全開放です。",
+        vlanRequired: false,
+        macRequired: true,
+        macHint: "固定IP割り当てを map-e-static-ip.conf から引くための識別子です。",
+        showStaticIp: true,
+        showPdPrefix: true,
+        eaLen: 0,
+        psidLen: 0,
+        psidOffset: 0
+      }
+    };
+
+    // 初期化
+    window.addEventListener('DOMContentLoaded', () => {
+      loadMapeConf(false);
+    });
+
+    // map-e.conf の値を API から読み込み
+    async function loadMapeConf(showToastMsg) {
+      try {
+        const res = await fetch('/api/mape-conf-vars');
+        if (res.ok) {
+          const data = await res.json();
+          confVars = { ...confVars, ...data };
+          applyConfToInputs();
+          renderVlanChips();
+          renderMacChips();
+          calculate();
+          if (showToastMsg) showToast("map-e.conf の最新設定を読み込みました");
+        } else {
+          applyConfToInputs();
+          renderVlanChips();
+          renderMacChips();
+          calculate();
+        }
+      } catch (e) {
+        console.error("Failed to load /api/mape-conf-vars:", e);
+        applyConfToInputs();
+        renderVlanChips();
+        renderMacChips();
+        calculate();
+      }
+    }
+
+    function applyConfToInputs() {
+      document.getElementById('cfg_base_subnet').value = confVars.BASE_SUBNET || "2400:4150";
+      document.getElementById('cfg_br_prefix').value = confVars.BR_PREFIX || "2400:4150:3620";
+      document.getElementById('cfg_br_ipv4_addr').value = confVars.BR_IPV4_ADDR || "100.127.255.255";
+      document.getElementById('cfg_br_ipv4_pool').value = confVars.BR_IPV4_POOL || "10.248.0.0/16";
+      document.getElementById('cfg_slaac_br_base').value = confVars.SLAAC_BR_BASE || "1000";
+      document.getElementById('cfg_slaac_fix_br_prefix').value = confVars.SLAAC_FIX_BR_PREFIX || "3000";
+      document.getElementById('cfg_pd_pool').value = confVars.PD_POOL || "2000";
+      document.getElementById('cfg_pd_fix_pool').value = confVars.PD_FIX_POOL || "4000";
+    }
+
+    // 接続方式変更ハンドラ
+    function onModeChange() {
+      const mode = document.getElementById('calcMode').value;
+      const info = MODE_INFO[mode];
+
+      document.getElementById('modeBadge').textContent = info.badge;
+      document.getElementById('bannerTitle').textContent = info.bannerTitle;
+      document.getElementById('bannerDesc').textContent = info.bannerDesc;
+
+      // VLANフィールド表示制御
+      const vlanGroup = document.getElementById('vlanGroup');
+      const vlanBadge = document.getElementById('vlanBadge');
+      if (info.vlanRequired) {
+        vlanGroup.style.display = 'flex';
+        vlanBadge.textContent = '必須';
+        vlanBadge.className = 'badge badge-required';
+      } else {
+        vlanGroup.style.display = 'flex';
+        vlanBadge.textContent = '任意';
+        vlanBadge.className = 'badge badge-optional';
+      }
+
+      // MACフィールド
+      const macBadge = document.getElementById('macBadge');
+      if (info.macRequired) {
+        macBadge.textContent = '必須';
+        macBadge.className = 'badge badge-required';
+      } else {
+        macBadge.textContent = '任意';
+        macBadge.className = 'badge badge-optional';
+      }
+      document.getElementById('macHint').textContent = info.macHint;
+
+      // 固定IPフィールド
+      document.getElementById('staticIpGroup').style.display = info.showStaticIp ? 'flex' : 'none';
+
+      // 委譲プレフィックスフィールド
+      document.getElementById('pdPrefixGroup').style.display = info.showPdPrefix ? 'flex' : 'none';
+
+      renderVlanChips();
+      renderMacChips();
+
+      // 固定IP選択時、すでにMACが入っていれば自動補完
+      if (info.showStaticIp) {
+        onMacInput();
+      }
+
+      calculate();
+    }
+
+    // VLANクイックチップ生成
+    function renderVlanChips() {
+      const mode = document.getElementById('calcMode').value;
+      const container = document.getElementById('vlanChips');
+      container.innerHTML = '';
+
+      let vlansStr = "";
+      if (mode === 'slaac_dyn') vlansStr = confVars.SLAAC_DYN_VLANS || "60 61";
+      else if (mode === 'pd_dyn') vlansStr = confVars.PD_DYN_VLANS || "62 63";
+      else if (mode === 'slaac_fix') vlansStr = confVars.SLAAC_FIX_VLANS || "64 65";
+      else if (mode === 'pd_fix') vlansStr = confVars.PD_FIX_VLANS || "66 67";
+
+      const vlans = vlansStr.trim().split(/\s+/).filter(v => /^\d+$/.test(v));
+      if (vlans.length === 0) return;
+
+      const currentVal = document.getElementById('vlanInput').value;
+
+      vlans.forEach((vlan, idx) => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'chip' + (currentVal === vlan ? ' active' : '');
+        chip.textContent = `VLAN ${vlan}`;
+        chip.onclick = () => {
+          document.getElementById('vlanInput').value = vlan;
+          document.querySelectorAll('#vlanChips .chip').forEach(c => c.classList.remove('active'));
+          chip.classList.add('active');
+          calculate();
+        };
+        container.appendChild(chip);
+
+        if (idx === 0 && (!currentVal || !vlans.includes(currentVal))) {
+          document.getElementById('vlanInput').value = vlan;
+          chip.classList.add('active');
+        }
+      });
+    }
+
+    // 登録済みMACプリセットチップ生成
+    function renderMacChips() {
+      const container = document.getElementById('macChips');
+      container.innerHTML = '';
+
+      const entries = confVars.static_entries || [];
+      if (entries.length === 0) return;
+
+      entries.forEach(entry => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'chip';
+        const label = entry.note ? `${entry.note} (${entry.key})` : entry.key;
+        chip.textContent = label;
+        chip.title = `MAC: ${entry.key}, IP: ${entry.ipv4} ${entry.note || ''}`;
+        chip.onclick = () => {
+          document.getElementById('macInput').value = entry.key;
+          if (entry.ipv4 && document.getElementById('staticIpInput')) {
+            document.getElementById('staticIpInput').value = entry.ipv4;
+          }
+          document.querySelectorAll('#macChips .chip').forEach(c => c.classList.remove('active'));
+          chip.classList.add('active');
+          calculate();
+        };
+        container.appendChild(chip);
+      });
+    }
+
+    // MAC入力時の自動検出
+    function onMacInput() {
+      const mac = document.getElementById('macInput').value.trim().toLowerCase();
+      const entries = confVars.static_entries || [];
+      const match = entries.find(e => e.key.toLowerCase() === mac);
+      if (match && match.ipv4) {
+        const staticIpInput = document.getElementById('staticIpInput');
+        if (staticIpInput && (!staticIpInput.value || staticIpInput.value === '')) {
+          staticIpInput.value = match.ipv4;
+        }
+      }
+      calculate();
+    }
+
+    // =========================================================================
+    // 計算ロジック (MapeCommon.pm / mape_calc.tmpl / RFC 7597 準拠)
+    // =========================================================================
+
+    // IPv4 を 16進 hextet ペアに変換 (例: 100.127.255.255 -> 647f:ffff)
+    function ipv4ToHexHextets(ipv4) {
+      const parts = ipv4.trim().split('.');
+      if (parts.length !== 4) return "";
+      const hex = parts.map(p => {
+        const n = parseInt(p, 10);
+        return isNaN(n) ? "00" : n.toString(16).padStart(2, '0');
+      });
+      return `${hex[0]}${hex[1]}:${hex[2]}${hex[3]}`;
+    }
+
+    // BR IPv6 の算出 (MapeCommon.pm: calc_br_ipv6 準拠)
+    function calcBrIpv6(brPrefix, brIpv4) {
+      const hexPart = ipv4ToHexHextets(brIpv4);
+      if (!hexPart) return "";
+      const cleanPrefix = brPrefix.trim().replace(/:+$/, '');
+      return `${cleanPrefix}::${hexPart}`;
+    }
+
+    // MAC アドレスから EUI-64 Interface ID (下位64bit) を生成
+    function macToEui64(mac) {
+      const clean = mac.replace(/[:-]/g, '').toLowerCase();
+      if (clean.length !== 12) return null;
+      let firstByte = parseInt(clean.substring(0, 2), 16);
+      firstByte ^= 0x02; // U/L bit 反転
+      const b0 = firstByte.toString(16).padStart(2, '0');
+      const b1 = clean.substring(2, 4);
+      const b2 = clean.substring(4, 6);
+      const b3 = clean.substring(6, 8);
+      const b4 = clean.substring(8, 10);
+      const b5 = clean.substring(10, 12);
+      return `${b0}${b1}:${b2}ff:fe${b3}:${b4}${b5}`;
+    }
+
+    // メイン計算実行
+    function calculate() {
+      const mode = document.getElementById('calcMode').value;
+      const info = MODE_INFO[mode];
+
+      // パラメータ取得
+      const baseSubnet = document.getElementById('cfg_base_subnet').value.trim();
+      const brPrefixRaw = document.getElementById('cfg_br_prefix').value.trim();
+      const brPrefix = brPrefixRaw.replace('${BASE_SUBNET}', baseSubnet);
+      const brIpv4Addr = document.getElementById('cfg_br_ipv4_addr').value.trim();
+      const brIpv4PoolRaw = document.getElementById('cfg_br_ipv4_pool').value.trim();
+      const slaacBrBase = parseInt(document.getElementById('cfg_slaac_br_base').value.trim(), 10) || 1000;
+      const slaacFixBrPrefix = parseInt(document.getElementById('cfg_slaac_fix_br_prefix').value.trim(), 10) || 3000;
+      const pdPool = document.getElementById('cfg_pd_pool').value.trim() || "2000";
+      const pdFixPool = document.getElementById('cfg_pd_fix_pool').value.trim() || "4000";
+
+      const vlan = parseInt(document.getElementById('vlanInput').value.trim(), 10) || 62;
+      const mac = document.getElementById('macInput').value.trim().toLowerCase();
+      const staticIp = document.getElementById('staticIpInput').value.trim();
+      const customPdPrefix = document.getElementById('pdPrefixInput').value.trim();
+
+      // BR IPv4 Pool パース
+      let poolNet = "10.248.0.0";
+      let poolMask = 16;
+      if (brIpv4PoolRaw.includes('/')) {
+        const parts = brIpv4PoolRaw.split('/');
+        poolNet = parts[0].trim();
+        poolMask = parseInt(parts[1].trim(), 10) || 16;
+      } else {
+        poolNet = brIpv4PoolRaw;
+      }
+
+      // 1. BR IPv6 Address
+      const brIpv6 = calcBrIpv6(brPrefix, brIpv4Addr);
+
+      // 2 & 3. IPv4 Prefix & Length
+      let ipv4Prefix = poolNet;
+      let ipv4PrefixLen = poolMask;
+
+      // 4 & 5. IPv6 Prefix & Length
+      let ipv6Prefix = "";
+      let ipv6PrefixLen = 64;
+
+      // 6, 7, 8. EA-bits, PSID-bits, PSID offset
+      const eaBitsLen = info.eaLen;
+      const psidBitsLen = info.psidLen;
+      const psidOffset = info.psidOffset;
+
+      // 詳細情報用
+      let assignedIpv4 = "-";
+      let psidVal = 0;
+      let portRangesText = "-";
+      let ceIpv6 = "-";
+
+      // 方式ごとの計算分岐
+      let hostName = "";
+
+      if (mode === 'slaac_dyn') {
+        const vlanHextet = slaacBrBase + vlan;
+        // 商用OCN実機 BMR ルール仕様 (CE-Fortigatre-RA-static.txt L208 / 方針.md 準拠):
+        // ipv6Prefix: BASE_SUBNET::, ipv6PrefixLength: 32 (Flat Mode)
+        ipv6Prefix = `${baseSubnet}::`;
+        ipv6PrefixLen = 32;
+
+        const hexStr = vlanHextet.toString();
+        psidVal = parseInt(hexStr.substring(0, 2), 16) || 0;
+
+        const poolOctets = poolNet.split('.');
+        let lastByte = 1;
+        if (mac) {
+          const macParts = mac.split(/[:-]/);
+          if (macParts.length === 6) {
+            const rawLast = parseInt(macParts[5], 16);
+            lastByte = (rawLast === 0 || rawLast === 255) ? ((rawLast % 254) + 1) : rawLast;
+          }
+        }
+        const octet2 = vlan % 256;
+        assignedIpv4 = `${poolOctets[0]}.${poolOctets[1]}.${octet2}.${lastByte}`;
+
+        // 動的IP (SLAAC動的):
+        // BMR の ipv4Prefix / ipv4PrefixLength は動的プール (10.248.0.0 / 16)
+        // ルーター(CE)が EA-bits から個別IPv4アドレスとPSIDを自己計算する
+        const eui64 = mac ? macToEui64(mac) : null;
+        ceIpv6 = eui64 ? `${baseSubnet}:${vlanHextet}:${eui64}` : `${baseSubnet}:${vlanHextet}::1`;
+        hostName = `ce-${assignedIpv4}.map.ocn.ad.jp`;
+
+      } else if (mode === 'pd_dyn') {
+        if (customPdPrefix) {
+          const parts = customPdPrefix.split('/');
+          ipv6Prefix = parts[0].trim().replace(/:+$/, '') + '::';
+          ipv6PrefixLen = parts.length > 1 ? parseInt(parts[1], 10) : 48;
+        } else {
+          ipv6Prefix = `${baseSubnet}:${pdPool}::`;
+          ipv6PrefixLen = 48; // BMR Rule IPv6 Prefix 長 (/48)
+        }
+
+        psidVal = vlan % 256;
+
+        const poolOctets = poolNet.split('.');
+        // RFC 7597 / MAP-E 仕様: /16 + ea-len 8 = 24bit、ホスト部は 0 パディング
+        assignedIpv4 = `${poolOctets[0]}.${poolOctets[1]}.${vlan % 256}.0`;
+
+        // 動的IP (PD動的):
+        // BMR の ipv4Prefix / ipv4PrefixLength は動的プール (10.248.0.0 / 16)
+        const v4Hex = `${parseInt(poolOctets[0], 10).toString(16).padStart(2, '0')}${parseInt(poolOctets[1], 10).toString(16).padStart(2, '0')}:${(vlan % 256).toString(16).padStart(2, '0')}00`;
+        ceIpv6 = `${baseSubnet}:${pdPool}:${(vlan % 256).toString(16).padStart(4, '0')}:0:a:${v4Hex}::`;
+        hostName = `ce-${assignedIpv4}.map.ocn.ad.jp`;
+
+      } else if (mode === 'slaac_fix') {
+        const vlanHextet = slaacFixBrPrefix + vlan;
+        ipv6Prefix = `${baseSubnet}:${vlanHextet}::`;
+        ipv6PrefixLen = 56; // 商用OCN実機仕様準拠 (/56)
+
+        if (staticIp) {
+          if (staticIp.includes('/')) {
+            const parts = staticIp.split('/');
+            ipv4Prefix = parts[0].trim();
+            ipv4PrefixLen = parseInt(parts[1].trim(), 10) || 32;
+          } else {
+            ipv4Prefix = staticIp;
+            ipv4PrefixLen = 32;
+          }
+        } else {
+          ipv4Prefix = "172.16.18.64";
+          ipv4PrefixLen = 28;
+        }
+        assignedIpv4 = ipv4Prefix;
+        psidVal = 0;
+
+        const eui64 = mac ? macToEui64(mac) : null;
+        ceIpv6 = eui64 ? `${baseSubnet}:${vlanHextet}:${eui64}` : `${baseSubnet}:${vlanHextet}::1`;
+
+        const matchEntry = (confVars.static_entries || []).find(e => e.key.toLowerCase() === mac);
+        hostName = matchEntry && matchEntry.note ? matchEntry.note : `ce-${assignedIpv4}.map.ocn.ad.jp`;
+
+      } else if (mode === 'pd_fix') {
+        if (customPdPrefix) {
+          const parts = customPdPrefix.split('/');
+          ipv6Prefix = parts[0].trim().replace(/:+$/, '') + '::';
+          ipv6PrefixLen = parts.length > 1 ? parseInt(parts[1], 10) : 56;
+        } else {
+          ipv6Prefix = `${baseSubnet}:${pdFixPool}::`;
+          ipv6PrefixLen = 56; // CEへの委譲プレフィックス長 (/56)
+        }
+
+        if (staticIp) {
+          if (staticIp.includes('/')) {
+            const parts = staticIp.split('/');
+            ipv4Prefix = parts[0].trim();
+            ipv4PrefixLen = parseInt(parts[1].trim(), 10) || 32;
+          } else {
+            ipv4Prefix = staticIp;
+            ipv4PrefixLen = 32;
+          }
+        } else {
+          ipv4Prefix = "172.16.18.64";
+          ipv4PrefixLen = 28;
+        }
+        assignedIpv4 = ipv4Prefix;
+        psidVal = 0;
+        ceIpv6 = `${baseSubnet}:${pdFixPool}:0100::1`;
+
+        const matchEntry = (confVars.static_entries || []).find(e => e.key.toLowerCase() === mac);
+        hostName = matchEntry && matchEntry.note ? matchEntry.note : `ce-${assignedIpv4}.map.ocn.ad.jp`;
+      }
+
+      // 利用可能ポートの計算 (RFC 7597)
+      if (eaBitsLen === 0) {
+        portRangesText = "1 〜 65535 (全ポート専有 / 制限なし)";
+      } else {
+        const ranges = [];
+        for (let k = 1; k <= 15; k++) {
+          const startPort = (k << 12) | (psidVal << 4);
+          const endPort = startPort + 15;
+          ranges.push(`${startPort}-${endPort}`);
+        }
+        portRangesText = `全240ポート (15セット×16) [${ranges.slice(0, 3).join(', ')} ... ${ranges[ranges.length - 1]}]`;
+      }
+
+      // UI 8項目へ反映
+      document.getElementById('res_br').textContent = brIpv6 || "-";
+      document.getElementById('res_v4_prefix').textContent = ipv4Prefix || "-";
+      document.getElementById('res_v4_len').textContent = ipv4PrefixLen.toString();
+      document.getElementById('res_v6_prefix').textContent = ipv6Prefix || "-";
+      document.getElementById('res_v6_len').textContent = ipv6PrefixLen.toString();
+      document.getElementById('res_ea_len').textContent = eaBitsLen.toString();
+      document.getElementById('res_psid_len').textContent = psidBitsLen.toString();
+      document.getElementById('res_psid_offset').textContent = psidOffset.toString();
+
+      // 詳細情報へ反映
+      document.getElementById('detail_assigned_v4').textContent = assignedIpv4;
+      document.getElementById('detail_psid').textContent = eaBitsLen > 0 ? `${psidVal} (0x${psidVal.toString(16).padStart(2, '0')})` : "0 (固定IP: なし)";
+      document.getElementById('detail_ports').textContent = portRangesText;
+      document.getElementById('detail_ce_v6').textContent = ceIpv6;
+
+      // コード生成更新
+      updateCodeOutput({
+        brIpv6,
+        ipv4Prefix,
+        ipv4PrefixLen,
+        ipv6Prefix,
+        ipv6PrefixLen,
+        eaBitsLen,
+        psidBitsLen,
+        psidOffset,
+        mode,
+        assignedIpv4,
+        psidVal,
+        hostName
+      });
+    }
+
+    // コード出力生成 (商用 OCN 実機ログ準拠の整形)
+    function updateCodeOutput(data) {
+      const codeBlock = document.getElementById('codeOutput');
+
+      if (activeTab === 'json') {
+        // 商用 OCN 実機ログ (CE-Fortigatre-RA-static.txt L97-L110, L208) と完全に同一のキー順序・インデント
+        const ruleObj = {
+          "ipv6Prefix": data.ipv6Prefix,
+          "ipv6PrefixLength": data.ipv6PrefixLen.toString(),
+          "ipv4Prefix": data.ipv4Prefix,
+          "ipv4PrefixLength": data.ipv4PrefixLen.toString(),
+          "brIpv6Address": data.brIpv6,
+          "eaBitLength": data.eaBitsLen.toString(),
+          "psIdOffset": data.psidOffset.toString(),
+          "hostName": data.hostName || `ce-${data.ipv4Prefix}.map.ocn.ad.jp`
+        };
+        if (data.eaBitsLen > 0) {
+          ruleObj["psId"] = data.psidVal.toString();
+        }
+        const jsonRule = {
+          "basicMapRules": [ruleObj]
+        };
+        codeBlock.textContent = JSON.stringify(jsonRule, null, 4);
+      } else if (activeTab === 'uci') {
+        codeBlock.textContent = 
+`# ----------------------------------------------------
+# OpenWRT MAP-E 設定 (/etc/config/network)
+# 方式: ${MODE_INFO[data.mode].title}
+# ----------------------------------------------------
+uci set network.wan6_map=interface
+uci set network.wan6_map.proto='map'
+uci set network.wan6_map.maptype='map-e'
+uci set network.wan6_map.peeraddr='${data.brIpv6}'
+uci set network.wan6_map.ipaddr='${data.ipv4Prefix}'
+uci set network.wan6_map.ip4prefixlen='${data.ipv4PrefixLen}'
+uci set network.wan6_map.ip6prefix='${data.ipv6Prefix}'
+uci set network.wan6_map.ip6prefixlen='${data.ipv6PrefixLen}'
+uci set network.wan6_map.ealen='${data.eaBitsLen}'
+uci set network.wan6_map.psidlen='${data.psidBitsLen}'
+uci set network.wan6_map.offset='${data.psidOffset}'
+uci commit network
+/etc/init.d/network restart`;
+      } else if (activeTab === 'file') {
+        codeBlock.textContent = 
+`# /etc/config/network への追記設定
+config interface 'wan6_map'
+\toption proto 'map'
+\toption maptype 'map-e'
+\toption peeraddr '${data.brIpv6}'
+\toption ipaddr '${data.ipv4Prefix}'
+\toption ip4prefixlen '${data.ipv4PrefixLen}'
+\toption ip6prefix '${data.ipv6Prefix}'
+\toption ip6prefixlen '${data.ipv6PrefixLen}'
+\toption ealen '${data.eaBitsLen}'
+\toption psidlen '${data.psidBitsLen}'
+\toption offset '${data.psidOffset}'`;
+      }
+    }
+
+    // タブ切替
+    function switchCodeTab(tab, btn) {
+      activeTab = tab;
+      document.querySelectorAll('.code-tab').forEach(t => t.classList.remove('active'));
+      btn.classList.add('active');
+      calculate();
+    }
+
+    // クリップボードコピー (Firefox & 非セキュアHTTP環境フォールバック対応)
+    async function copyTextToClipboard(text) {
+      // 1. セキュアコンテキスト (HTTPS / localhost) で Clipboard API が利用可能な場合
+      if (navigator.clipboard && window.isSecureContext) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch (e) {
+          // フォールバックへ移行
+        }
+      }
+
+      // 2. Firefox や HTTP 環境向けのフォールバック処理 (textarea + document.execCommand('copy'))
+      try {
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        textArea.style.top = '-999999px';
+        textArea.style.opacity = '0';
+        textArea.setAttribute('readonly', '');
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        const successful = document.execCommand('copy');
+        document.body.removeChild(textArea);
+        if (successful) return true;
+      } catch (err) {
+        console.warn('execCommand failed:', err);
+      }
+
+      // 3. プロンプト表示フォールバック (最悪の環境でもコピー可能にする)
+      window.prompt('Ctrl+C (または Cmd+C) を押してコピーしてください:', text);
+      return true;
+    }
+
+    async function copyText(elementId, btnEl) {
+      const el = document.getElementById(elementId);
+      if (!el) return;
+      const text = el.textContent.trim();
+      if (!text || text === '-') return;
+      try {
+        await copyTextToClipboard(text);
+        showToast(`「${text}」をコピーしました`);
+        if (btnEl) {
+          const originalText = btnEl.textContent;
+          btnEl.textContent = 'コピー済!';
+          btnEl.style.color = 'var(--accent-emerald, #10b981)';
+          btnEl.style.borderColor = 'var(--accent-emerald, #10b981)';
+          setTimeout(() => {
+            btnEl.textContent = originalText;
+            btnEl.style.color = '';
+            btnEl.style.borderColor = '';
+          }, 1500);
+        }
+      } catch (e) {
+        showToast(`コピーに失敗しました`);
+      }
+    }
+
+    async function copyActiveCode(btnEl) {
+      const code = document.getElementById('codeOutput').textContent;
+      try {
+        await copyTextToClipboard(code);
+        showToast("設定コードをクリップボードにコピーしました");
+        if (btnEl) {
+          const originalText = btnEl.innerHTML;
+          btnEl.innerHTML = '<span>✅</span> コピー完了!';
+          setTimeout(() => {
+            btnEl.innerHTML = originalText;
+          }, 1500);
+        }
+      } catch (e) {
+        showToast(`コピーに失敗しました`);
+      }
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      const toastMsg = document.getElementById('toastMsg');
+      toastMsg.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => {
+        toast.classList.remove('show');
+      }, 2500);
+    }
+  </script>
+  <!-- Theme Manager Integration -->
+  <script src="/js/bearded-themes.js"></script>
+  <script src="/js/theme-manager.js"></script>
+</body>
+</html>

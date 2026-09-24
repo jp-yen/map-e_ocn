@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import sys
 import json
 import socket
@@ -8,6 +9,13 @@ import ipaddress
 
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# /run/syslog/log が存在し /dev/log が無ければリンクを作成 (コンテナ環境対応)
+if os.path.exists("/run/syslog/log") and not os.path.exists("/dev/log"):
+    try:
+        os.symlink("/run/syslog/log", "/dev/log")
+    except Exception:
+        pass
 
 # syslogの初期化
 syslog.openlog(ident='mape-provisioning-server', facility=syslog.LOG_DAEMON)
@@ -21,6 +29,8 @@ except ImportError as e:
 
 # BRのIPv6アドレス (map-eトンネルのencap src、および basicMapRules の brIpv6Address に使用)
 BR_IPV6 = "${BR_IPV6}"
+BR_IPV4_POOL = "${BR_IPV4_POOL}"
+BR_IPV4_MASK = "${BR_IPV4_MASK}"
 
 class HTTPServerV6(HTTPServer):
     address_family = socket.AF_INET6
@@ -54,17 +64,65 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
 
         parsed_url = urlparse(self.path)
         query_params = parse_qs(parsed_url.query)
-        req_prefix = query_params.get('ipv6Prefix', [None])[0]
 
-        # SLAAC接続とDHCPv6-PD接続 of IP自動判別を最適化
-        if req_prefix and req_prefix != '::': 
-            is_pure_prefix = req_prefix.endswith('::') or req_prefix.endswith(':0') or '/' in req_prefix
-            if is_pure_prefix and not client_ip.lower().startswith('fe80'):
-                # SLAAC環境など：MACアドレス復元のため、接続元実IP（グローバルIP）を採用
+        # FortiGate (FortiOS) 等の DDNS 更新リクエスト (/nic/update または ipoe-static.ocn.ad.jp 宛) への対応
+        # 商用実機仕様: Server: Apache, Content-Type: text/html; charset=UTF-8, "nochg <IPv6アドレス>\n"
+        host_header = (self.headers.get('Host') or '').lower()
+        if parsed_url.path.startswith('/nic/update') or 'ipoe-static' in host_header:
+            req_hostname = query_params.get('hostname', [''])[0]
+            req_myip = query_params.get('myip', [''])[0]
+            effective_ip = req_myip if req_myip else client_ip
+            syslog.syslog(syslog.LOG_INFO, f"DDNS update request: host={host_header} path={parsed_url.path} hostname={req_hostname} myip={req_myip} effective_ip={effective_ip} from {client_ip_with_scope}")
+            self.send_response(200)
+            self.send_header("Server", "Apache")
+            self.send_header("Content-Type", "text/html; charset=UTF-8")
+            self.send_header("Connection", "close")
+            resp_text = f"nochg {effective_ip}\n"
+            body = resp_text.encode("utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        req_prefix = query_params.get('ipv6Prefix', [None])[0]
+        req_prefix_len = query_params.get('ipv6PrefixLength', [None])[0]
+
+        # SLAAC接続とDHCPv6-PD接続 of IP自動判別
+        if req_prefix and req_prefix != '::':
+            # client_ip が req_prefix のネットワーク配下にあり、かつ SLAAC セグメント（MAC復元が必要）の場合のみ client_ip を優先
+            # それ以外（DHCP-PD環境、リンクローカルからの接続、管理/テストIPからの接続など）は要求プレフィックス req_prefix を採用
+            use_client_ip = False
+            if not client_ip.lower().startswith('fe80'):
+                try:
+                    req_net = ipaddress.IPv6Network(req_prefix if '/' in req_prefix else f"{req_prefix}/64", strict=False)
+                    client_addr = ipaddress.IPv6Address(client_ip.split('%')[0])
+                    if client_addr in req_net:
+                        seg = mape_calc.classify_segment(req_prefix, mape_calc._CFG)
+                        if seg in ('slaac_dyn', 'slaac_fix'):
+                            use_client_ip = True
+                except Exception:
+                    pass
+            else:
+                # リンクローカル(fe80)接続の場合、SLAAC環境であれば req_prefix(上位64bit) + client_ipのInterface ID(下位64bit)
+                # を合成してグローバルIPv6(EUI-64)を復元し、MACアドレスを即座に特定・固定IP判定可能にする
+                try:
+                    seg = mape_calc.classify_segment(req_prefix, mape_calc._CFG)
+                    if seg in ('slaac_dyn', 'slaac_fix'):
+                        pfx_clean = req_prefix.split('/')[0].rstrip(':')
+                        ll_addr = ipaddress.IPv6Address(client_ip.split('%')[0])
+                        ll_words = ll_addr.exploded.split(':')
+                        iid_str = ":".join(ll_words[4:])
+                        composed_ip = f"{pfx_clean}:0:{iid_str}"
+                        ipaddress.IPv6Address(composed_ip)
+                        client_ip = composed_ip
+                        use_client_ip = True
+                except Exception:
+                    pass
+
+            if use_client_ip:
                 remote_ipv6 = client_ip
             else:
-                # DHCPv6-PD環境など：実IPがリンクローカルなので、要求プレフィックスを採用
-                remote_ipv6 = req_prefix 
+                remote_ipv6 = req_prefix
         else:
             remote_ipv6 = client_ip 
 
@@ -74,26 +132,27 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
             syslog.syslog(syslog.LOG_INFO, f"Processing Request from IP: {clean_ip}")
 
             # 戻り値から接続方式（segment）および target_psid も受け取る
-            target_ipv4, ce_ipv6, segment, target_psid = mape_calc.calc_map_e_params(clean_ip) 
+            res = mape_calc.calc_map_e_params(clean_ip, dev=client_scope.lstrip('%') if client_scope else None) 
+            target_ipv4, ce_ipv6, segment, target_psid = res[:4]
+            v4_prefixlen = getattr(res, 'v4_prefixlen', 32)
 
-            # 割り当て確定: target_ipv4/32 宛のトラフィックがmap-eトンネル経由で
+            # 割り当て確定: target_ipv4/v4_prefixlen 宛のトラフィックがmap-eトンネル経由で
             # CE(ce_ipv6)へ届くようルートを設定する(トンネルデバイスの用意も
             # 含めてmape_calc側で一括して行う)。ルート設定に失敗しても
-            # CEへの応答自体は継続する(mape-route-monitorがNDPイベントで
-            # 経路を再投入するフォールバックとして動作するため)。
-            mape_calc.setup_tunnel_route(target_ipv4, ce_ipv6, BR_IPV6)
+            mac_val = getattr(res, 'mac', None)
+            mape_calc.setup_tunnel_route(target_ipv4, ce_ipv6, BR_IPV6, prefixlen=v4_prefixlen, mac=mac_val)
 
             # 2. 接続方式と eaBitLength, psIdOffset の対応マッピング（辞書）を定義
-            # 動的(①②)は OCN 仕様の ea-len=8 / offset-len=4 を採用し、固定(③④)は 1台1IP占有のため ea-len=0 / offset-len=0 とする
+            # 動的(①②)は EA-bits 長 16bit / offset-len=0 を採用し、固定(③④)は 1台1IP占有のため ea-len=0 / offset-len=0 とする
             EA_BIT_MAP = {
-                'slaac_dyn': 8, 
-                'pd_dyn':    8, 
+                'slaac_dyn': 16, 
+                'pd_dyn':    16, 
                 'slaac_fix': 0, 
                 'pd_fix':    0 
             }
             OFFSET_MAP = {
-                'slaac_dyn': 4, 
-                'pd_dyn':    4, 
+                'slaac_dyn': 0, 
+                'pd_dyn':    0, 
                 'slaac_fix': 0, 
                 'pd_fix':    0 
             }
@@ -103,40 +162,81 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
             psid_offset = OFFSET_MAP.get(segment, 0)
             psid_val = target_psid if segment in ('slaac_dyn', 'pd_dyn') else 0 
 
-            # 3. ルールは1つだけ定義し、eaBitLength, psIdOffset, psId を動的に差し替える
+            # 3. ルール作成 (商用 OCN / FortiOS 実機仕様準拠)
             # FortiGate (FortiOS) は hostName フィールドを要求するため付与
-            hostname = f"ce-{target_ipv4}.map.ocn.ad.jp"
+            # ddns.conf に該当する FQDN があれば優先し、未設定の場合は従来の ce-{target_ipv4}.map.ocn.ad.jp を使用
+            hostname = mape_calc.get_ddns_hostname_for_ip(clean_ip, target_v4=target_ipv4, dev=client_scope.lstrip('%') if client_scope else None)
+
+            # 商用 OCN 実機仕様準拠:
+            # - 動的(①②)は 集約プール (/40) + EA-bits 16bit でルータ側で個別IPv4を自己計算
+            # - 固定(③④)は 1台1IP/サブネット専有のため、クライアント回線の上位56bit (/56) を通知し、余分なオフセット計算を防止
+            if segment in ('pd_fix', 'slaac_fix'):
+                rule_v6_len = "56"
+                p_net = ipaddress.IPv6Network(f"{clean_ip}/56", strict=False)
+                rule_v6_prefix = str(p_net.network_address)
+            elif segment == 'pd_dyn':
+                rule_v6_len = "40"
+                rule_v6_prefix = "${BASE_SUBNET}:${PD_POOL}::"
+            else:
+                rule_v6_len = "40"
+                rule_v6_prefix = "${BASE_SUBNET}:${SLAAC_BR_BASE}::"
+
+            # 商用実機応答フォーマット:
+            # - 長さ・ビット長等はすべて文字列型 ("56", "32", "0", "0")
+            # - 固定IP (ea_len == 0) では psId キーを出力しない (商用実環境仕様)
+            # - 動的 (ea_len > 0) の場合のみ psId を出力する
+            # - ルート階層は basicMapRules のみとし、hostName は rule 内に格納
+            # - 動的IP (ea_len > 0) の場合、BMR の ipv4Prefix は動的IPプール (10.248.0.0/16) を返し、
+            #   ルーター(CE)側が自身のIPv6 prefixのEA-bitsから個別IPv4アドレスとPSIDを自己計算する (RFC 7597 / OCN仕様)
+            # - 固定IP (ea_len == 0) の場合、BMR の ipv4Prefix は個別固定IP (target_ipv4 / v4_prefixlen) を返す
+            if ea_len > 0:
+                bmr_v4_prefix = getattr(mape_calc, 'BR_IPV4_POOL', BR_IPV4_POOL)
+                bmr_v4_len = getattr(mape_calc, 'BR_IPV4_MASK', BR_IPV4_MASK)
+            else:
+                bmr_v4_prefix = str(target_ipv4)
+                bmr_v4_len = str(v4_prefixlen)
+
             rule = {
+                "ipv6Prefix": rule_v6_prefix,
+                "ipv6PrefixLength": str(rule_v6_len),
+                "ipv4Prefix": str(bmr_v4_prefix),
+                "ipv4PrefixLength": str(bmr_v4_len),
                 "brIpv6Address": BR_IPV6,
-                "ipv6Prefix": "${BASE_SUBNET}::",
-                "ipv6PrefixLength": 32,
-                "ipv4Prefix": str(target_ipv4), 
-                "ipv4PrefixLength": 32,
-                "eaBitLength": ea_len,
-                "psIdOffset": psid_offset,
-                "psId": psid_val,
+                "eaBitLength": str(ea_len),
+                "psIdOffset": str(psid_offset),
                 "hostName": hostname
             }
+            if ea_len > 0:
+                rule["psId"] = str(psid_val)
+
             response_data = {
-                "hostName": hostname,
                 "basicMapRules": [rule]
             } 
 
+        except PermissionError as e:
+            syslog.syslog(syslog.LOG_WARNING, f"Access Denied: {e}")
+            self.send_response(403)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(f"403 Forbidden: {e}\n".encode("utf-8"))
+            return
         except Exception as e:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
             syslog.syslog(syslog.LOG_ERR, f"Calculation Error: {e}")
             self.send_response(500)
             self.end_headers()
             return
 
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
 
         response_json = json.dumps(response_data)
         body = response_json.encode("utf-8") 
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
 
-        syslog.syslog(syslog.LOG_INFO, f"Payload to Router: {response_json}")
+        syslog.syslog(syslog.LOG_DEBUG, f"DEBUG: Payload to Router: {response_json}")
         self.wfile.write(body)
 
 def run(server_class=HTTPServerV6, handler_class=MAPEProvisioningHandler, port=443):

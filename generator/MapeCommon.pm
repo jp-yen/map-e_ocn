@@ -21,15 +21,164 @@ use warnings;
 use Exporter 'import';
 
 our @EXPORT_OK = qw(
+    ipv4_to_hex
     ipv4_to_hex_hextets
+    ipv6_to_hex
     calc_br_ipv6
     calc_vlan_prefix
     parse_vlan_list
     build_vlan_segments
+    build_psid_hex
     find_template
     load_conf_file
+    load_static_ips
     render_template_file
+    check_required_vars
+    check_config
+    @REQUIRED_CONFIG_VARS
 );
+
+our @REQUIRED_CONFIG_VARS = qw(
+    MGT_IF
+    MGT_IP
+    MGT_GW
+    SYSTEM_DNS
+    SYSTEM_NTP
+    DOMAIN
+    MAPE_IF
+    PPPOE_SERVER_BASE_IP
+    WEB_DASHBOARD_PORT
+    BR_IF
+    PROV_IF
+    BASE_SUBNET
+    BR_PREFIX
+    BR_IPV4_ADDR
+    BR_IPV4_POOL
+    MAPE_PROV_PREFIX
+    MAPE_DNS_IP
+    MAPE_NTP_IP
+    MAPE_PROV_IP
+    MAPE_DOMAIN_SEARCH
+    SLAAC_BR_BASE
+    SLAAC_BR_SUFFIX
+    PD_POOL
+    SLAAC_FIX_BR_PREFIX
+    SLAAC_FIX_BR_SUFFIX
+    PD_FIX_POOL
+);
+
+sub check_config {
+    my ($conf_path) = @_;
+    if (defined $conf_path && length $conf_path) {
+        if (! -f $conf_path) {
+            die "\n" .
+                "=" x 80 . "\n" .
+                "[ERROR] 設定ファイルが見つかりません: $conf_path\n" .
+                "=" x 80 . "\n";
+        }
+        load_conf_file($conf_path);
+    }
+    check_required_vars(@REQUIRED_CONFIG_VARS);
+
+    # 少なくとも 1 つの VLAN (MAP-E または PPPoE) が設定されていることを検証
+    my @all_configured_vlans = (
+        parse_vlan_list($ENV{SLAAC_DYN_VLANS} || ''),
+        parse_vlan_list($ENV{PD_DYN_VLANS} || ''),
+        parse_vlan_list($ENV{SLAAC_FIX_VLANS} || ''),
+        parse_vlan_list($ENV{PD_FIX_VLANS} || ''),
+        parse_vlan_list($ENV{PPPOE_VLANS} || ''),
+    );
+    if (!@all_configured_vlans) {
+        my $msg = "\n" .
+            "=" x 80 . "\n" .
+            "[ERROR] map-e.conf VLAN未設定エラー\n" .
+            "MAP-E または PPPoE の収容 VLAN が 1 つも設定されていません。\n" .
+            "SLAAC_DYN_VLANS, PD_DYN_VLANS, SLAAC_FIX_VLANS, PD_FIX_VLANS, PPPOE_VLANS のいずれかに VLAN 番号を設定してください。\n" .
+            "=" x 80 . "\n";
+        die $msg;
+    }
+
+    # PPPoE サービス名の検証 (統合型 PPPOE_SERVICES)
+    my @service_errors;
+    my @svc_checks;
+    if (defined $ENV{PPPOE_SERVICES} && $ENV{PPPOE_SERVICES} =~ /\S/) {
+        push @svc_checks, ["PPPOE_SERVICES", split(/\s+/, $ENV{PPPOE_SERVICES})];
+    }
+
+    foreach my $item (@svc_checks) {
+        my ($var_name, @svcs) = @$item;
+        my %seen_in_var;
+        foreach my $s (@svcs) {
+            next unless length($s);
+            if (length($s) > 11) {
+                push @service_errors, "$var_name: サービス名 '$s' が " . length($s) . " 文字です。最大 11 文字以下にしてください（Linux VRF デバイス名 'vrf-<サービス名>' の 15 文字制限のため）。";
+            }
+            if ($s !~ /^[a-zA-Z0-9_-]+$/) {
+                push @service_errors, "$var_name: サービス名 '$s' に不正な文字が含まれています。スペースは使用できません（半角英数字、_、- を使用してください）。";
+            }
+            if ($seen_in_var{lc($s)}++) {
+                push @service_errors, "$var_name: サービス名 '$s' が重複しています（大文字小文字を区別せず重複不可）。";
+            }
+        }
+    }
+    if (@service_errors) {
+        my $msg = "\n" .
+            "=" x 80 . "\n" .
+            "[ERROR] map-e.conf PPPoE サービス定義エラー\n" .
+            join("", map { "  - $_\n" } @service_errors) . "\n" .
+            "Linux VRF デバイス名制限 (IFNAMSIZ=15文字) および Docker 起動の衝突を防ぐため、処理を中断しました。\n" .
+            "サービス名は 11 文字以内で設定してください（例: VPN_Group1, OCN）。\n" .
+            "=" x 80 . "\n";
+        die $msg;
+    }
+
+    # BR_IPV4_POOL の /16 固定検証 (アドレス衝突防止のため)
+    my $pool_raw = $ENV{BR_IPV4_POOL} || '';
+    my ($pool_ip, $pool_mask) = split(/\//, $pool_raw);
+    $pool_mask ||= $ENV{BR_IPV4_MASK} || '';
+    
+    my @pool_octets = split(/\./, $pool_ip || '');
+    if ($pool_mask ne '16' || scalar(@pool_octets) != 4) {
+        my $msg = "\n" .
+            "=" x 80 . "\n" .
+            "[ERROR] map-e.conf BR_IPV4_POOL 設定エラー\n" .
+            "BR_IPV4_POOL はアドレス衝突防止のため /16 固定である必要があります (現在の設定: '$pool_raw')。\n" .
+            "Kea flex-option の式言語制約により、/16 以外のプレフィックス長 (/24, /17 等) では\n" .
+            "クライアント間のアドレス衝突やプール逸脱が発生するため使用できません。\n" .
+            "map-e.conf で BR_IPV4_POOL=\"x.x.0.0/16\" (例: \"10.248.0.0/16\") のように /16 で設定してください。\n" .
+            "=" x 80 . "\n";
+        die $msg;
+    }
+
+    return 1;
+}
+
+sub check_required_vars {
+    my (@vars) = @_;
+    my @missing;
+    foreach my $v (@vars) {
+        if (!exists $ENV{$v} || !defined $ENV{$v} || $ENV{$v} =~ /^\s*$/) {
+            push @missing, $v;
+        }
+    }
+    if (@missing) {
+        my $conf_hint = $ENV{MAPE_CONF_PATH} || './map-e.conf';
+        my $msg = "\n" .
+            "=" x 80 . "\n" .
+            "[ERROR] map-e.conf 設定パラメータ不足エラー\n" .
+            "=" x 80 . "\n" .
+            "以下の必須パラメータが map-e.conf で未定義、または空です:\n" .
+            join("", map { "  - $_\n" } @missing) . "\n" .
+            ">>> 対処方法 <<<\n" .
+            "  $conf_hint を開き、上記の各パラメータを宣言してください。\n" .
+            "  例: echo 'PARAM_NAME=\"値\"' >> $conf_hint\n" .
+            "\n" .
+            "作業者の意図しない不整合や動作を防ぐため、処理を中断しました。\n" .
+            "=" x 80 . "\n";
+        die $msg;
+    }
+    return 1;
+}
 
 sub render_template_text {
     my ($content, $vars_ref) = @_;
@@ -49,6 +198,16 @@ sub render_template_file {
 }
 
 # ---------------------------------------------------------------------------
+# IPv4ドット表記 -> 8文字16進文字列 ("0a000101" 等)
+# ---------------------------------------------------------------------------
+sub ipv4_to_hex {
+    my ($ipv4) = @_;
+    my @o = split(/\./, $ipv4);
+    die "Invalid IPv4 address: $ipv4\n" unless scalar(@o) == 4;
+    return sprintf("%02x%02x%02x%02x", @o);
+}
+
+# ---------------------------------------------------------------------------
 # IPv4ドット表記 -> "xxxx:xxxx" 形式のhextetペアに変換 (BR_IPV6計算などで使用)
 # ---------------------------------------------------------------------------
 sub ipv4_to_hex_hextets {
@@ -56,6 +215,48 @@ sub ipv4_to_hex_hextets {
     my @o = split(/\./, $ipv4);
     die "Invalid IPv4 address: $ipv4\n" unless scalar(@o) == 4;
     return sprintf("%02x%02x:%02x%02x", @o);
+}
+
+# ---------------------------------------------------------------------------
+# IPv6アドレス -> 32文字16進文字列 (コロンなし、完全展開)
+# ---------------------------------------------------------------------------
+sub ipv6_to_hex {
+    my ($ipv6) = @_;
+    if ($ipv6 !~ /::/ && $ipv6 =~ tr/:/:/ < 7) {
+        $ipv6 .= '::';
+    }
+    my @parts = split(/:/, $ipv6, -1);
+    my @hextets;
+    my $double_colon_idx = -1;
+    for (my $i = 0; $i < @parts; $i++) {
+        if ($parts[$i] eq '') {
+            $double_colon_idx = $i if $double_colon_idx == -1;
+        } else {
+            push @hextets, hex($parts[$i]);
+        }
+    }
+    if ($double_colon_idx != -1) {
+        my $num_missing = 8 - scalar(@hextets);
+        my @missing = (0) x $num_missing;
+        my @first;
+        for (my $i = 0; $i < $double_colon_idx; $i++) {
+            if ($parts[$i] ne '') {
+                push @first, hex($parts[$i]);
+            }
+        }
+        my @last;
+        for (my $i = $double_colon_idx + 1; $i < @parts; $i++) {
+            if ($parts[$i] ne '') {
+                push @last, hex($parts[$i]);
+            }
+        }
+        @hextets = (@first, @missing, @last);
+    }
+    while (scalar(@hextets) < 8) {
+        push @hextets, 0;
+    }
+    @hextets = @hextets[0..7];
+    return sprintf("%04x%04x%04x%04x%04x%04x%04x%04x", @hextets);
 }
 
 # ---------------------------------------------------------------------------
@@ -104,6 +305,34 @@ sub find_template {
 }
 
 # ---------------------------------------------------------------------------
+# map-e-static-ip.conf の読み込み
+#   書式: <MAC>,<IP>[/<mask>] [<コメント>]
+#   戻り値: MAC アドレス (小文字) -> IPv4 アドレス のハッシュ
+# ---------------------------------------------------------------------------
+sub load_static_ips {
+    my ($file) = @_;
+    my %map;
+    if (-f $file) {
+        open my $fh, '<', $file or die "Cannot open $file: $!";
+        while (<$fh>) {
+            chomp;
+            next if /^\s*#/ || /^\s*$/;
+            my ($mac, $ip_mask) = split(/\s*,\s*/, $_);
+            if ($mac && $ip_mask && $ip_mask =~ /^\d+\.\d+\.\d+\.\d+/) {
+                $mac =~ s/^\s+|\s+$//g;
+                $mac = lc($mac);
+                my ($ip, $mask) = split(/\//, $ip_mask);
+                $ip =~ s/^\s+|\s+$//g;
+                $mask = defined($mask) ? int($mask) : 32;
+                $map{$mac} = { ip => $ip, mask => $mask };
+            }
+        }
+        close $fh;
+    }
+    return %map;
+}
+
+# ---------------------------------------------------------------------------
 # map-e.conf の読み込み + ${VAR} 参照の再帰展開
 #   読み込んだ値はそのまま %ENV へ格納する (呼び出し元が export 済みの
 #   環境変数と同じ扱いで使えるようにするため)。
@@ -121,9 +350,12 @@ sub load_conf_file {
         next if /^\s*#/ || /^\s*$/;
         if (/^\s*(?:export\s+)?(\w+)\s*=\s*(.*)/) {
             my ($key, $val) = ($1, $2);
-            $val =~ s/\s*#.*$//;   # コメント削除
-            $val =~ s/\s+$//;      # 末尾空白削除
-            $val =~ s/^["'](.*)["']$/$1/; # クォート削除
+            if ($val =~ /^"([^"]*)"(?:\s*#.*)?$/ || $val =~ /^'([^']*)'(?:\s*#.*)?$/) {
+                $val = $1;
+            } else {
+                $val =~ s/\s*#.*$//;   # コメント削除
+                $val =~ s/\s+$//;      # 末尾空白削除
+            }
             $ENV{$key} = $val;
         }
     }
@@ -163,8 +395,15 @@ sub load_conf_file {
 #                             (例: BASE_SUBNET=5f00:3aa (32bit)
 #                              -> MAPE_RULE_IPV6_PREFIX=5f00:3aa::
 #                                 MAPE_RULE_IPV6_LEN=32)
-# ---------------------------------------------------------------------------
 sub _derive_provisioning_vars {
+    # BR_IPV4_POOL が "192.168.0.0/16" 等の CIDR 形式で指定されている場合のパース
+    if ($ENV{'BR_IPV4_POOL'} && $ENV{'BR_IPV4_POOL'} =~ m{^([^/]+)/(\d+)$}) {
+        $ENV{'BR_IPV4_POOL'} = $1;
+        $ENV{'BR_IPV4_MASK'} = $2;
+    } else {
+        $ENV{'BR_IPV4_MASK'} ||= 16;
+    }
+
     # BR_IPV6 が未算出ならここでも算出しておく (calc_br_ipv6 は
     # br_prefix/br_ipv4_addr が揃わない場合 undef を返すのでその場合は何もしない)
     $ENV{'BR_IPV6'} ||= calc_br_ipv6(
@@ -259,6 +498,38 @@ sub build_vlan_segments {
     }
 
     return @segments;
+}
+
+# ---------------------------------------------------------------------------
+# PSID 値の計算と hex 変換 (1 バイト)
+#
+#   SLAAC 動的 / PD 動的ともに Option 93 (PortParams) の PSID フィールドに
+#   設定する 1 バイトのプレースホルダー値を生成する。
+#
+#   SLAAC: $base + $vlan の 10 進数値（hextet 値）の上位 1 桁を 16 進変換。
+#          例: base=1000, vlan=101 -> hextet=1101 -> 上位2桁="11" -> 0x11
+#   PD   : $base（文字列）の先頭 2 桁を数値として 16 進変換。
+#          例: base="2000" -> 先頭2桁=20 -> 0x14
+#
+#   この値は Kea の flex-option 式に静的に埋め込まれる参考 PSID であり、
+#   CE 側が EA-bits から自己計算した実 PSID とは別物である点に注意。
+#   (Kea 式内では concat で DUID 末尾とペアにして完全な 1byte を構成する)
+# ---------------------------------------------------------------------------
+sub build_psid_hex {
+    my (%args) = @_;
+    my $type = $args{type} // '';
+    my $base = $args{base} // 0;
+    my $vlan = $args{vlan} // 0;
+
+    if ($type eq 'slaac') {
+        # hextet 値（10 進）の上位 2 桁を 16 進に変換
+        my $hextet = $base + $vlan;
+        return substr(sprintf("%04d", $hextet), 0, 2);
+    } else {
+        # PD: base 文字列先頭 2 桁を数値として解釈し 16 進変換
+        my $psid_val = int(substr(sprintf("%04s", $base), 0, 2)) || 0;
+        return sprintf("%02x", $psid_val);
+    }
 }
 
 1;

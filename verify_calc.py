@@ -46,6 +46,8 @@ BASE_SUBNET = '5f00:3aa'
 SLAAC_BR_BASE = '1000'
 VLAN = 901
 
+assert BR_IPV4_MASK == '16', "BR_IPV4_POOL must be /16 to prevent address collision"
+
 # ステップ1: SLAAC 動的式で target IPv4 を計算
 pool_octets = ipaddress.IPv4Network(f'{BR_IPV4_POOL}/{BR_IPV4_MASK}', strict=False).network_address.exploded.split('.')
 vlan_base = int(SLAAC_BR_BASE)
@@ -104,6 +106,26 @@ print(f'MAP-E CE tunnel addr:   {zeroed.compressed}')
 print(f'These are DIFFERENT - CE must configure the MAP-E address on its tunnel interface')
 
 print()
+print('=== DHCPv6-PD Flex-Option /16 Pool & Offsets Test ===')
+# PD 動的プレフィックスの検証 (例: 2400:4150:2000:1200::/56)
+pd_sample_prefix = '2400:4150:2000:1200::/56'
+pd_net = ipaddress.IPv6Network(pd_sample_prefix, strict=False)
+pd_bytes = pd_net.network_address.packed
+# Kea Option 26 (IA_PREFIX):
+#   - preferred-lifetime (4B, 0..3) + valid-lifetime (4B, 4..7) + prefix-len (1B, 8)
+#   - ipv6-prefix (16B, 9..24):
+#       IPv6 byte 4 (hextet 3 high, e.g. 0x20) -> option 26 offset 9 + 4 = 13 (target_psid)
+#       IPv6 byte 6 (hextet 4 high, e.g. 0x12) -> option 26 offset 9 + 6 = 15 (IPv4第3オクテット)
+offset_13_val = pd_bytes[4] # hextet 3 high byte
+offset_15_val = pd_bytes[6] # hextet 4 high byte (delegation ID variable byte)
+print(f'PD prefix: {pd_sample_prefix}')
+print(f'  Option 26 offset 13 (Option 93 target_psid) : 0x{offset_13_val:02x} ({offset_13_val})')
+print(f'  Option 26 offset 15 (Option 89 IPv4 3rd octet): 0x{offset_15_val:02x} ({offset_15_val})')
+assert offset_13_val == 0x20, f"Offset 13 should be 0x20, got 0x{offset_13_val:02x}"
+assert offset_15_val == 0x12, f"Offset 15 should be 0x12, got 0x{offset_15_val:02x}"
+print('  [OK] Option 26 offsets 13 and 15 match Kea flex-option and OCN design.')
+
+print()
 print('=== DDNS Load & Match Test ===')
 import importlib.machinery
 import importlib.util
@@ -113,12 +135,20 @@ try:
     mape_calc = importlib.util.module_from_spec(spec)
     loader.exec_module(mape_calc)
     mac_map, vlan_map = mape_calc.load_ddns_map('./ddns.conf')
-    print(f'Loaded MAC DDNS map count: {len(mac_map)}')
-    print(f'Loaded VLAN DDNS map count: {len(vlan_map)}')
+    print(f'Loaded MAC DDNS map count: {len(mac_map)}, VLAN DDNS map count: {len(vlan_map)}')
     for k, v in mac_map.items():
         print(f'  MAC {k} -> IPv6: {v[0]}, IPv4: {v[1]}')
     for k, v in vlan_map.items():
         print(f'  VLAN {k} -> IPv6: {v[0]}, IPv4: {v[1]}')
+
+    # mape_calc の calc_map_e_params で PD /16 計算を突き合わせ
+    v4_pd, ce_v6_pd, seg_pd, psid_pd = mape_calc.calc_map_e_params('2400:4150:2000:1200::')
+    print(f'mape_calc PD calc result: v4={v4_pd}, psid={psid_pd}, segment={seg_pd}')
+    assert psid_pd == offset_13_val, f"mape_calc PSID ({psid_pd}) must match flex-option offset 13 ({offset_13_val})"
+    v4_octs = [int(x) for x in v4_pd.split('.')]
+    assert v4_octs[2] == offset_15_val, f"mape_calc IPv4 octet 2 ({v4_octs[2]}) must match flex-option offset 15 ({offset_15_val})"
+    print('  [OK] mape_calc PD calculation fully matches Kea flex-option logic.')
 except Exception as ex:
-    print(f'DDNS test error: {ex}')
+    print(f'Test error: {ex}')
+    raise ex
 

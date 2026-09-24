@@ -6,6 +6,10 @@ import ipaddress
 import hashlib
 import os
 import datetime
+import re
+
+# トンネルイベントログのパス (axosyslog /var/log ボリュームへマウント)
+TUNNEL_EVENT_LOG = "/var/log/mape-tunnel-events.log"
 
 # -----------------------------------------------------------------------------
 # 設定項目
@@ -87,13 +91,13 @@ def ensure_tunnel_dev(tunnel_dev):
                        f"[TUNNEL-CREATE] Failed to create tunnel device {tunnel_dev}: {e.stderr}")
         return False
 
-def setup_tunnel_route(target_ipv4, ce_ipv6, br_ipv6):
+def setup_tunnel_route(target_ipv4, ce_ipv6, br_ipv6, prefixlen=32, mac=None):
     """
-    target_ipv4/32 宛のトラフィックが、対応するmap-eトンネルデバイス経由で
+    target_ipv4/prefixlen 宛のトラフィックが、対応するmap-eトンネルデバイス経由で
     CE(ce_ipv6)へ届くよう、必要なトンネルデバイスの用意とルートの投入を
-    まとめて行う。
+    まとめて行う。同時に、該当MACが他VLANに残存させた古い近隣キャッシュを削除する。
     """
-    dst_prefix = f"{target_ipv4}/32"
+    dst_prefix = f"{target_ipv4}/{prefixlen}"
     tunnel_dev = get_tunnel_dev_name(target_ipv4)
 
     if not ensure_tunnel_dev(tunnel_dev):
@@ -107,17 +111,42 @@ def setup_tunnel_route(target_ipv4, ce_ipv6, br_ipv6):
         syslog.syslog(syslog.LOG_ERR, f"[ROUTE-ADD] Failed to parse/correct ce_ipv6 {ce_ipv6}: {e}")
         return False
 
+    # CEの到達インターフェースを特定し、他VLAN上の古い近隣エントリ(neigh)をクリア
+    current_dev = None
     try:
+        r_get = subprocess.run(["ip", "-6", "route", "get", routing_dst_ipv6], capture_output=True, text=True)
+        if r_get.returncode == 0:
+            m = re.search(r"\bdev\s+([^\s]+)", r_get.stdout)
+            if m:
+                current_dev = m.group(1)
+    except Exception:
+        pass
+
+    if not mac and ce_ipv6:
+        try:
+            mac = extract_mac_from_eui64(ce_ipv6)
+        except Exception:
+            mac = None
+
+    if mac and current_dev:
+        cleanup_stale_neighbor_and_routes(mac, current_dev, current_dst_ipv6=routing_dst_ipv6)
+
+    try:
+        # 古い /32 の同一IPルートがあれば事前に削除
+        if int(prefixlen) != 32:
+            subprocess.run(["ip", "route", "del", f"{target_ipv4}/32"], check=False, capture_output=True)
+
         existing = subprocess.run(
             ["ip", "route", "show", dst_prefix],
             capture_output=True, text=True
         ).stdout.strip()
 
-        if existing:
+        is_update = bool(existing)
+        if is_update:
             subprocess.run(["ip", "route", "del", dst_prefix], check=False, capture_output=True)
             syslog.syslog(syslog.LOG_INFO, f"[ROUTE-CLEANUP] Deleted stale route before re-add: {existing}")
 
-        # 補正後の routing_dst_ipv6 を使用してルートを追加
+        # routing_dst_ipv6 を使用してルートを追加
         subprocess.run([
             "ip", "route", "add", dst_prefix,
             "src", BR_IPV4_ADDR,
@@ -125,12 +154,130 @@ def setup_tunnel_route(target_ipv4, ce_ipv6, br_ipv6):
             "encap", "ip6", "src", br_ipv6, "dst", routing_dst_ipv6
         ], check=True, capture_output=True, text=True)
 
+        # SLAAC 環境等において、CE IPv6 は仮想アドレスでありルーターが L2 NDP に応答しない場合があるため、
+        # 判明している MAC アドレスへの静的近隣エントリ (neigh permanent) を登録して確実に L2 フレームを送出可能にする
+        if mac and current_dev and mac != "00:00:00:00:00:00":
+            try:
+                subprocess.run([
+                    "ip", "-6", "neigh", "replace", routing_dst_ipv6,
+                    "lladdr", mac, "dev", current_dev, "nud", "permanent"
+                ], check=False, capture_output=True)
+                syslog.syslog(syslog.LOG_INFO, f"[NEIGH-STATIC] Registered permanent neigh {routing_dst_ipv6} -> {mac} on {current_dev}")
+            except Exception as e:
+                syslog.syslog(syslog.LOG_WARNING, f"[NEIGH-STATIC] Failed to add neigh: {e}")
+
+        event_type = "TUNNEL_UPDATE" if is_update else "TUNNEL_CREATE"
         syslog.syslog(syslog.LOG_INFO,
-                       f"[ROUTE-ADD] {dst_prefix} -> dev {tunnel_dev} (encap ip6 dst {routing_dst_ipv6})")
+                       f"[{event_type}] {dst_prefix} -> dev {tunnel_dev} (encap ip6 dst {routing_dst_ipv6})")
+
+        # トンネルイベントをログファイルへ記録（ダッシュボードがトンネル作成時刻・最終プロビジョニング時刻に利用）
+        _write_tunnel_event(event_type, str(dst_prefix), routing_dst_ipv6)
         return True
     except subprocess.CalledProcessError as e:
         syslog.syslog(syslog.LOG_ERR, f"[ROUTE-ADD] Failed to set route for {dst_prefix}: {e.stderr}")
         return False
+
+def _write_tunnel_event(event_type, ipv4_str, ce_ipv6_str):
+    """
+    トンネル作成・更新イベントを TUNNEL_EVENT_LOG へ追記する。
+    フォーマット (タブ区切り): EVENT_TYPE  ISO8601_TIMESTAMP  IPv4  CE_IPv6
+    """
+    try:
+        now_iso = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
+        line = f"{event_type}\t{now_iso}\t{ipv4_str}\t{ce_ipv6_str}\n"
+        with open(TUNNEL_EVENT_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception as e:
+        syslog.syslog(syslog.LOG_WARNING, f"[TUNNEL-EVENT] Failed to write event log: {e}")
+
+def cleanup_stale_neighbor_and_routes(mac, current_dev, current_dst_ipv6=None):
+    """
+    対象 MAC アドレスについて、current_dev 以外の旧インターフェースに残存している
+    IPv6 近隣探索 (NDP) キャッシュエントリ、旧インターフェース経由の IPv6 経路、
+    および旧トンネル宛先を持つ mpe-common トンネル経路を削除する。
+    """
+    if not mac or mac == "00:00:00:00:00:00" or not current_dev:
+        return
+    mac_norm = mac.lower().replace("-", ":")
+
+    # 1. 旧インターフェース上の NDP キャッシュ (ip -6 neigh) および 旧 IPv6 経路 (ip -6 route via) の削除
+    try:
+        res = subprocess.run(["ip", "-6", "neigh", "show"], capture_output=True, text=True)
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 5 and "lladdr" in parts and "dev" in parts:
+                    dev_idx = parts.index("dev") + 1
+                    lladdr_idx = parts.index("lladdr") + 1
+                    if dev_idx < len(parts) and lladdr_idx < len(parts):
+                        entry_ip = parts[0]
+                        entry_dev = parts[dev_idx]
+                        entry_mac = parts[lladdr_idx].lower().replace("-", ":")
+                        if entry_mac == mac_norm and entry_dev != current_dev:
+                            # 1-a. この旧 IP を経由する IPv6 ルートがあれば削除
+                            try:
+                                r_via = subprocess.run(["ip", "-6", "route", "show", "via", entry_ip], capture_output=True, text=True)
+                                if r_via.returncode == 0:
+                                    for r_line in r_via.stdout.splitlines():
+                                        r_parts = r_line.strip().split()
+                                        if r_parts:
+                                            pfx = r_parts[0]
+                                            subprocess.run(["ip", "-6", "route", "del", pfx, "via", entry_ip, "dev", entry_dev], check=False, capture_output=True)
+                                            syslog.syslog(syslog.LOG_INFO, f"[ROUTE-CLEANUP] Deleted stale IPv6 route: {pfx} via {entry_ip} dev {entry_dev}")
+                            except Exception:
+                                pass
+
+                            # 1-b. 旧 NDP エントリを削除
+                            subprocess.run(["ip", "-6", "neigh", "del", entry_ip, "dev", entry_dev],
+                                           check=False, capture_output=True)
+                            syslog.syslog(syslog.LOG_INFO,
+                                          f"[NEIGH-CLEANUP] Deleted stale neigh {entry_ip} dev {entry_dev} for MAC {mac}")
+    except Exception as e:
+        syslog.syslog(syslog.LOG_WARNING, f"[NEIGH-CLEANUP] Failed to cleanup neigh for MAC {mac}: {e}")
+
+    # 2. mpe-common トンネル上の古いルート (同一 MAC の旧 CE IPv6 宛て) を削除
+    if current_dst_ipv6:
+        try:
+            curr_v6_norm = ipaddress.IPv6Address(current_dst_ipv6).compressed
+            res_t = subprocess.run(["ip", "route", "show", "dev", "mpe-common"], capture_output=True, text=True)
+            if res_t.returncode == 0:
+                for t_line in res_t.stdout.splitlines():
+                    m = re.search(r"^([^\s]+)\s+encap ip6.*?dst\s+([0-9a-fA-F:]+)", t_line.strip())
+                    if m:
+                        old_pfx = m.group(1)
+                        old_dst = m.group(2)
+                        try:
+                            old_dst_norm = ipaddress.IPv6Address(old_dst).compressed
+                        except Exception:
+                            old_dst_norm = old_dst
+
+                        if old_dst_norm != curr_v6_norm:
+                            is_match = False
+                            # EUI-64 MAC 判定
+                            try:
+                                if extract_mac_from_eui64(old_dst_norm) == mac_norm:
+                                    is_match = True
+                            except Exception:
+                                pass
+                            # 固定 IP マップ判定
+                            if not is_match:
+                                try:
+                                    stat_net = load_static_map(STATIC_IP_CONF_PATH, mac_norm)
+                                    if stat_net:
+                                        stat_str = str(stat_net) if stat_net.prefixlen != 32 else str(stat_net.network_address)
+                                        if old_pfx == stat_str or old_pfx == f"{stat_net.network_address}/32":
+                                            is_match = True
+                                except Exception:
+                                    pass
+
+                            if is_match:
+                                subprocess.run(["ip", "route", "del", old_pfx, "dev", "mpe-common"], check=False, capture_output=True)
+                                syslog.syslog(syslog.LOG_INFO, f"[TUNNEL-CLEANUP] Deleted stale mpe-common route {old_pfx} (dst {old_dst}) for MAC {mac}")
+        except Exception as e:
+            syslog.syslog(syslog.LOG_WARNING, f"[TUNNEL-CLEANUP] Failed to cleanup mpe-common routes for MAC {mac}: {e}")
+
+# 互換性エイリアス
+cleanup_stale_neighbor_entries = cleanup_stale_neighbor_and_routes
 
 def cleanup_stale_neighbor_routes(ce_ipv6, current_dev):
     """
@@ -160,7 +307,9 @@ def cleanup_stale_neighbor_routes(ce_ipv6, current_dev):
 # -----------------------------------------------------------------------------
 
 def load_static_map(config_path, mac_addr):
-    """map-e-static-ip.conf から MAC に紐づく固定IPv4ネットワークオブジェクトを返す"""
+    """map-e-static-ip.conf から MAC に紐づく固定IPv4インターフェースオブジェクト (IPv4Interface) を返す"""
+    if not os.path.exists(config_path):
+        config_path = "./map-e-static-ip.conf"
     if not os.path.exists(config_path):
         return None
     with open(config_path, "r") as f:
@@ -169,8 +318,15 @@ def load_static_map(config_path, mac_addr):
             if not line or line.startswith("#"):
                 continue
             parts = line.split(",")
-            if len(parts) == 2 and parts[0].strip().lower() == mac_addr.lower():
-                return ipaddress.IPv4Network(parts[1].strip(), strict=False)
+            if len(parts) >= 2 and parts[0].strip().lower() == mac_addr.lower():
+                val = parts[1].strip()
+                if not val or val in ("-", "none", "null", "dynamic"):
+                    return None
+                try:
+                    return ipaddress.IPv4Interface(val)
+                except Exception as e:
+                    syslog.syslog(syslog.LOG_WARNING, f"[STATIC-MAP] Invalid IPv4 prefix '{val}' for MAC {mac_addr}: {e}")
+                    return None
     return None
 
 def load_ddns_map(config_path=None):
@@ -185,7 +341,7 @@ def load_ddns_map(config_path=None):
     mac_map = {}
     vlan_map = {}
     try:
-        with open(config_path, "r") as f:
+        with open(config_path, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):
@@ -194,18 +350,132 @@ def load_ddns_map(config_path=None):
                 if len(parts) >= 3:
                     key, v6_fqdn, v4_fqdn = parts[0], parts[1], parts[2]
                     key_clean = key.lower().replace("-", ":")
-                    if ":" in key_clean or len(key_clean) == 12:
+                    if key_clean.isdigit():
+                        vlan_map[int(key_clean)] = (v6_fqdn, v4_fqdn)
+                    elif ":" in key_clean or len(key_clean) == 12:
                         if ":" not in key_clean:
                             key_clean = ":".join(key_clean[i:i+2] for i in range(0, 12, 2))
                         mac_map[key_clean] = (v6_fqdn, v4_fqdn)
-                    elif key_clean.isdigit():
-                        vlan_map[int(key_clean)] = (v6_fqdn, v4_fqdn)
+                    else:
+                        mac_map[key_clean] = (v6_fqdn, v4_fqdn)
     except Exception as e:
         syslog.syslog(syslog.LOG_ERR, f"[DDNS-LOAD] Error reading {config_path}: {e}")
 
     return mac_map, vlan_map
 
-def update_ddns(mac_str=None, vlan=None, target_v4=None, ce_ipv6=None):
+def extract_vlan_id(clean_ip, dev=None, mac=None):
+    """
+    接続インターフェース (dev)、IPv6 アドレス (clean_ip)、Kea リース、または NDP テーブルから VLAN ID を取得する。
+    """
+    if dev and '.' in dev:
+        try:
+            parts = dev.split('.')
+            if len(parts) >= 2 and parts[1].isdigit():
+                return int(parts[1])
+        except Exception:
+            pass
+
+    clean_ip_str = clean_ip.split('%')[0]
+
+    # SLAAC プレフィックスからの逆算 (${BASE_SUBNET}:1<VLAN>:: または ${BASE_SUBNET}:3<VLAN>::)
+    try:
+        exploded = ipaddress.IPv6Address(clean_ip_str).exploded.split(':')
+        base_len = len(_CFG['BASE_SUBNET'].split(':'))
+        if len(exploded) > base_len:
+            seg_hextet = exploded[base_len]
+            slaac_base = int(_CFG.get('SLAAC_BR_BASE', 1000))
+            slaac_fix_base = int(_CFG.get('SLAAC_FIX_BR_PREFIX', 3000))
+            if seg_hextet.startswith(str(slaac_base)[0]):
+                vlan = int(seg_hextet) - slaac_base
+                if vlan > 0:
+                    return vlan
+            elif seg_hextet.startswith(str(slaac_fix_base)[0]):
+                vlan = int(seg_hextet) - slaac_fix_base
+                if vlan > 0:
+                    return vlan
+    except Exception:
+        pass
+
+    # Kea リースファイルから subnet_id -> VLAN を逆引き
+    try:
+        lease_file = "/var/lib/kea/kea-leases6.csv"
+        if os.path.exists(lease_file):
+            target_clean = clean_ip_str.lower()
+            target_net = None
+            try:
+                target_net = ipaddress.IPv6Network(target_clean if '/' in target_clean else f"{target_clean}/56", strict=False)
+            except Exception:
+                pass
+            target_mac = mac.lower().replace('-', ':') if mac and mac != "00:00:00:00:00:00" else None
+
+            with open(lease_file, 'r') as f:
+                lines = f.readlines()
+            if lines:
+                headers = [h.strip() for h in lines[0].split(',')]
+                if 'subnet_id' in headers:
+                    s_idx = headers.index('subnet_id')
+                    mac_idx = headers.index('hwaddr') if 'hwaddr' in headers else -1
+                    addr_idx = headers.index('address') if 'address' in headers else -1
+                    state_idx = headers.index('state') if 'state' in headers else -1
+                    for line in reversed(lines[1:]):
+                        parts = [p.strip() for p in line.split(',')]
+                        if len(parts) <= s_idx:
+                            continue
+                        if state_idx != -1 and len(parts) > state_idx and parts[state_idx] not in ('0', 'active', ''):
+                            continue
+                        matched = False
+                        if target_net and addr_idx != -1 and len(parts) > addr_idx:
+                            try:
+                                l_net = ipaddress.IPv6Network(f"{parts[addr_idx]}/56", strict=False)
+                                if l_net == target_net or l_net.network_address == target_net.network_address:
+                                    matched = True
+                            except Exception:
+                                pass
+                        if not matched and target_mac and mac_idx != -1 and len(parts) > mac_idx:
+                            l_mac = parts[mac_idx].lower().replace('-', ':')
+                            if ':' not in l_mac and len(l_mac) == 12:
+                                l_mac = ':'.join(l_mac[i:i+2] for i in range(0, 12, 2))
+                            if l_mac == target_mac:
+                                matched = True
+                        if matched:
+                            sid = int(parts[s_idx])
+                            vlans = []
+                            for k in ('SLAAC_DYN_VLANS', 'PD_DYN_VLANS', 'SLAAC_FIX_VLANS', 'PD_FIX_VLANS'):
+                                for v in str(_CFG.get(k, '')).split():
+                                    if v.isdigit():
+                                        vlans.append(int(v))
+                            sorted_vlans = sorted(list(set(vlans)))
+                            if 1 <= sid <= len(sorted_vlans):
+                                return sorted_vlans[sid - 1]
+    except Exception:
+        pass
+
+    # NDP テーブル (ip -6 neighbor) からインターフェースを検索
+    try:
+        res = subprocess.run(["ip", "-6", "neighbor", "show"], capture_output=True, text=True, timeout=2)
+        if res.returncode == 0:
+            target_mac = mac.lower().replace('-', ':') if mac and mac != "00:00:00:00:00:00" else None
+            for line in res.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 4 and 'dev' in parts:
+                    nip = parts[0].split('%')[0].lower()
+                    dev_idx = parts.index('dev') + 1
+                    idev = parts[dev_idx]
+                    if '.' in idev:
+                        vlan_cand = idev.split('.')[-1]
+                        if vlan_cand.isdigit():
+                            if nip == clean_ip_str.lower():
+                                return int(vlan_cand)
+                            if target_mac and 'lladdr' in parts:
+                                l_idx = parts.index('lladdr') + 1
+                                if parts[l_idx].lower() == target_mac:
+                                    return int(vlan_cand)
+    except Exception:
+        pass
+
+    return None
+
+def update_ddns(mac_str=None, target_v4=None, ce_ipv6=None, vlan=None):
     """nsupdate を使用して AAAA (IPv6), A (IPv4) および TXT (updated_at) レコードを BIND9 へ登録"""
     if not target_v4 or not ce_ipv6:
         return False
@@ -221,9 +491,8 @@ def update_ddns(mac_str=None, vlan=None, target_v4=None, ce_ipv6=None):
 
     if not fqdns and vlan is not None:
         try:
-            vlan_id = int(vlan)
-            fqdns = vlan_map.get(vlan_id)
-        except ValueError:
+            fqdns = vlan_map.get(int(vlan))
+        except (ValueError, TypeError):
             pass
 
     if not fqdns:
@@ -232,24 +501,35 @@ def update_ddns(mac_str=None, vlan=None, target_v4=None, ce_ipv6=None):
     v6_fqdn, v4_fqdn = fqdns
     now_iso = datetime.datetime.now().astimezone().isoformat()
 
-    lines = [
-        "server 127.0.0.1",
-        f"update delete {v6_fqdn}. AAAA",
-        f"update add {v6_fqdn}. 300 AAAA {ce_ipv6}",
-        f"update delete {v6_fqdn}. TXT",
-        f"update add {v6_fqdn}. 300 TXT \"updated={now_iso}\"",
-        f"update delete {v4_fqdn}. A",
-        f"update add {v4_fqdn}. 300 A {target_v4}",
-        f"update delete {v4_fqdn}. TXT",
-        f"update add {v4_fqdn}. 300 TXT \"updated={now_iso}\"",
-        "send\n"
-    ]
-    script = "\n".join(lines)
+    commands = []
+    if v6_fqdn and v6_fqdn != "-":
+        commands.append([
+            "server 127.0.0.1",
+            f"update delete {v6_fqdn}. AAAA",
+            f"update add {v6_fqdn}. 300 AAAA {ce_ipv6}",
+            f"update delete {v6_fqdn}. TXT",
+            f"update add {v6_fqdn}. 300 TXT \"updated={now_iso}\"",
+            "send"
+        ])
+    if v4_fqdn and v4_fqdn != "-":
+        commands.append([
+            "server 127.0.0.1",
+            f"update delete {v4_fqdn}. A",
+            f"update add {v4_fqdn}. 300 A {target_v4}",
+            f"update delete {v4_fqdn}. TXT",
+            f"update add {v4_fqdn}. 300 TXT \"updated={now_iso}\"",
+            "send"
+        ])
+
+    if not commands:
+        return False
+
+    script = "\n".join(["\n".join(cmd_group) for cmd_group in commands]) + "\n"
 
     try:
         res = subprocess.run(["nsupdate"], input=script, text=True, capture_output=True, timeout=5)
         if res.returncode == 0:
-            syslog.syslog(syslog.LOG_INFO, f"[DDNS-UPDATE] Updated {v6_fqdn}->{ce_ipv6}, {v4_fqdn}->{target_v4} (updated={now_iso})")
+            syslog.syslog(syslog.LOG_INFO, f"[DDNS-UPDATE] Updated v6:{v6_fqdn}->{ce_ipv6}, v4:{v4_fqdn}->{target_v4} (updated={now_iso})")
             return True
         else:
             syslog.syslog(syslog.LOG_ERR, f"[DDNS-UPDATE] nsupdate failed: {res.stderr}")
@@ -258,12 +538,60 @@ def update_ddns(mac_str=None, vlan=None, target_v4=None, ce_ipv6=None):
 
     return False
 
+def get_ddns_hostname(mac_str=None, target_v4=None, vlan=None):
+    """
+    ddns.conf から該当するホスト名 (FQDN) を取得する。
+    MACアドレス登録または VLAN 登録があれば IPv4 用 FQDN (なければ IPv6 用 FQDN) を返し、
+    未登録なら標準形式 'ce-{target_v4}.map.ocn.ad.jp' を返す。
+    """
+    default_hostname = f"ce-{target_v4}.map.ocn.ad.jp" if target_v4 else "ce.map.ocn.ad.jp"
+    try:
+        mac_map, vlan_map = load_ddns_map()
+        fqdns = None
+
+        if mac_str:
+            target_mac = mac_str.lower().replace("-", ":")
+            if ":" not in target_mac and len(target_mac) == 12:
+                target_mac = ":".join(target_mac[i:i+2] for i in range(0, 12, 2))
+            fqdns = mac_map.get(target_mac)
+
+        if not fqdns and vlan is not None:
+            try:
+                fqdns = vlan_map.get(int(vlan))
+            except (ValueError, TypeError):
+                pass
+
+        if fqdns:
+            v6_fqdn, v4_fqdn = fqdns
+            if v4_fqdn and v4_fqdn != "-":
+                return v4_fqdn
+            if v6_fqdn and v6_fqdn != "-":
+                return v6_fqdn
+    except Exception as e:
+        syslog.syslog(syslog.LOG_ERR, f"[DDNS-HOSTNAME] Error resolving hostname: {e}")
+
+    return default_hostname
+
+def get_ddns_hostname_for_ip(clean_ip, target_v4=None, dev=None):
+    """
+    接続元 IP / プレフィックスから MAC および VLAN を復元し、ddns.conf の FQDN を決定する。
+    未登録時は標準形式 'ce-{target_v4}.map.ocn.ad.jp' を返す。
+    """
+    clean_ip_str = clean_ip.split('%')[0]
+    mac = extract_mac_from_eui64(clean_ip_str)
+    if not mac or mac == "00:00:00:00:00:00":
+        pd_mac = get_mac_from_pd_prefix(clean_ip_str)
+        if pd_mac:
+            mac = pd_mac
+
+    vlan_id = extract_vlan_id(clean_ip_str, dev=dev, mac=mac)
+    return get_ddns_hostname(mac_str=mac, target_v4=target_v4, vlan=vlan_id)
+
 def get_hashed_dynamic_ipv4(pool_base, mask, mac_str):
     """
-    方針.md 5章 / 13.3節:
-    動的セグメント(①②共通)のIPv4決定式。MACアドレスをMD5ハッシュ化し、
-    BR_IPV4_POOL の範囲内で剰余計算を行い、一意な /32 アドレスを決定する。
-    同一MACアドレスに対しては常に同一のIPv4アドレスが決定論的に導出される。
+    【非推奨 / 過去互換】旧ハッシュ分散設計。
+    現在は方針.md 5章・13章に基づき、Kea flex-option と同一の /16 決定論的アルゴリズム
+    (calc_ipv4_from_dhcp_prefix) を使用するため本関数は使用されません。
     """
     network = ipaddress.IPv4Network(f"{pool_base}/{mask}", strict=False)
     hasher = hashlib.md5(mac_str.lower().encode('utf-8'))
@@ -303,30 +631,71 @@ def get_pd_prefix_from_lease(mac_str):
     try:
         target_mac = mac_str.lower().replace('-', ':')
         with open(lease_file, 'r') as f:
-            headers = [h.strip() for h in f.readline().split(',')]
-            if 'hwaddr' not in headers or 'address' not in headers:
-                return None
-            mac_idx = headers.index('hwaddr')
-            addr_idx = headers.index('address')
-            type_idx = headers.index('lease_type') if 'lease_type' in headers else -1
-            state_idx = headers.index('state') if 'state' in headers else -1
+            lines = f.readlines()
+        if not lines:
+            return None
+        headers = [h.strip() for h in lines[0].split(',')]
+        if 'hwaddr' not in headers or 'address' not in headers:
+            return None
+        mac_idx = headers.index('hwaddr')
+        addr_idx = headers.index('address')
+        type_idx = headers.index('lease_type') if 'lease_type' in headers else -1
+        state_idx = headers.index('state') if 'state' in headers else -1
+        
+        for line in reversed(lines[1:]):
+            parts = [p.strip() for p in line.split(',')]
+            if len(parts) <= max(mac_idx, addr_idx):
+                continue
+            lease_mac = parts[mac_idx].lower().replace('-', ':')
+            if ':' not in lease_mac and len(lease_mac) == 12:
+                lease_mac = ':'.join(lease_mac[i:i+2] for i in range(0, 12, 2))
             
-            for line in f:
-                parts = [p.strip() for p in line.split(',')]
-                if len(parts) <= max(mac_idx, addr_idx):
+            if lease_mac == target_mac:
+                if type_idx != -1 and parts[type_idx] not in ('2', 'IA_PD'):
                     continue
-                lease_mac = parts[mac_idx].lower().replace('-', ':')
-                if ':' not in lease_mac and len(lease_mac) == 12:
-                    lease_mac = ':'.join(lease_mac[i:i+2] for i in range(0, 12, 2))
-                
-                if lease_mac == target_mac:
-                    if type_idx != -1 and parts[type_idx] not in ('2', 'IA_PD'):
-                        continue
-                    if state_idx != -1 and parts[state_idx] not in ('0', 'active', ''):
-                        continue
-                    return parts[addr_idx]
+                if state_idx != -1 and parts[state_idx] not in ('0', 'active', ''):
+                    continue
+                return parts[addr_idx]
     except Exception as e:
         syslog.syslog(syslog.LOG_ERR, f"[LEASE-PARSE] Error parsing lease file: {e}")
+    return None
+
+def get_mac_from_pd_prefix(prefix_str):
+    """Kea リースファイルから指定プレフィックスに合致するクライアント MAC アドレスを逆引き取得（最新のアクティブリース優先）"""
+    lease_file = "/var/lib/kea/kea-leases6.csv"
+    if not os.path.exists(lease_file):
+        return None
+    try:
+        clean_target = prefix_str.split('%')[0].lower()
+        target_net = ipaddress.IPv6Network(clean_target if '/' in clean_target else f"{clean_target}/56", strict=False)
+        with open(lease_file, 'r') as f:
+            lines = f.readlines()
+        if not lines:
+            return None
+        headers = [h.strip() for h in lines[0].split(',')]
+        if 'hwaddr' not in headers or 'address' not in headers:
+            return None
+        mac_idx = headers.index('hwaddr')
+        addr_idx = headers.index('address')
+        state_idx = headers.index('state') if 'state' in headers else -1
+        for line in reversed(lines[1:]):
+            parts = [p.strip() for p in line.split(',')]
+            if len(parts) <= max(mac_idx, addr_idx):
+                continue
+            if state_idx != -1 and parts[state_idx] not in ('0', 'active', ''):
+                continue
+            lease_addr = parts[addr_idx]
+            try:
+                l_net = ipaddress.IPv6Network(f"{lease_addr}/56", strict=False)
+                if l_net == target_net or l_net.network_address == target_net.network_address:
+                    lease_mac = parts[mac_idx].lower().replace('-', ':')
+                    if ':' not in lease_mac and len(lease_mac) == 12:
+                        lease_mac = ':'.join(lease_mac[i:i+2] for i in range(0, 12, 2))
+                    return lease_mac
+            except Exception:
+                pass
+    except Exception as e:
+        syslog.syslog(syslog.LOG_ERR, f"[LEASE-PARSE] Error reverse parsing lease file: {e}")
     return None
 
 def classify_segment(prefix_str, cfg, dev=None):
@@ -405,43 +774,43 @@ def convert_to_data_ipv6(base_prefix_str, target_v4_str, target_psid=0, is_slaac
 
         v4_octets = [int(x) for x in target_v4_str.split('.')]
 
+        # RFC 7597 Section 6.2 MAP Interface Identifier:
+        # byte 0: 0x00
+        # byte 1..4: IPv4 address (32bit)
+        # byte 5..6: PSID (16bit)
+        # byte 7: 0x00
+        psid_val = int(target_psid) if target_psid else 0
+        psid_high = (psid_val >> 8) & 0xff
+        psid_low = psid_val & 0xff
+
         block4 = f"00{v4_octets[0]:02x}"
         block5 = f"{v4_octets[1]:02x}{v4_octets[2]:02x}"
-        block6 = f"{v4_octets[3]:02x}00"
-        block7 = f"{target_psid:02x}00"
+        block6 = f"{v4_octets[3]:02x}{psid_high:02x}"
+        block7 = f"{psid_low:02x}00"
 
         data_ipv6 = f"{':'.join(prefix_part)}:{block4}:{block5}:{block6}:{block7}"
         return ipaddress.IPv6Address(data_ipv6).compressed
     except Exception as e:
         raise ValueError(f"Failed to calculate data IPv6: {e}")
 
-def calc_map_e_params(prefix_str, dev=None):
-    """
-    フックスクリプトおよびmape-provisioning-server互換用のラッパー関数。
-    方針.md 3.1節・5章・13.2節の仕様に従い、①〜④いずれの接続方式かを判定し、
-    対応するIPv4アドレスとCE用データ通信IPv6アドレスを算出する。
+# =============================================================================
+# 内部ヘルパー関数
+# =============================================================================
 
-      ① SLAAC動的 / ② PD動的 : 新しい規則(VLAN/DUIDまたはPD委譲ID)により
-                                  BR_IPV4_POOL 内から1つの/32を決定
-      ③ SLAAC固定 / ④ PD固定 : map-e-static-ip.conf をMACアドレスで検索し、
-                                  一致すればそのIPv4/ブロックを使用。
-                                  未登録の場合は接続を拒否せず、①②と同じ
-                                  動的抽出にフォールバックする
-                                  (方針.md 3.1節フォールバック設計/4.4節)。
+def _extract_mac_and_segment(clean_ip, dev):
     """
-    clean_ip = prefix_str.split('%')[0]
-    syslog.syslog(syslog.LOG_INFO, f"[DEBUG-LINK] clean_ip: {repr(clean_ip)}, startswith_fe80: {clean_ip.lower().startswith('fe80')}")
-    
+    入力 IPv6 アドレス/プレフィックスから MAC アドレスを復元し、
+    接続方式 (segment) とグローバルプレフィックス (clean_ip) を確定する。
+    返り値: (mac, resolved_clean_ip, segment)
+    """
     mac = extract_mac_from_eui64(clean_ip)
     if not mac:
-        # 手動設定アドレス(::1等)やModified EUI-64でない場合
-        # リンクローカルでなければプレフィックス自体からセグメント判定を試みる
         if not clean_ip.lower().startswith("fe80"):
-            mac = "00:00:00:00:00:00"  # ダミーMAC
+            mac = "00:00:00:00:00:00"  # ダミーMAC（プレフィックスから直接判定）
         else:
             raise ValueError(f"Cannot determine MAC address (not modified EUI-64) from: {clean_ip}")
 
-    # NDP監視等でリンクローカルアドレスが渡された場合、グローバルアドレス(プレフィックス)を復元する
+    # リンクローカルまたは未指定アドレスの場合、グローバルプレフィックスを復元
     if clean_ip.lower().startswith("fe80") or clean_ip == "::":
         segment = classify_segment(clean_ip, _CFG, dev)
         if segment is None:
@@ -466,64 +835,125 @@ def calc_map_e_params(prefix_str, dev=None):
         if segment is None:
             raise ValueError(f"Cannot classify segment for prefix: {clean_ip}")
 
+    return mac, clean_ip, segment
+
+
+def _compute_target_v4(mac, clean_ip, segment):
+    """
+    接続方式に応じて割り当て IPv4 アドレスを決定する。
+    固定セグメント(slaac_fix, pd_fix)は静的マップを参照し、未登録の場合は接続拒否（フォールバックなし）。
+    動的セグメント(slaac_dyn, pd_dyn)は、MAC登録の有無にかかわらず動的IPを割り当てる。
+    """
     is_fixed_segment = segment in ('slaac_fix', 'pd_fix')
     is_slaac = segment in ('slaac_dyn', 'slaac_fix')
 
-    target_v4 = None
+    # 固定セグメントの場合のみ、map-e-static-ip.conf から固定IPを取得（未登録は接続不可、フォールバックなし）
     if is_fixed_segment:
-        static_net = load_static_map(STATIC_IP_CONF_PATH, mac)
-        if static_net:
-            target_v4 = static_net.network_address
+        if mac and mac != "00:00:00:00:00:00":
+            static_iface = load_static_map(STATIC_IP_CONF_PATH, mac)
+            if static_iface:
+                net = static_iface.network
+                ce_host_ip = net.network_address
+                return net.network_address, net.prefixlen, is_slaac, ce_host_ip
+        raise PermissionError(f"Unregistered CE (MAC: {mac}) cannot connect on fixed segment ({segment})")
 
-    if target_v4 is None:
-        # ①②はここが通常経路。③④は未登録MACのフォールバック
-        pool_net = ipaddress.IPv4Network(f"{BR_IPV4_POOL}/{BR_IPV4_MASK}", strict=False)
-        pool_octets = pool_net.network_address.exploded.split('.')
-        
-        if is_slaac:
-            # ①③フォールバック: IPv4下位2バイト = [VLAN % 256] [MAC末尾1バイト]
-            exploded = ipaddress.IPv6Address(clean_ip).exploded.split(':')
-            base_len = len(_CFG['BASE_SUBNET'].split(':'))
-            seg_hextet = exploded[base_len]
-            vlan_base = int(_CFG['SLAAC_BR_BASE']) if segment == 'slaac_dyn' else int(_CFG['SLAAC_FIX_BR_PREFIX'])
-            vlan = int(seg_hextet) - vlan_base
-            
-            octet2 = vlan % 256
-            octet3 = int(mac.split(':')[-1], 16)
-            target_v4 = ipaddress.IPv4Address(f"{pool_octets[0]}.{pool_octets[1]}.{octet2}.{octet3}")
-        else:
-            # ②④フォールバック: IPv4下位2バイト = [PD委譲プレフィックスの5〜6バイト目]
-            v6_net = ipaddress.IPv6Network(f"{clean_ip}/56", strict=False)
-            v6_bytes = v6_net.network_address.packed
-            octet2 = v6_bytes[5]
-            octet3 = v6_bytes[6]
-            target_v4 = ipaddress.IPv4Address(f"{pool_octets[0]}.{pool_octets[1]}.{octet2}.{octet3}")
+    # 動的セグメント（または固定セグメントで未登録の場合）: アドレス衝突防止のため /16 固定
+    pool_str = BR_IPV4_POOL
+    if '/' in pool_str:
+        pool_net = ipaddress.IPv4Network(pool_str, strict=False)
+    else:
+        mask = int(BR_IPV4_MASK) if BR_IPV4_MASK else 16
+        pool_net = ipaddress.IPv4Network(f"{pool_str}/{mask}", strict=False)
 
-    # ---- target_psid を動的に計算する ----
-    target_psid = 0
-    if segment == 'slaac_dyn':
-        # SLAAC動的: プレフィックスのhextet上位2桁からPSIDを抽出
-        try:
-            exploded = ipaddress.IPv6Address(clean_ip).exploded.split(':')
-            base_len = len(_CFG['BASE_SUBNET'].split(':'))
-            seg_hextet = exploded[base_len]
-            target_psid = int(seg_hextet[:2], 16)
-        except Exception:
-            target_psid = 0
-    elif segment == 'pd_dyn':
-        # DHCPv6-PD動的: CE(FortiGate/YAMAHA)は1台1IP(/32)割当て時 PSID=0 を使用
-        target_psid = 0
+    pool_octets = pool_net.network_address.exploded.split('.')
+    prefix_len = pool_net.prefixlen
 
-    # 計算した target_psid を引数に渡す (これまでは 0 固定だった箇所)
-    ce_ipv6 = convert_to_data_ipv6(clean_ip, str(target_v4), target_psid=target_psid, is_slaac=is_slaac)
+    if prefix_len != 16:
+        # アドレス衝突防止のため /16 固定
+        syslog.syslog(syslog.LOG_WARNING, f"BR_IPV4_POOL prefix length is /{prefix_len}, but /16 is required to prevent collisions. Enforcing /16.")
 
-    # DDNS (Dynamic DNS) 自動登録処理の呼出し
-    vlan_id = None
-    if dev and '.' in dev:
-        try:
-            vlan_id = int(dev.split('.')[1])
-        except ValueError:
-            pass
-    update_ddns(mac_str=mac, vlan=vlan_id, target_v4=str(target_v4), ce_ipv6=ce_ipv6)
+    raw_last = int(mac.split(':')[-1], 16) if mac and mac != "00:00:00:00:00:00" else 1
+    last_byte = (raw_last % 254) + 1 if (raw_last == 0 or raw_last == 255) else raw_last
 
-    return str(target_v4), ce_ipv6, segment, target_psid
+    if is_slaac:
+        cand = clean_ip if ("::" in clean_ip or clean_ip.count(":") >= 7) else f"{clean_ip}::"
+        v6_bytes = ipaddress.IPv6Network(f"{cand}/64", strict=False).network_address.packed
+        octet2 = v6_bytes[5]
+        octet3 = v6_bytes[6]
+        # RFC 7597 / MAP-E 仕様: Rule /16 + EA-bits 16bit = 32bit (完全一致、1IP=1台)
+        return ipaddress.IPv4Address(f"{pool_octets[0]}.{pool_octets[1]}.{octet2}.{octet3}"), 32, is_slaac
+    else:
+        cand = clean_ip if ("::" in clean_ip or clean_ip.count(":") >= 7) else f"{clean_ip}::"
+        v6_bytes = ipaddress.IPv6Network(f"{cand}/56", strict=False).network_address.packed
+        octet2 = v6_bytes[5]
+        octet3 = v6_bytes[6]
+        # RFC 7597 / MAP-E 仕様: Rule /16 + EA-bits 16bit = 32bit (完全一致、1IP=1台、例: 10.218.0.1)
+        return ipaddress.IPv4Address(f"{pool_octets[0]}.{pool_octets[1]}.{octet2}.{octet3}"), 32, is_slaac
+
+
+def _compute_psid(mac, clean_ip, segment):
+    """
+    接続方式に応じて PSID を計算する。
+    RFC 7597 / 方針.md 4.2節準拠:
+    - Rule IPv4 Prefix (/16) + EA-bits (16bit) = 32bit のため、
+      EA-bits はすべて IPv4 アドレス合成に消費され、PSID に配分されるビットは 0bit。
+    - また BR 側ではポート制限を実施せず、1 台の CE に 1 つの IPv4 アドレス(/32)を
+      1対1で割り当てる（全ポート専有）ため、全接続方式で PSID は常に 0 を返す。
+    """
+    return 0
+
+
+class MapEParams(tuple):
+    """
+    calc_map_e_params() の戻り値オブジェクト。
+    4 要素タプル互換でありながら、v4_prefixlen, mac 属性を保持する。
+    """
+    def __new__(cls, v4, ce_v6, seg, psid, v4_len=32, mac=None):
+        return super().__new__(cls, (v4, ce_v6, seg, psid))
+
+    def __init__(self, v4, ce_v6, seg, psid, v4_len=32, mac=None):
+        self.v4_prefixlen = v4_len
+        self.mac = mac
+
+
+# =============================================================================
+# 公開 API
+# =============================================================================
+
+def calc_map_e_params(prefix_str, dev=None):
+    """
+    フックスクリプトおよびmape-provisioning-server互換用のラッパー関数。
+    方針.md 3.1節・5章・13.2節の仕様に従い、①〜④いずれの接続方式かを判定し、
+    対応するIPv4アドレスとCE用データ通信IPv6アドレスを算出する。
+
+      ① SLAAC動的 / ② PD動的 : MAC/プレフィックスから決定論的に /32 を決定。
+                                  OCN 動的仕様の PSID ハッシュ分散割り当てを適用。
+      ③ SLAAC固定 / ④ PD固定 : map-e-static-ip.conf の MAC エントリを参照。
+                                  未登録の場合は接続拒否（フォールバックなし）。
+    戻り値: (target_ipv4_str, ce_ipv6_str, segment_str, target_psid_int) [MapEParams]
+    """
+    clean_ip = prefix_str.split('%')[0]
+
+    # --- ① MAC 復元・セグメント判定・リンクローカル解決 ---
+    mac, clean_ip, segment = _extract_mac_and_segment(clean_ip, dev)
+    if (not mac or mac == "00:00:00:00:00:00") and segment in ('pd_dyn', 'pd_fix'):
+        pd_mac = get_mac_from_pd_prefix(clean_ip)
+        if pd_mac:
+            mac = pd_mac
+
+    # --- ② IPv4 アドレス決定 ---
+    res_v4 = _compute_target_v4(mac, clean_ip, segment)
+    target_v4, v4_prefixlen, is_slaac = res_v4[0], res_v4[1], res_v4[2]
+    ce_host_ip = res_v4[3] if len(res_v4) > 3 else target_v4
+
+    # --- ③ PSID 計算 ---
+    target_psid = _compute_psid(mac, clean_ip, segment)
+
+    # --- ④ CE IPv6 アドレス合成 ---
+    ce_ipv6 = convert_to_data_ipv6(clean_ip, str(ce_host_ip), target_psid=target_psid, is_slaac=is_slaac)
+
+    # --- ⑤ DDNS 自動登録 ---
+    vlan_id = extract_vlan_id(clean_ip, dev=dev, mac=mac)
+    update_ddns(mac_str=mac, target_v4=str(target_v4), ce_ipv6=ce_ipv6, vlan=vlan_id)
+
+    return MapEParams(str(target_v4), ce_ipv6, segment, target_psid, v4_prefixlen, mac=mac)

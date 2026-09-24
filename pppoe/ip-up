@@ -1,0 +1,143 @@
+#!/bin/bash
+# /etc/ppp/ip-up (executed when IPCP comes up)
+# Arguments:
+# $1: Interface name (e.g. ppp0)
+# $2: TTY device name
+# $3: TTY device speed
+# $4: Local IP address (Server IP)
+# $5: Remote IP address (Client IP)
+# $6: ipparam (passed from pppd options)
+
+IFNAME="$1"
+LOCAL_IP="$4"
+REMOTE_IP="$5"
+PEER_USER="$PEERNAME"
+
+# Log connection info
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] IP-UP: dev=$IFNAME remote=$REMOTE_IP user=$PEER_USER" >> /var/log/pppoe-ip.log
+
+# =============================================================================
+# VRF 閉域分離 / 動的 VRF 振分け (user-services.conf から動的判定)
+# =============================================================================
+
+USER_SERVICE_CONF="/etc/ppp/user-services.conf"
+RESOLVED_SERVICE=""
+RESOLVED_VRF_ENABLED="0"
+RESOLVED_SERVER_IP=""
+
+if [ -f "$USER_SERVICE_CONF" ] && [ -n "$PEER_USER" ]; then
+    # user-services.conf から該当ユーザーの設定を取得
+    # Format: <username> <service_name> <vrf_enabled:0|1> <server_ip>
+    while read -r u_user u_service u_vrf u_serverip rest; do
+        [[ "$u_user" =~ ^#.*$ ]] && continue
+        [ -z "$u_user" ] && continue
+        if [ "$u_user" = "$PEER_USER" ]; then
+            RESOLVED_SERVICE="$u_service"
+            RESOLVED_VRF_ENABLED="${u_vrf:-0}"
+            RESOLVED_SERVER_IP="${u_serverip:-}"
+            break
+        fi
+    done < "$USER_SERVICE_CONF"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] USER-SVC: user=$PEER_USER -> service=$RESOLVED_SERVICE vrf=$RESOLVED_VRF_ENABLED" >> /var/log/pppoe-ip.log
+fi
+
+# VRF への所属処理
+if [ "$RESOLVED_VRF_ENABLED" = "1" ] && [ -n "$RESOLVED_SERVICE" ]; then
+    VRF_DEV="vrf-${RESOLVED_SERVICE:0:11}"
+    TABLE_ID=$(ip -d link show dev "$VRF_DEV" 2>/dev/null | awk '/vrf table/ {print $3}' | head -n1)
+    if [ -z "$TABLE_ID" ]; then
+        # ルーティングテーブル番号をサービス名から一意に決定 (hash 的に 1001-9999 の範囲)
+        TABLE_ID=$(( 1001 + ( $(echo -n "$RESOLVED_SERVICE" | cksum | cut -d' ' -f1) % 8999 ) ))
+    fi
+
+    # VRF デバイスが存在しない場合は自動作成
+    if ! ip link show "$VRF_DEV" > /dev/null 2>&1; then
+        ip link add dev "$VRF_DEV" type vrf table "$TABLE_ID" 2>/dev/null || true
+        ip link set "$VRF_DEV" up 2>/dev/null || true
+        # 外部漏洩防止 (閉域閉じ込め): テーブル未登録宛先はメインテーブルへフォールスルーさせず即時破棄
+        ip route replace unreachable default table "$TABLE_ID" 2>/dev/null || true
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] VRF: created $VRF_DEV (table $TABLE_ID)" >> /var/log/pppoe-ip.log
+    fi
+
+    # DNS サーバー (BR_IPV4_ADDR) へのアクセスを VRF 内から許可 (local ルート)
+    if [ -n "$BR_IPV4_ADDR" ]; then
+        ip route replace local "$BR_IPV4_ADDR" dev lo table "$TABLE_ID" 2>/dev/null || true
+    fi
+
+    # DNS サーバーからの応答パケットを VRF テーブルへ戻すポリシーベースルーティング
+    if [ -n "$BR_IPV4_ADDR" ] && [ -n "$REMOTE_IP" ]; then
+        ip rule del from "$BR_IPV4_ADDR" to "$REMOTE_IP/32" table "$TABLE_ID" 2>/dev/null || true
+        ip rule add from "$BR_IPV4_ADDR" to "$REMOTE_IP/32" table "$TABLE_ID" 2>/dev/null || true
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] VRF: added DNS return route rule for $REMOTE_IP (table $TABLE_ID)" >> /var/log/pppoe-ip.log
+    fi
+
+    if ip link show "$VRF_DEV" > /dev/null 2>&1; then
+        ip link set "$IFNAME" master "$VRF_DEV"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] VRF: attached $IFNAME to $VRF_DEV (user=$PEER_USER)" >> /var/log/pppoe-ip.log
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] VRF: WARN - device $VRF_DEV unavailable for $IFNAME" >> /var/log/pppoe-ip.log
+    fi
+fi
+
+# =============================================================================
+# 委譲サブネットのルーティング設定
+# Config format in /etc/ppp/routes.conf:
+# <username_or_ip> <delegated_subnet>
+# =============================================================================
+if [ -f /etc/ppp/routes.conf ]; then
+    while read -r target subnet; do
+        # Ignore comments and blank lines
+        [[ "$target" =~ ^#.*$ ]] && continue
+        [ -z "$target" ] && continue
+        [ -z "$subnet" ] && continue
+
+        if [ "$target" = "$PEER_USER" ] || [ "$target" = "$REMOTE_IP" ]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Adding delegated route: $subnet dev $IFNAME" >> /var/log/pppoe-ip.log
+            # VRF 所属済みの場合は VRF ルーティングテーブルにも追加
+            if [ "$RESOLVED_VRF_ENABLED" = "1" ] && [ -n "$RESOLVED_SERVICE" ]; then
+                VRF_DEV="vrf-${RESOLVED_SERVICE:0:11}"
+                ip route replace "$subnet" dev "$IFNAME" vrf "$VRF_DEV" 2>/dev/null || \
+                ip route replace "$subnet" dev "$IFNAME"
+                if [ -n "$BR_IPV4_ADDR" ] && [ -n "$TABLE_ID" ]; then
+                    ip rule del from "$BR_IPV4_ADDR" to "$subnet" table "$TABLE_ID" 2>/dev/null || true
+                    ip rule add from "$BR_IPV4_ADDR" to "$subnet" table "$TABLE_ID" 2>/dev/null || true
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] VRF: added DNS return route rule for delegated $subnet (table $TABLE_ID)" >> /var/log/pppoe-ip.log
+                fi
+            else
+                ip route replace "$subnet" dev "$IFNAME"
+            fi
+        fi
+    done < /etc/ppp/routes.conf
+fi
+
+# =============================================================================
+# DDNS Dynamic DNS Update (nsupdate)
+# Config format in /etc/ddns.conf:
+# <key>, <v6_fqdn>, <v4_fqdn>
+# =============================================================================
+DDNS_CONF="/etc/ddns.conf"
+if [ -f "$DDNS_CONF" ] && command -v nsupdate >/dev/null 2>&1; then
+    while IFS=, read -r key v6_fqdn v4_fqdn rest; do
+        [[ "$key" =~ ^[[:space:]]*#.*$ ]] && continue
+        key=$(echo "$key" | tr -d '[:space:]')
+        [ -z "$key" ] && continue
+
+        if [ "$key" = "$PEER_USER" ] || [ "$key" = "$REMOTE_IP" ]; then
+            v4_fqdn=$(echo "$v4_fqdn" | tr -d '[:space:]')
+            if [ -n "$v4_fqdn" ] && [ "$v4_fqdn" != "-" ]; then
+                NOW_ISO=$(date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] DDNS-UPDATE: Registering $v4_fqdn -> $REMOTE_IP (user=$PEER_USER)" >> /var/log/pppoe-ip.log
+                nsupdate <<EOF >> /var/log/pppoe-ip.log 2>&1
+server 127.0.0.1
+update delete ${v4_fqdn}. A
+update add ${v4_fqdn}. 300 A $REMOTE_IP
+update delete ${v4_fqdn}. TXT
+update add ${v4_fqdn}. 300 TXT "updated=${NOW_ISO}"
+send
+EOF
+            fi
+        fi
+    done < "$DDNS_CONF"
+fi
+
+exit 0

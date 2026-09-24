@@ -1,0 +1,95 @@
+#!/bin/bash
+# /etc/ppp/ip-down (executed when IPCP goes down)
+# Arguments:
+# $1: Interface name (e.g. ppp0)
+# $2: TTY device name
+# $3: TTY device speed
+# $4: Local IP address (Server IP)
+# $5: Remote IP address (Client IP)
+# $6: ipparam (passed from pppd options)
+
+IFNAME="$1"
+LOCAL_IP="$4"
+REMOTE_IP="$5"
+PEER_USER="$PEERNAME"
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] IP-DOWN: dev=$IFNAME remote=$REMOTE_IP user=$PEER_USER" >> /var/log/pppoe-ip.log
+
+# --- VRF デタッチ: user-services.conf を参照してユーザー名で判定 ---
+USER_SERVICE_CONF="/etc/ppp/user-services.conf"
+RESOLVED_VRF_ENABLED="0"
+RESOLVED_SERVICE=""
+
+if [ -f "$USER_SERVICE_CONF" ] && [ -n "$PEER_USER" ]; then
+    while read -r u_user u_service u_vrf rest; do
+        [[ "$u_user" =~ ^#.*$ ]] && continue
+        [ -z "$u_user" ] && continue
+        if [ "$u_user" = "$PEER_USER" ]; then
+            RESOLVED_SERVICE="$u_service"
+            RESOLVED_VRF_ENABLED="${u_vrf:-0}"
+            break
+        fi
+    done < "$USER_SERVICE_CONF"
+fi
+
+TABLE_ID=""
+if [ "$RESOLVED_VRF_ENABLED" = "1" ] && [ -n "$RESOLVED_SERVICE" ]; then
+    VRF_DEV="vrf-${RESOLVED_SERVICE:0:11}"
+    TABLE_ID=$(ip -d link show dev "$VRF_DEV" 2>/dev/null | awk '/vrf table/ {print $3}' | head -n1)
+    if [ -z "$TABLE_ID" ]; then
+        TABLE_ID=$(( 1001 + ( $(echo -n "$RESOLVED_SERVICE" | cksum | cut -d' ' -f1) % 8999 ) ))
+    fi
+
+    # DNS サーバーからの応答ルーティング用 ip rule を削除
+    if [ -n "$BR_IPV4_ADDR" ] && [ -n "$REMOTE_IP" ]; then
+        ip rule del from "$BR_IPV4_ADDR" to "$REMOTE_IP/32" table "$TABLE_ID" 2>/dev/null || true
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] VRF: removed DNS return route rule for $REMOTE_IP (table $TABLE_ID)" >> /var/log/pppoe-ip.log
+    fi
+
+    ip link set "$IFNAME" nomaster 2>/dev/null || true
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] VRF: detached $IFNAME from VRF" >> /var/log/pppoe-ip.log
+fi
+
+if [ -f /etc/ppp/routes.conf ]; then
+    while read -r target subnet; do
+        [[ "$target" =~ ^#.*$ ]] && continue
+        [ -z "$target" ] && continue
+        [ -z "$subnet" ] && continue
+
+        if [ "$target" = "$PEER_USER" ] || [ "$target" = "$REMOTE_IP" ]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Deleting delegated route: $subnet dev $IFNAME" >> /var/log/pppoe-ip.log
+            ip route del "$subnet" dev "$IFNAME" 2>/dev/null || true
+            if [ "$RESOLVED_VRF_ENABLED" = "1" ] && [ -n "$BR_IPV4_ADDR" ] && [ -n "$TABLE_ID" ]; then
+                ip rule del from "$BR_IPV4_ADDR" to "$subnet" table "$TABLE_ID" 2>/dev/null || true
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] VRF: removed DNS return route rule for delegated $subnet (table $TABLE_ID)" >> /var/log/pppoe-ip.log
+            fi
+        fi
+    done < /etc/ppp/routes.conf
+fi
+
+# DDNS Dynamic DNS Delete (nsupdate)
+# Config format in /etc/ddns.conf:
+# <key>, <v6_fqdn>, <v4_fqdn>
+DDNS_CONF="/etc/ddns.conf"
+if [ -f "$DDNS_CONF" ] && command -v nsupdate >/dev/null 2>&1; then
+    while IFS=, read -r key v6_fqdn v4_fqdn rest; do
+        [[ "$key" =~ ^[[:space:]]*#.*$ ]] && continue
+        key=$(echo "$key" | tr -d '[:space:]')
+        [ -z "$key" ] && continue
+
+        if [ "$key" = "$PEER_USER" ] || [ "$key" = "$REMOTE_IP" ]; then
+            v4_fqdn=$(echo "$v4_fqdn" | tr -d '[:space:]')
+            if [ -n "$v4_fqdn" ] && [ "$v4_fqdn" != "-" ]; then
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] DDNS-UPDATE: Deleting $v4_fqdn (user=$PEER_USER)" >> /var/log/pppoe-ip.log
+                nsupdate <<EOF >> /var/log/pppoe-ip.log 2>&1
+server 127.0.0.1
+update delete ${v4_fqdn}. A
+update delete ${v4_fqdn}. TXT
+send
+EOF
+            fi
+        fi
+    done < "$DDNS_CONF"
+fi
+
+exit 0

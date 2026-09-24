@@ -1,47 +1,22 @@
-# OCN MAP-E接続に必要なプロビジョニング方法とルーティング設定について
+# OCN MAP-E 設定・動作まとめ
 
-OCN MAP-E（OCNバーチャルコネクト）接続におけるプロビジョニングの流れ、CE/BR設定、および動的IPと固定IPのプロビジョニング仕様の違いについてまとめています。
-
----
-
-## 1. プロビジョニング（ルール取得）の流れ
-
-CE（顧客ルーター）が起動すると、以下の手順で自動的に MAP-E のパラメータを取得・算出します。
-
-1. **IPv6 アドレス取得と DNS 解決**
-   SLAAC または DHCPv6-PD を介して IPv6 接続を確立し、通知された DNS サーバーを利用して OCN のプロビジョニングサーバー（例: `rule.map.ocn.ad.jp`）の IPv6 アドレスを解決します。
-2. **ルール (JSON) の HTTPS 取得**
-   ルーターはプロビジョニングサーバーへ HTTPS リクエストを送り、以下のような MAP-E ルールを受け取ります。
-   ```json
-   {
-     "brIpv6Address": "5f00:3aa:a001::647f:ffff", // BR(終端装置)のIPv6アドレス
-     "ipv6Prefix": "5f00:3aa::",                  // IPv6ルールプレフィックス
-     "ipv6PrefixLength": 32,
-     "ipv4Prefix": "198.51.133.177",              // 割り当てられたIPv4アドレス
-     "ipv4PrefixLength": 32,
-     "eaBitLength": 8,
-     "psIdOffset": 4,                             // ポート計算用のオフセット長
-     "psId": 25                                   // ポートセットID (PSID)
-   }
-   ```
-3. **パラメータの自動算出**
-   ルーターは受信したルールから、利用可能な「送信元 IPv4 アドレス（および NAPT ポート範囲）」と「カプセル化送信元となる CE IPv6 アドレス」を自動計算し、トンネルを確立します。
+このドキュメントは、本システムで OCN バーチャルコネクト（MAP-E）接続を行う CE（ルーター）設定者向けに、**ルーターの設定例** と **設定後に接続が確立する仕組み（動作の流れ）** をまとめたものです。
 
 ---
 
-## 2. CE ルーター側 (NEC IX) の設定コマンド例
+## 1. CE ルーター側 (NEC IX) の設定例
 
-動的 IPv4 MAP-E 接続を行う際の、IXルーター側の主要な設定コマンドです。（詳細は [CPE-RA-dynamic.txt](file:///home/abc123/map-e_ocn/CPE-setting/CPE-RA-dynamic.txt) を参照）
+CE ルーター側の設定コマンド例（SLAAC動的）です。
 
 ```text
-! 1. DHCPv6 プロファイルでDNS、NTP、ドメイン名の情報要求を設定
+! 1. DNS・ドメイン名などの情報要求プロファイル
 ipv6 dhcp client-profile dhcpv6-cl
   information-request
   option-request dns-servers
   option-request domain-search-list
   option-request ntp-servers
 
-! 2. WAN側物理インターフェースで IPv6 自動設定と DHCPv6 クライアントを有効化
+! 2. WAN側で IPv6 自動設定 (SLAAC) と DHCPv6 クライアントを有効化
 interface GigaEthernet0.0
   no ip address
   ipv6 enable
@@ -49,7 +24,7 @@ interface GigaEthernet0.0
   ipv6 dhcp client dhcpv6-cl
   no shutdown
 
-! 3. MAP-E トンネルの作成（OCN用プロビジョニングの指定とNAPTの有効化）
+! 3. MAP-E トンネルの定義（OCNプロビジョニングを指定し、ルール取得・パラメータ算出を自動化）
 interface Tunnel0.0
   tunnel mode map-e ocn
   ip address map-e
@@ -64,58 +39,80 @@ ip route default Tunnel0.0
 
 ---
 
-## 3. BR（Debian / 終端サーバー）側のルーティング設定コマンド
+## 2. 設定後の接続確立フロー
 
-BR（Debian）側は、複数 CE からのトンネルを1つの共通デバイスで効率良く受け止めるため、`ip6tnl` の `external` モードを使用します。
+上記の設定を投入したルーターを回線に接続すると、以下の 4 ステップで自動的に MAP-E トンネルが開通します。
 
-### ① トンネルインターフェースの作成
-カプセル化対向を固定せず、ルーティングテーブル側のパラメータで制御できる `external` トンネルを作成して起動します。
-```bash
-# トンネルデバイスの作成と起動
-sudo ip link add mpe-common type ip6tnl mode any external
-sudo ip link set dev mpe-common up
+```text
+  [ CE ルーター ]                                 [ プロビジョニング / BR ]
+        |                                                    |
+        |--- ① RA (SLAAC) / DHCPv6-PD 受信 & DNS 取得 ----->|
+        |                                                    |
+        |--- ② HTTPS でプロビジョニング要求 --------------->|
+        |<--    MAP-E ルール (JSON) を返却 ------------------|
+        |       ※ BR 側は CE 宛てトンネルルートを自動登録   |
+        |                                                    |
+        |--- ③ ルールから IPv4・ポート範囲・BR アドレスを算出|
+        |                                                    |
+        |=== ④ MAP-E トンネル開通 (IPv4 over IPv6) =========|
 ```
 
-### ② トンネル用 IPv4 ルートの注入 (`encap ip6` を指定)
-CE へ割り当てた `CE IPv4` 宛ての通信が、カプセル化されて対象の `CE IPv6` へ送信されるように、ルートを追加します。
-- `src`: BR IPv6 アドレス (`dummy0` に付与した `BR_PREFIX` 派生アドレス)
-- `dst`: CE の CE IPv6 アドレス (プレフィックスと IPv4/PSID から算出されたアドレス)
-
-```bash
-# 例: IPv4 198.51.133.177 宛を CE IPv6 (5f00:3aa:1901:0:c6:3385:b100:1900) 宛にカプセル化して送出
-sudo ip route add 198.51.133.177/32 dev mpe-common \
-     encap ip6 src 5f00:3aa:a001::647f:ffff dst 5f00:3aa:1901:0:c6:3385:b100:1900
-```
-
-### ③ 戻りパケットを受信するための rp_filter 無効化
-デカプセル化されたパケットは `mpe-common` から出てきて `dummy0` に届きます。このとき、戻り経路チェック (`rp_filter`) でドロップされないように設定します。
-```bash
-sudo sysctl -w net.ipv4.conf.dummy0.rp_filter=0
-sudo sysctl -w net.ipv4.conf.mpe-common.rp_filter=0
-```
+1. **IPv6 / DNS の取得**
+   回線接続により、RA (SLAAC) または DHCPv6-PD（ひかり電話環境）で IPv6 プレフィックスを受信し、DHCPv6 でプロビジョニングサーバーの名前解決に必要な DNS 情報を取得します。
+2. **ルール (JSON) の自動取得**
+   ルーターがプロビジョニングサーバーへ HTTPS でアクセスし、MAP-E 接続に必要なパラメータ（配布ルール）を取得します。
+   （※ このとき BR 側も CE 宛てのトンネルルートを自動登録します）
+3. **トンネルパラメータの自動算出**
+   ルーターは受信したルールに基づき、自身の「送信元 IPv4 アドレス」「利用可能な NAPT ポート範囲」「カプセル化対向の BR IPv6 アドレス」を自動計算します。
+4. **トンネル開通**
+   計算結果がトンネルインターフェース（`Tunnel0.0`）に適用され、デフォルトルート経由で IPv4 over IPv6 通信が可能になります。
 
 ---
 
-## 4. プロビジョニングサーバーにおける動的IPと固定IPの違い
+## 3. プロビジョニングで配布されるルール（JSON 例）
 
-OCNバーチャルコネクトの仕様上、プロビジョニングサーバー（および DHCPv6 Option 94）から CE に通知されるルールパラメータは、動的IP契約と固定IP契約で以下のように異なります。
+ステップ ② でルーターが取得する JSON の例です。
+ルーターはこの情報を受け取ることで、自身の IPv4 アドレスや利用可能ポート、対向 BR アドレスを認識します。
 
-| パラメータ名 | 動的IP接続 (SLAAC動的 / PD動的) | 固定IP接続 (SLAAC固定 / PD固定) |
+```json
+{
+  "hostName": "ce-10.248.34.177.map.ocn.ad.jp",
+  "basicMapRules": [
+    {
+      "brIpv6Address": "2400:4150:3620::647f:ffff",
+      "ipv6Prefix": "2400:4150::",
+      "ipv6PrefixLength": 32,
+      "ipv4Prefix": "10.248.34.177",
+      "ipv4PrefixLength": 32,
+      "eaBitLength": 8,
+      "psIdOffset": 4,
+      "psId": 24,
+      "hostName": "ce-10.248.34.177.map.ocn.ad.jp"
+    }
+  ]
+}
+```
+
+- **`brIpv6Address`**: トンネル対向先（BR）の IPv6 アドレス (`2400:4150:3620::647f:ffff`)
+- **`ipv4Prefix`**: CE に割り当てられる IPv4 アドレス (`10.248.34.177`)
+- **`eaBitLength` / `psId`**: 利用可能な NAPT ポート範囲の算出情報
+  - 上記の例 (`psId: 24`) では、`4480〜4495`, `8576〜8591`, …, `61824〜61839` の計 240 ポートが自動割り当てされます
+
+> **BR 側ルートの自動登録**:
+> BR（終端装置）側もこれらの値（`ipv4Prefix`、`brIpv6Address`）を用いて、CE 宛てのトンネルルートをカーネルへ自動登録します。
+> ```bash
+> # BR に自動登録されるルート例:
+> ip route add 10.248.34.177/32 dev mpe-common encap ip6 src 2400:4150:3620::647f:ffff dst <CE_IPv6>
+> ```
+
+---
+
+## 4. 動的 IP と 固定 IP の違い
+
+CE に割り当てられる契約種別によって、配布ルールおよび動作が以下のように異なります。
+
+| 項目 | 動的 IP 接続 (SLAAC動的 / PD動的) | 固定 IP 接続 (SLAAC固定 / PD固定) |
 |---|---|---|
-| **IPv4アドレス決定** | 共有プールから自動決定 (MACやプレフィックス依存) | `map-e-static-ip.conf` から引き当てた固定IP |
-| **`eaBitLength`** | **`8`** (商用OCN仕様) | **`0`** (1台1IP専用占有) |
-| **`psIdOffset`** | **`4`** (商用OCN仕様) | **`0`** (ポート制限なし) |
-| **`psId` (Port Set ID)** | **`1〜255 (算出値)`** | **`0`** (または未指定・全ポート利用可能) |
-
-### 動作上の相違点
-
-#### ① ポートセット（NAPTポート数）の制限有無
-*   **動的IP:** `eaBitLength: 8`, `psIdOffset: 4` が通知されるため、CEは 8ビットの `psId` に基づいて算出された **240個のNAPTポート** のみ使用できます。
-*   **固定IP:** `eaBitLength: 0`, `psIdOffset: 0` が通知され、CEはポート制限を受けず、**全ポート (約65,535個) が利用可能** になります。
-
-#### ② CE IPv6 アドレスの末尾構造 (Interface ID)
-CE が MAP-E トンネルの送信元として構成する CE IPv6 アドレスの末尾 (Interface ID の後半) には、以下のように PSID が反映されます。
-*   **動的IP:** PSIDの値が Interface ID に埋め込まれます。
-    *(例: `target_psid = 25 (0x19)` の場合、末尾は `::00c6:3385:b100:1900` のようになります)*
-*   **固定IP:** ポート制限がないため、PSID部分は `0` となり、Interface ID の末尾も `0000` に固定されます。
-    *(例: 末尾は `::00c6:3385:b100:0000`)*
+| **IPv4 割り当て** | プールから自動採番 | 指定の固定 IPv4 |
+| **ポート制限 (NAPT)** | **あり**（約240ポート / `eaBitLength: 8`） | **なし**（全ポート約65,535個 / `eaBitLength: 0`） |
+| **トンネル対向 (CE IPv6)** | 末尾に PSID が反映される | 末尾は `:0`（`0000`）固定 |
