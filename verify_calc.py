@@ -141,13 +141,17 @@ try:
     for k, v in vlan_map.items():
         print(f'  VLAN {k} -> IPv6: {v[0]}, IPv4: {v[1]}')
 
-    # mape_calc の calc_map_e_params で PD /16 計算を突き合わせ
-    v4_pd, ce_v6_pd, seg_pd, psid_pd = mape_calc.calc_map_e_params('2400:4150:2000:1200::')
-    print(f'mape_calc PD calc result: v4={v4_pd}, psid={psid_pd}, segment={seg_pd}')
-    assert psid_pd == offset_13_val, f"mape_calc PSID ({psid_pd}) must match flex-option offset 13 ({offset_13_val})"
+    # mape_calc の calc_map_e_params で PD /16 計算および 1,008 ポート (PSID 1〜63) を突き合わせ
+    v4_pd, ce_v6_pd, seg_pd, psid_pd = mape_calc.calc_map_e_params('2400:4150:2000:1200::', dev='ens19.62')
+    print(f'mape_calc PD calc result: v4={v4_pd}, psid={psid_pd}, segment={seg_pd}, ce_v6={ce_v6_pd}')
+    assert 1 <= psid_pd <= 63, f"mape_calc PSID ({psid_pd}) must be in 1..63 for 1008-port specification"
     v4_octs = [int(x) for x in v4_pd.split('.')]
     assert v4_octs[2] == offset_15_val, f"mape_calc IPv4 octet 2 ({v4_octs[2]}) must match flex-option offset 15 ({offset_15_val})"
-    print('  [OK] mape_calc PD calculation fully matches Kea flex-option logic.')
+    # CE IPv6 の IID (block7 先頭バイト) に PSID が埋め込まれていることを検証
+    exp_v6 = ipaddress.IPv6Address(ce_v6_pd).exploded.split(':')
+    last_hextet = exp_v6[7]
+    assert int(last_hextet[:2], 16) == psid_pd, f"CE IPv6 last hextet ({last_hextet}) must contain PSID ({psid_pd})"
+    print('  [OK] mape_calc PD calculation and 1,008-port PSID embedding verified successfully.')
 except Exception as ex:
     print(f'Test error: {ex}')
     raise ex

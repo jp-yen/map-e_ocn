@@ -196,4 +196,33 @@ def validate_staging_config(staging: Dict[str, Any]) -> List[str]:
             else:
                 seen_macs.add(mac.lower())
 
+    # 3. MAP-E VLAN 重複チェック (同一 VLAN に複数の MAP-E 方式は収容不可)
+    low_layer = staging.get("low_layer", {})
+    mape_categories = [
+        ("SLAAC_DYN_VLANS", "SLAAC (動的)"),
+        ("PD_DYN_VLANS", "DHCP-PD (動的)"),
+        ("SLAAC_FIX_VLANS", "SLAAC (固定)"),
+        ("PD_FIX_VLANS", "DHCP-PD (固定)"),
+        ("HGW_VLANS", "HGW配下模擬 (動的)"),
+        ("HGW_FIX_VLANS", "HGW配下模擬 (固定)"),
+    ]
+    seen_vlans: Dict[str, str] = {}
+    for key, label in mape_categories:
+        vlan_val = low_layer.get(key, "")
+        if isinstance(vlan_val, list):
+            vlans = [str(v).strip() for v in vlan_val if str(v).strip()]
+        elif isinstance(vlan_val, str):
+            vlans = [v.strip() for v in vlan_val.split() if v.strip()]
+        else:
+            vlans = []
+        for v in vlans:
+            if v in seen_vlans:
+                errors.append(
+                    f"MAP-E VLAN重複: VLAN {v} が「{seen_vlans[v]}」と「{label} ({key})」で重複しています。"
+                    f"MAP-E の各方式間で同一 VLAN ID を重複指定することはできません（Kea DHCPv6 および radvd が起動失敗します）。"
+                )
+            else:
+                seen_vlans[v] = f"{label} ({key})"
+
     return errors
+

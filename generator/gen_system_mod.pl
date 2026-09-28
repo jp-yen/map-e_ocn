@@ -59,6 +59,12 @@ sub generate_interfaces {
     my $slaac_fix_vlans   = $c->{slaac_fix_vlans};
     my $pd_fix_vlans      = $c->{pd_fix_vlans};
     my $pppoe_vlans       = $c->{pppoe_vlans};
+    my $hgw_vlans         = $c->{hgw_vlans};
+    my $hgw_br_base       = $c->{hgw_br_base};
+    my $hgw_br_suffix     = $c->{hgw_br_suffix};
+    my $hgw_fix_vlans     = $c->{hgw_fix_vlans};
+    my $hgw_fix_br_base   = $c->{hgw_fix_br_base};
+    my $hgw_fix_br_suffix = $c->{hgw_fix_br_suffix};
     my $mgt_ip            = $c->{mgt_ip};
     my $mgt_mask          = $c->{mgt_mask};
     my $mgt_gw            = $c->{mgt_gw};
@@ -83,11 +89,13 @@ sub generate_interfaces {
 
     my %seen_vlan;
     foreach my $seg (build_vlan_segments([
-        { vlans => $slaac_dyn_vlans, type => 'slaac', base => $slaac_br_base },
-        { vlans => $pd_dyn_vlans,    type => 'pd',    base => undef },
-        { vlans => $slaac_fix_vlans, type => 'slaac', base => $slaac_fix_br_prefix },
-        { vlans => $pd_fix_vlans,    type => 'pd',    base => undef },
-        { vlans => $pppoe_vlans,     type => 'pppoe', base => undef },
+        { vlans => $slaac_dyn_vlans, type => 'slaac',   base => $slaac_br_base },
+        { vlans => $pd_dyn_vlans,    type => 'pd',      base => undef },
+        { vlans => $slaac_fix_vlans, type => 'slaac',   base => $slaac_fix_br_prefix },
+        { vlans => $pd_fix_vlans,    type => 'pd',      base => undef },
+        { vlans => $hgw_vlans,       type => 'hgw',     base => $hgw_br_base },
+        { vlans => $hgw_fix_vlans,   type => 'hgw_fix', base => $hgw_fix_br_base },
+        { vlans => $pppoe_vlans,     type => 'pppoe',   base => undef },
     ])) {
         my $vlan = $seg->{v};
         next if $seen_vlan{$vlan}++;
@@ -96,6 +104,10 @@ sub generate_interfaces {
         if ($seg->{t} eq 'slaac') {
             _iface_slaac($vif, $mape_if, $vlan, $base_subnet, $seg->{b},
                          $slaac_br_suffix, $slaac_fix_br_prefix, $slaac_fix_br_suffix);
+        } elsif ($seg->{t} eq 'hgw') {
+            _iface_hgw($vif, $mape_if, $vlan, $base_subnet, $seg->{b}, $hgw_br_suffix);
+        } elsif ($seg->{t} eq 'hgw_fix') {
+            _iface_hgw($vif, $mape_if, $vlan, $base_subnet, $seg->{b}, $hgw_fix_br_suffix);
         } elsif ($seg->{t} eq 'pppoe') {
             _iface_pppoe($vif, $mape_if, $vlan);
         } else {
@@ -139,6 +151,26 @@ sub _iface_slaac {
             accept_ra 0
             pre-up ip link add link $mape_if name $vif type vlan id $vlan || true
 
+            post-down ip link del $vif || true
+        STANZA
+}
+
+# ---------------------------------------------------------------------------
+# _iface_hgw: HGW配下模擬セグメント用 VLAN インターフェース stanza を出力
+#   RA /64 広報と同時に BR アドレス（動的: ::ff0c / 固定: ::ff0d）を静的付与
+# ---------------------------------------------------------------------------
+sub _iface_hgw {
+    my ($vif, $mape_if, $vlan, $base_subnet, $base, $hgw_br_suffix) = @_;
+    my $prefix = calc_vlan_prefix($base_subnet, $base, $vlan);
+    my $suffix = $hgw_br_suffix // '::ff0c';
+    $suffix =~ s/^:+//;
+    my $ip = "${prefix}::${suffix}";
+    print <<~"STANZA";
+        auto $vif
+        iface $vif inet6 static
+            address ${ip}/64
+            accept_ra 0
+            pre-up ip link add link $mape_if name $vif type vlan id $vlan || true
             post-down ip link del $vif || true
         STANZA
 }

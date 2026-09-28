@@ -155,7 +155,7 @@ def sync_host_vlan_interfaces(staging: Dict[str, Any], logs: List[str]) -> None:
     # 全接続方式のVLANリストを収集 (VLAN ID ごとに所属タイプを管理)
     vlan_types: Dict[int, set] = {}
     active_vlan_set = set()
-    for key in ["SLAAC_DYN_VLANS", "PD_DYN_VLANS", "SLAAC_FIX_VLANS", "PD_FIX_VLANS", "PPPOE_VLANS"]:
+    for key in ["SLAAC_DYN_VLANS", "PD_DYN_VLANS", "SLAAC_FIX_VLANS", "PD_FIX_VLANS", "PPPOE_VLANS", "HGW_VLANS", "HGW_FIX_VLANS"]:
         raw_val = lowlayer.get(key, "")
         for v in raw_val.split():
             v = v.strip()
@@ -208,19 +208,27 @@ def sync_host_vlan_interfaces(staging: Dict[str, Any], logs: List[str]) -> None:
         run_cmd(["sysctl", "-w", f"net.ipv6.conf.{sysctl_vif}.accept_ra=0"], privileged=True)
         run_cmd(["sysctl", "-w", f"net.ipv6.conf.{sysctl_vif}.autoconf=0"], privileged=True)
 
-        # SLAAC アドレスの適用 (カーネルルートを維持)
-        if "SLAAC_DYN_VLANS" in types or "SLAAC_FIX_VLANS" in types:
+        # SLAAC / HGW アドレスの適用 (カーネルルートを維持)
+        if "SLAAC_DYN_VLANS" in types or "SLAAC_FIX_VLANS" in types or "HGW_VLANS" in types or "HGW_FIX_VLANS" in types:
             base = common.get("BASE_SUBNET", "").strip()
-            base_value = slaac.get("SLAAC_BR_BASE", "1000")
-            suffix = slaac.get("SLAAC_BR_SUFFIX", "::ff0a")
+            hgw = staging.get("hgw", {})
             if "SLAAC_FIX_VLANS" in types:
                 base_value = slaac.get("SLAAC_FIX_BR_PREFIX", "3000")
-                suffix = slaac.get("SLAAC_FIX_BR_SUFFIX", "::ff0d")
+                suffix = slaac.get("SLAAC_FIX_BR_SUFFIX", "::ff0b")
+            elif "HGW_VLANS" in types:
+                base_value = hgw.get("HGW_BR_BASE", "5000")
+                suffix = hgw.get("HGW_BR_SUFFIX", "::ff0c")
+            elif "HGW_FIX_VLANS" in types:
+                base_value = hgw.get("HGW_FIX_BR_BASE", "6000")
+                suffix = hgw.get("HGW_FIX_BR_SUFFIX", "::ff0d")
+            else:
+                base_value = slaac.get("SLAAC_BR_BASE", "1000")
+                suffix = slaac.get("SLAAC_BR_SUFFIX", "::ff0a")
             try:
                 address = f"{base}:{int(base_value) + vlan}::{suffix.lstrip(':')}/64"
                 run_cmd(["ip", "-6", "addr", "replace", address, "dev", vif], privileged=True)
             except (TypeError, ValueError):
-                logs.append(f"[WARN] SLAAC アドレスを計算できません: {vif}")
+                logs.append(f"[WARN] SLAAC/HGW アドレスを計算できません: {vif}")
 
     # dummy0/dummy1 は生成設定を /etc に保存するだけでは既存 runtime に反映されない。
     # Apply 時に global address を直接同期し、networking.service の全体再起動を避ける。
@@ -231,7 +239,7 @@ def sync_host_vlan_interfaces(staging: Dict[str, Any], logs: List[str]) -> None:
         run_cmd(["ip", "link", "set", "dev", name, "up"], privileged=True)
 
     try:
-        base = common.get("BASE_SUBNET", "2001:db8").strip() or "2001:db8"
+        base = common.get("BASE_SUBNET", "5f00:3aa").strip() or "5f00:3aa"
         br_prefix = common.get("BR_PREFIX", f"{base}:aaaa").replace("${BASE_SUBNET}", base)
         br_ipv4 = common.get("BR_IPV4_ADDR", "192.0.2.1")
         ipv4 = ipaddress.IPv4Address(br_ipv4)

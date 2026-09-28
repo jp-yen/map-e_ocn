@@ -35,14 +35,12 @@ tools/package-lock.json
 # Web ダッシュボードのランタイムデータ
 web-dashboard/data/
 .map-e.conf.safe
+.config_staging.json
 bind/dynamic/
 dashboard_screenshot.png
 
 # 外部テーマ・スクリプト類 (必要時に git clone)
 bearded-theme/
-
-# 各種機器設定ファイル（リポジトリ管理外）
-CE-setting/
 
 # Playwright テスト環境 (README.md 以外は再現可能なため除外)
 playwright/*

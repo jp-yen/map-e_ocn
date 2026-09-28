@@ -85,13 +85,10 @@
           <span>3️⃣</span> IPoE (MAP-E) 共通
         </button>
         <button class="config-tab-btn" onclick="switchConfigTab(4)">
-          <span>4️⃣</span> MAP-E (SLAAC)
+          <span>4️⃣</span> MAP-E 方式設定
         </button>
         <button class="config-tab-btn" onclick="switchConfigTab(5)">
-          <span>5️⃣</span> MAP-E (DHCP-PD)
-        </button>
-        <button class="config-tab-btn" onclick="switchConfigTab(6)">
-          <span>6️⃣</span> 外観
+          <span>5️⃣</span> 外観
         </button>
       </div>
 
@@ -145,6 +142,18 @@
               <input type="text" class="config-input" id="cfg_PD_FIX_VLANS" placeholder="例: 850"
                 oninput="onConfigInputChanged()">
               <div class="config-hint">ひかり電話あり固定 IPv4 (DHCPv6-PD固定)</div>
+            </div>
+            <div class="config-form-group">
+              <label class="config-label">⑤ HGW 動的 VLAN (HGW_VLANS)</label>
+              <input type="text" class="config-input" id="cfg_HGW_VLANS" placeholder="例: 851"
+                oninput="onConfigInputChanged()">
+              <div class="config-hint">HGW配下模擬 動的 IPv4 (RA /64 + DHCP-PD /60 併用, 1 VLAN 1台収容)</div>
+            </div>
+            <div class="config-form-group">
+              <label class="config-label">⑥ HGW 固定IP VLAN (HGW_FIX_VLANS)</label>
+              <input type="text" class="config-input" id="cfg_HGW_FIX_VLANS" placeholder="例: 852"
+                oninput="onConfigInputChanged()">
+              <div class="config-hint">HGW配下模擬 固定 IPv4 (RA /64 + DHCP-PD /60 併用, 1 VLAN 1台収容)</div>
             </div>
             <div class="config-form-group" style="grid-column: 1 / -1;">
               <label class="config-label">PPPoE 収容 VLAN (PPPOE_VLANS)</label>
@@ -382,7 +391,7 @@
               <div class="config-grid-2">
                 <div class="config-form-group">
                   <label class="config-label">基幹 IPv6 プレフィックス (BASE_SUBNET)</label>
-                  <input type="text" class="config-input" id="cfg_BASE_SUBNET" placeholder="2001:db8"
+                  <input type="text" class="config-input" id="cfg_BASE_SUBNET" placeholder="5f00:3aa"
                     oninput="onConfigInputChanged()">
                   <div class="config-hint">末尾にコロンを含めない基幹 /32 等のプレフィックス</div>
                 </div>
@@ -421,92 +430,132 @@
           </div>
         </div>
 
-        <!-- Panel 4: SLAAC -->
+        <!-- Panel 4: MAP-E 方式設定 (SLAAC / DHCP-PD / HGW) -->
         <div class="config-tab-panel" id="configPanel4">
-          <div class="config-section-title"><span>📡</span> MAP-E (SLAAC) 設定</div>
-
-          <!-- Dynamic Info Card -->
-          <div class="info-card-blue" style="margin-bottom: 16px;">
-            <div style="font-weight:700; margin-bottom:4px; font-size:13.5px;">ℹ️ SLAAC 動的 IP について（個別設定不要）</div>
-            CE（端末ルーター）は radvd が広告する IPv6 プレフィックスから自律的に IPv6 アドレスを生成します。<br>
-            プロビジョニングサーバーが <code>BR_IPV4_POOL</code> と CE IPv6 アドレスから機械的に IPv4 アドレスと PSID
-            を自動算出するため、<strong>端末ごとの事前個別設定は一切不要</strong>です。<br>
-            ※ 固定 IP や端末備考の登録は「<strong>3️⃣ IPoE (MAP-E) 共通</strong>」タブで行えます。
+          <div class="config-section-title"><span>📡</span> MAP-E 接続方式別設定</div>
+          <div class="config-section-desc">
+            SLAAC（ひかり電話なし）、DHCP-PD（ひかり電話あり）、および HGW配下模擬（RA + DHCP-PD併用）の各方式に適用するプレフィックス・BR サフィックス・プール設定を1箇所で管理します。
           </div>
 
-          <!-- Accordion 4: SLAAC Advanced -->
-          <div class="config-accordion" id="acc_slaac">
-            <div class="config-accordion-header" onclick="toggleAccordion('acc_slaac')">
-              <span>🔧 拡張設定（SLAAC IPv6 プレフィックス計算用パラメータ）</span>
-              <span class="config-accordion-icon">▶</span>
+          <!-- Section 1: SLAAC -->
+          <div style="background:var(--bg-input); border:1px solid var(--border-color); border-radius:10px; padding:18px; margin-bottom:20px;">
+            <div style="font-size:15px; font-weight:700; color:var(--text-soft); margin-bottom:10px; display:flex; align-items:center; gap:8px;">
+              <span>📡</span> ①③ MAP-E (SLAAC方式: ひかり電話なし)
             </div>
-            <div class="config-accordion-body">
-              <div class="config-grid-2">
-                <div class="config-form-group">
-                  <label class="config-label">SLAAC 動的 ベース (SLAAC_BR_BASE)</label>
-                  <input type="text" class="config-input" id="cfg_SLAAC_BR_BASE" placeholder="1000"
-                    oninput="onConfigInputChanged()">
-                </div>
-                <div class="config-form-group">
-                  <label class="config-label">SLAAC 動的 サフィックス (SLAAC_BR_SUFFIX)</label>
-                  <input type="text" class="config-input" id="cfg_SLAAC_BR_SUFFIX" placeholder="::ff0a"
-                    oninput="onConfigInputChanged()">
-                </div>
-                <div class="config-form-group">
-                  <label class="config-label">SLAAC 固定 ベース (SLAAC_FIX_BR_PREFIX)</label>
-                  <input type="text" class="config-input" id="cfg_SLAAC_FIX_BR_PREFIX" placeholder="3000"
-                    oninput="onConfigInputChanged()">
-                </div>
-                <div class="config-form-group">
-                  <label class="config-label">SLAAC 固定 サフィックス (SLAAC_FIX_BR_SUFFIX)</label>
-                  <input type="text" class="config-input" id="cfg_SLAAC_FIX_BR_SUFFIX" placeholder="::ff0d"
-                    oninput="onConfigInputChanged()">
-                </div>
+            <div class="info-card-blue" style="margin-bottom: 14px;">
+              <div style="font-weight:700; margin-bottom:4px; font-size:13px;">ℹ️ SLAAC 方式（個別事前設定不要 / 1 VLAN 1台収容）</div>
+              CE（端末ルーター）は radvd が広告する IPv6 プレフィックスから自律的に IPv6 アドレスを生成します。<br>
+              <code>BR_IPV4_POOL</code> と CE IPv6 アドレスから機械的に IPv4 アドレスと PSID を自動算出します。<br>
+              ※ RA方式CE対応のため <strong>1 VLAN 1台収容</strong> です。固定IPや端末備考の登録は「<strong>3️⃣ IPoE 共通</strong>」タブで行えます。
+            </div>
+            <div class="config-grid-2">
+              <div class="config-form-group">
+                <label class="config-label">SLAAC 動的 ベース (SLAAC_BR_BASE)</label>
+                <input type="text" class="config-input" id="cfg_SLAAC_BR_BASE" placeholder="1000"
+                  oninput="onConfigInputChanged()">
+                <div class="config-hint">動的 RA /64 広報プレフィックス起点（例: 1000 + VLAN）</div>
+              </div>
+              <div class="config-form-group">
+                <label class="config-label">SLAAC 動的 BR サフィックス (SLAAC_BR_SUFFIX)</label>
+                <input type="text" class="config-input" id="cfg_SLAAC_BR_SUFFIX" placeholder="::ff0a"
+                  oninput="onConfigInputChanged()">
+                <div class="config-hint">動的 SLAAC 用 BR IPv6 インターフェースID</div>
+              </div>
+              <div class="config-form-group">
+                <label class="config-label">SLAAC 固定 ベース (SLAAC_FIX_BR_PREFIX)</label>
+                <input type="text" class="config-input" id="cfg_SLAAC_FIX_BR_PREFIX" placeholder="3000"
+                  oninput="onConfigInputChanged()">
+                <div class="config-hint">固定IP用 RA /64 広報プレフィックス起点（例: 3000 + VLAN）</div>
+              </div>
+              <div class="config-form-group">
+                <label class="config-label">SLAAC 固定 BR サフィックス (SLAAC_FIX_BR_SUFFIX)</label>
+                <input type="text" class="config-input" id="cfg_SLAAC_FIX_BR_SUFFIX" placeholder="::ff0b"
+                  oninput="onConfigInputChanged()">
+                <div class="config-hint">固定 SLAAC 用 BR IPv6 インターフェースID</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Section 2: DHCP-PD -->
+          <div style="background:var(--bg-input); border:1px solid var(--border-color); border-radius:10px; padding:18px; margin-bottom:20px;">
+            <div style="font-size:15px; font-weight:700; color:var(--text-soft); margin-bottom:10px; display:flex; align-items:center; gap:8px;">
+              <span>📦</span> ②④ MAP-E (DHCP-PD方式: ひかり電話あり)
+            </div>
+            <div class="info-card-blue" style="margin-bottom: 14px;">
+              <div style="font-weight:700; margin-bottom:4px; font-size:13px;">ℹ️ DHCP-PD 方式（個別事前設定不要 / 複数台収容可）</div>
+              CE が DHCPv6-PD リクエストを送信すると、Kea DHCPv6 のプレフィックスプール（<code>PD_POOL</code>）から空きプレフィックス（/56）が動的に貸し出され、IPv4 と PSID が自動算出されます。<br>
+              ※ 複数端末を同一 VLAN に収容可能です。
+            </div>
+            <div class="config-grid-2">
+              <div class="config-form-group">
+                <label class="config-label">動的 プレフィックスプール (PD_POOL)</label>
+                <input type="text" class="config-input" id="cfg_PD_POOL" placeholder="2000"
+                  oninput="onConfigInputChanged()">
+                <div class="config-hint">動的 PD クライアントへ貸し出す /56 プール帯（第3ヘクステット）</div>
+              </div>
+              <div class="config-form-group">
+                <label class="config-label">固定 プレフィックスプール (PD_FIX_POOL)</label>
+                <input type="text" class="config-input" id="cfg_PD_FIX_POOL" placeholder="4000"
+                  oninput="onConfigInputChanged()">
+                <div class="config-hint">固定 PD クライアント用プール帯（第3ヘクステット）</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Section 3: HGW配下模擬 -->
+          <div style="background:var(--bg-input); border:1px solid var(--border-color); border-radius:10px; padding:18px; margin-bottom:20px;">
+            <div style="font-size:15px; font-weight:700; color:var(--text-soft); margin-bottom:10px; display:flex; align-items:center; gap:8px;">
+              <span>🏠</span> ⑤⑥ MAP-E (HGW配下模擬: RA + DHCP-PD 併用)
+            </div>
+            <div class="info-card-blue" style="margin-bottom: 14px;">
+              <div style="font-weight:700; margin-bottom:4px; font-size:13px;">ℹ️ HGW配下模擬方式（RA /64 + DHCP-PD /60 併用 / 1 VLAN 1台収容）</div>
+              同一 VLAN 内で RA 広報（/64）と DHCPv6-PD（/60 移譲）を併用提供します。<br>
+              RA方式の CE ルーターが接続される可能性があるため、<strong>1 VLAN 1台収容</strong> となります。<br>
+              動的（⑤）は商用 OCN 仕様（EA-bits=16, Offset=6）により 1,008 ポート制限、固定（⑥）は EA-bits=0 で全ポート開放となります。
+            </div>
+            <div class="config-grid-2">
+              <div class="config-form-group">
+                <label class="config-label">HGW 動的 RA ベース (HGW_BR_BASE)</label>
+                <input type="text" class="config-input" id="cfg_HGW_BR_BASE" placeholder="5000"
+                  oninput="onConfigInputChanged()">
+                <div class="config-hint">HGW 動的 WAN側 RA /64 起点（例: 5000 + VLAN）</div>
+              </div>
+              <div class="config-form-group">
+                <label class="config-label">HGW 動的 BR サフィックス (HGW_BR_SUFFIX)</label>
+                <input type="text" class="config-input" id="cfg_HGW_BR_SUFFIX" placeholder="::ff0c"
+                  oninput="onConfigInputChanged()">
+                <div class="config-hint">HGW 動的用 BR IPv6 インターフェースID</div>
+              </div>
+              <div class="config-form-group">
+                <label class="config-label">HGW 動的 PD プール (HGW_POOL)</label>
+                <input type="text" class="config-input" id="cfg_HGW_POOL" placeholder="5500"
+                  oninput="onConfigInputChanged()">
+                <div class="config-hint">HGW 動的 DHCP-PD /60 委譲プール帯（第3ヘクステット）</div>
+              </div>
+              <div class="config-form-group">
+                <label class="config-label">HGW 固定 RA ベース (HGW_FIX_BR_BASE)</label>
+                <input type="text" class="config-input" id="cfg_HGW_FIX_BR_BASE" placeholder="6000"
+                  oninput="onConfigInputChanged()">
+                <div class="config-hint">HGW 固定 WAN側 RA /64 起点（例: 6000 + VLAN）</div>
+              </div>
+              <div class="config-form-group">
+                <label class="config-label">HGW 固定 BR サフィックス (HGW_FIX_BR_SUFFIX)</label>
+                <input type="text" class="config-input" id="cfg_HGW_FIX_BR_SUFFIX" placeholder="::ff0d"
+                  oninput="onConfigInputChanged()">
+                <div class="config-hint">HGW 固定用 BR IPv6 インターフェースID</div>
+              </div>
+              <div class="config-form-group">
+                <label class="config-label">HGW 固定 PD プール (HGW_FIX_POOL)</label>
+                <input type="text" class="config-input" id="cfg_HGW_FIX_POOL" placeholder="6500"
+                  oninput="onConfigInputChanged()">
+                <div class="config-hint">HGW 固定 DHCP-PD /60 委譲プール帯（第3ヘクステット）</div>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- Panel 5: DHCP-PD -->
+        <!-- Panel 5: Appearance / Theme -->
         <div class="config-tab-panel" id="configPanel5">
-          <div class="config-section-title"><span>📦</span> MAP-E (DHCP-PD) 設定</div>
-
-          <!-- Dynamic Info Card -->
-          <div class="info-card-blue" style="margin-bottom: 16px;">
-            <div style="font-weight:700; margin-bottom:4px; font-size:13.5px;">ℹ️ DHCP-PD 動的 IP について（個別設定不要）</div>
-            CE（端末ルーター）が DHCPv6-PD リクエストを送信すると、Kea DHCPv6 のプレフィックスプール（<code>PD_POOL</code>）から空きプレフィックス（/56）が動的に貸し出され、IPv4
-            と PSID が自動算出されます。<br>
-            そのため、<strong>端末ごとの事前個別設定は一切不要</strong>です。<br>
-            ※ 固定 IP や端末備考の登録は「<strong>3️⃣ IPoE (MAP-E) 共通</strong>」タブで行えます。
-          </div>
-
-          <!-- Accordion 5: DHCP-PD Advanced -->
-          <div class="config-accordion" id="acc_dhcppd">
-            <div class="config-accordion-header" onclick="toggleAccordion('acc_dhcppd')">
-              <span>🔧 拡張設定（Kea DHCP-PD プレフィックスプール）</span>
-              <span class="config-accordion-icon">▶</span>
-            </div>
-            <div class="config-accordion-body">
-              <div class="config-grid-2">
-                <div class="config-form-group">
-                  <label class="config-label">動的 プレフィックスプール (PD_POOL)</label>
-                  <input type="text" class="config-input" id="cfg_PD_POOL" placeholder="2000"
-                    oninput="onConfigInputChanged()">
-                  <div class="config-hint">動的 PD クライアントへ貸し出す /56 プール帯（第3ヘクステット）</div>
-                </div>
-                <div class="config-form-group">
-                  <label class="config-label">固定 プレフィックスプール (PD_FIX_POOL)</label>
-                  <input type="text" class="config-input" id="cfg_PD_FIX_POOL" placeholder="4000"
-                    oninput="onConfigInputChanged()">
-                  <div class="config-hint">固定 PD クライアント用プール帯（第3ヘクステット）</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Panel 6: Appearance / Theme -->
-        <div class="config-tab-panel" id="configPanel6">
           <div class="config-section-title"><span>🎨</span> テーマ</div>
 
           <div class="theme-picker-card">

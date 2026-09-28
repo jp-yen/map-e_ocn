@@ -207,10 +207,23 @@ def load_tunnel_events():
 
 def classify_mape_mode(prefix_str, vlan_str, ce_ip6, config=None):
     """
-    MAP-E の接続方式 (SLAAC動的/固定, DHCP-PD動的/固定) を判定して返す。
-    返り値: 'SLAAC (動的)', 'SLAAC (固定IP)', 'DHCP-PD (動的)', 'DHCP-PD (固定IP)'
+    MAP-E の接続方式 (SLAAC動的/固定, DHCP-PD動的/固定, HGW・SLAAC動的/固定, HGW・DHCP-PD動的/固定) を判定して返す。
+    返り値: 'SLAAC (動的)', 'SLAAC (固定IP)', 'DHCP-PD (動的)', 'DHCP-PD (固定IP)',
+            'HGW・SLAAC (動的)', 'HGW・DHCP-PD (動的)', 'HGW・SLAAC (固定IP)', 'HGW・DHCP-PD (固定IP)'
     """
     cfg = config if config is not None else _get_app_config()
+
+    try:
+        hgw_pool_val = int(cfg.get("HGW_POOL", "5500"))
+        hgw_pool_hex = f"{hgw_pool_val:04x}".lower()
+    except Exception:
+        hgw_pool_hex = "5500"
+
+    try:
+        hgw_fix_pool_val = int(cfg.get("HGW_FIX_POOL", "6500"))
+        hgw_fix_pool_hex = f"{hgw_fix_pool_val:04x}".lower()
+    except Exception:
+        hgw_fix_pool_hex = "6500"
 
     vlan = None
     if vlan_str and vlan_str != "-":
@@ -221,11 +234,31 @@ def classify_mape_mode(prefix_str, vlan_str, ce_ip6, config=None):
             except ValueError:
                 pass
 
+    target_ip = prefix_str if (prefix_str and prefix_str != "-") else ce_ip6
+    seg = ""
+    is_pd_prefix = False
+    if target_ip and target_ip != "-":
+        try:
+            if "/" in target_ip:
+                clean_ip, pfx_len = target_ip.split("/", 1)
+                pfx_len_num = int(pfx_len.split("%")[0])
+                if pfx_len_num < 64:
+                    is_pd_prefix = True
+            else:
+                clean_ip = target_ip.split("%")[0]
+            exp = ipaddress.IPv6Address(clean_ip).exploded.split(":")
+            if len(exp) >= 3:
+                seg = exp[2].lower()
+        except Exception:
+            pass
+
     if vlan is not None:
         slaac_dyn = cfg.get_vlan_list("SLAAC_DYN_VLANS", [60, 61])
         pd_dyn = cfg.get_vlan_list("PD_DYN_VLANS", [62, 63])
         slaac_fix = cfg.get_vlan_list("SLAAC_FIX_VLANS", [64, 65])
         pd_fix = cfg.get_vlan_list("PD_FIX_VLANS", [66, 67])
+        hgw_dyn = cfg.get_vlan_list("HGW_VLANS", [])
+        hgw_fix = cfg.get_vlan_list("HGW_FIX_VLANS", [])
 
         if vlan in slaac_dyn:
             return "SLAAC (動的)"
@@ -235,25 +268,33 @@ def classify_mape_mode(prefix_str, vlan_str, ce_ip6, config=None):
             return "SLAAC (固定IP)"
         elif vlan in pd_fix:
             return "DHCP-PD (固定IP)"
+        elif vlan in hgw_dyn:
+            if is_pd_prefix or (seg and seg == hgw_pool_hex):
+                return "HGW・DHCP-PD (動的)"
+            return "HGW・SLAAC (動的)"
+        elif vlan in hgw_fix:
+            if is_pd_prefix or (seg and seg == hgw_fix_pool_hex):
+                return "HGW・DHCP-PD (固定IP)"
+            return "HGW・SLAAC (固定IP)"
 
     # VLAN で判定できない場合はプレフィックスの第3ヘクステットから判定
-    target_ip = prefix_str if (prefix_str and prefix_str != "-") else ce_ip6
-    if target_ip and target_ip != "-":
-        try:
-            clean = target_ip.split("/")[0].split("%")[0]
-            exp = ipaddress.IPv6Address(clean).exploded.split(":")
-            if len(exp) >= 3:
-                seg = exp[2]
-                if seg.startswith("1"):
-                    return "SLAAC (動的)"
-                elif seg.startswith("2"):
-                    return "DHCP-PD (動的)"
-                elif seg.startswith("3"):
-                    return "SLAAC (固定IP)"
-                elif seg.startswith("4"):
-                    return "DHCP-PD (固定IP)"
-        except Exception:
-            pass
+    if seg:
+        if seg.startswith("1"):
+            return "SLAAC (動的)"
+        elif seg.startswith("2"):
+            return "DHCP-PD (動的)"
+        elif seg.startswith("3"):
+            return "SLAAC (固定IP)"
+        elif seg.startswith("4"):
+            return "DHCP-PD (固定IP)"
+        elif seg.startswith("5"):
+            if is_pd_prefix or seg == hgw_pool_hex:
+                return "HGW・DHCP-PD (動的)"
+            return "HGW・SLAAC (動的)"
+        elif seg.startswith("6"):
+            if is_pd_prefix or seg == hgw_fix_pool_hex:
+                return "HGW・DHCP-PD (固定IP)"
+            return "HGW・SLAAC (固定IP)"
 
     return "DHCP-PD (動的)"
 

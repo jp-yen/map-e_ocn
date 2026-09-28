@@ -19,7 +19,7 @@ def generate_map_e_conf_content(staging_data: Dict[str, Any], original_content: 
     pppoe_vlans_str = staging_data.get("low_layer", {}).get("PPPOE_VLANS", "").strip()
 
     flat_vars: Dict[str, Any] = {}
-    for section in ["low_layer", "ipoe_common", "slaac", "dhcp_pd"]:
+    for section in ["low_layer", "ipoe_common", "slaac", "dhcp_pd", "hgw"]:
         sec_data = staging_data.get(section, {})
         for k, v in sec_data.items():
             # static_ips やリスト/辞書データはシェル変数として絶対に出力しない
@@ -71,11 +71,13 @@ def generate_map_e_conf_content(staging_data: Dict[str, Any], original_content: 
         "# =============================================================================\n",
         f'MAPE_IF="{g("MAPE_IF", "ens19")}"\n',
         "# それぞれの方式で接続するVLAN番号（接続宣言VLAN）\n",
-        "# ①SLAAC動的 / ②PD動的 / ③SLAAC固定 / ④PD固定 / PPPoE\n",
+        "# ①SLAAC動的 / ②PD動的 / ③SLAAC固定 / ④PD固定 / ⑤HGW動的 / ⑥HGW固定 / PPPoE\n",
         f'SLAAC_DYN_VLANS="{g("SLAAC_DYN_VLANS")}"\n',
         f'PD_DYN_VLANS="{g("PD_DYN_VLANS")}"\n',
         f'SLAAC_FIX_VLANS="{g("SLAAC_FIX_VLANS")}"\n',
         f'PD_FIX_VLANS="{g("PD_FIX_VLANS")}"\n',
+        f'HGW_VLANS="{g("HGW_VLANS")}"\n',
+        f'HGW_FIX_VLANS="{g("HGW_FIX_VLANS")}"\n',
         f'PPPOE_VLANS="{pppoe_vlans_str}"\n',
         "\n",
         "# PPPoE Server Local IP Base\n",
@@ -119,10 +121,21 @@ def generate_map_e_conf_content(staging_data: Dict[str, Any], original_content: 
         "\n",
         "# --- 3. ひかり電話なし固定IP SLAAC ---\n",
         f'SLAAC_FIX_BR_PREFIX="{g("SLAAC_FIX_BR_PREFIX", "3000")}"\n',
-        f'SLAAC_FIX_BR_SUFFIX="{g("SLAAC_FIX_BR_SUFFIX", "::ff0d")}"\n',
+        f'SLAAC_FIX_BR_SUFFIX="{g("SLAAC_FIX_BR_SUFFIX", "::ff0b")}"\n',
         "\n",
         "# --- 4. ひかり電話あり・固定 IPv4 (DHCPv6-PD固定) ---\n",
         f'PD_FIX_POOL="{g("PD_FIX_POOL", "4000")}"\n',
+        "\n",
+        "# --- 5. HGW配下模擬 動的 (RA /64 + DHCPv6-PD /60 併用) ---\n",
+        f'HGW_BR_BASE="{g("HGW_BR_BASE", "5000")}"\n',
+        f'HGW_BR_SUFFIX="{g("HGW_BR_SUFFIX", "::ff0c")}"\n',
+        f'HGW_POOL="{g("HGW_POOL", "5500")}"\n',
+        f'HGW_PD_DELEGATED_LEN="{g("HGW_PD_DELEGATED_LEN", "60")}"\n',
+        "\n",
+        "# --- 6. HGW配下模擬 固定IPv4 (RA /64 + DHCPv6-PD /60 + 固定IPv4) ---\n",
+        f'HGW_FIX_BR_BASE="{g("HGW_FIX_BR_BASE", "6000")}"\n',
+        f'HGW_FIX_BR_SUFFIX="{g("HGW_FIX_BR_SUFFIX", "::ff0d")}"\n',
+        f'HGW_FIX_POOL="{g("HGW_FIX_POOL", "6500")}"\n',
         "\n",
         "# =============================================================================\n",
         "# PPPoE Multi-Service Configuration\n",

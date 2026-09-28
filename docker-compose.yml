@@ -171,7 +171,7 @@ services:
       - syslog_socket:/run/syslog:rw
     environment:
       - TZ=JST-9
-      - VLAN_IFS=ens19.60 ens19.61 ens19.62 ens19.63 ens19.64 ens19.65 ens19.66 ens19.67
+      - VLAN_IFS=ens19.62 ens19.63 ens19.64 ens19.65 ens19.66 ens19.67 ens19.68 ens19.69 ens19.70 ens19.71 ens19.72 ens19.73
       - SERVICE_NAMES=OCN VPN_Gr1 VPN_Gr2 asahi-net hi-ho
       - SERVER_IP=100.116.0.1
       - INCR_LOCAL_IP=1

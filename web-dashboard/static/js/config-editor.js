@@ -32,7 +32,7 @@ async function openConfigModal() {
   if (modal) {
     modal.style.display = 'flex';
     await loadConfigData();
-    switchConfigTab(6);
+    switchConfigTab(1);
   } else if (typeof openWindow === 'function') {
     openWindow('/config', 'ConfigEditor', 1100, 800);
   } else {
@@ -69,16 +69,14 @@ function switchConfigTab(panelIndex) {
     }
   });
 
-  for (let i = 1; i <= 6; i++) {
-    const panel = document.getElementById(`configPanel${i}`);
-    if (panel) {
-      if (i === panelIndex) {
-        panel.classList.add('active');
-      } else {
-        panel.classList.remove('active');
-      }
+  const panels = document.querySelectorAll('.config-tab-panel');
+  panels.forEach((panel, idx) => {
+    if (idx + 1 === panelIndex) {
+      panel.classList.add('active');
+    } else {
+      panel.classList.remove('active');
     }
-  }
+  });
 
   if (panelIndex === 2) {
     renderPPPoEConfigTab();
@@ -209,6 +207,8 @@ function getAllConfiguredVlans() {
   parseAndAdd('PD_DYN_VLANS', 'PD動');
   parseAndAdd('SLAAC_FIX_VLANS', 'SLAAC固');
   parseAndAdd('PD_FIX_VLANS', 'PD固');
+  parseAndAdd('HGW_VLANS', 'HGW動');
+  parseAndAdd('HGW_FIX_VLANS', 'HGW固');
 
   return Array.from(vlanMap.entries())
     .map(([vlan, type]) => ({ vlan, type, num: parseInt(vlan, 10) }))
@@ -222,6 +222,7 @@ function bindConfigToForm(cfg) {
   const ll = cfg.low_layer || {};
   [
     'PPPOE_VLANS', 'SLAAC_DYN_VLANS', 'PD_DYN_VLANS', 'SLAAC_FIX_VLANS', 'PD_FIX_VLANS',
+    'HGW_VLANS', 'HGW_FIX_VLANS',
     'MAPE_IF', 'PPPOE_SERVER_BASE_IP', 'PPPOE_IP_POOL', 'MGT_IF', 'MGT_IP', 'MGT_GW',
     'WEB_DASHBOARD_PORT', 'SYSTEM_DNS', 'SYSTEM_NTP', 'DOMAIN'
   ].forEach(k => {
@@ -269,6 +270,16 @@ function bindConfigToForm(cfg) {
     if (el) el.value = pd[k] ?? '';
   });
 
+  // 6. HGW
+  const hgw = cfg.hgw || {};
+  [
+    'HGW_BR_BASE', 'HGW_BR_SUFFIX', 'HGW_POOL',
+    'HGW_FIX_BR_BASE', 'HGW_FIX_BR_SUFFIX', 'HGW_FIX_POOL'
+  ].forEach(k => {
+    const el = document.getElementById(`cfg_${k}`);
+    if (el) el.value = hgw[k] ?? '';
+  });
+
   renderIPoEVlanBanner(cfg);
 }
 
@@ -280,7 +291,11 @@ function renderIPoEVlanBanner(cfg) {
     { label: 'SLAAC 動的', l1: 'SLAAC', l2: '動的', key: 'SLAAC_DYN_VLANS' },
     { label: 'DHCP-PD 動的', l1: 'DHCP-PD', l2: '動的', key: 'PD_DYN_VLANS' },
     { label: 'SLAAC 固定', l1: 'SLAAC', l2: '固定', key: 'SLAAC_FIX_VLANS' },
-    { label: 'DHCP-PD 固定', l1: 'DHCP-PD', l2: '固定', key: 'PD_FIX_VLANS' }
+    { label: 'DHCP-PD 固定', l1: 'DHCP-PD', l2: '固定', key: 'PD_FIX_VLANS' },
+    { label: 'HGW・SLAAC 動的', l1: 'HGW・SLAAC', l2: '動的', key: 'HGW_VLANS' },
+    { label: 'HGW・DHCP-PD 動的', l1: 'HGW・DHCP-PD', l2: '動的', key: 'HGW_VLANS' },
+    { label: 'HGW・SLAAC 固定', l1: 'HGW・SLAAC', l2: '固定', key: 'HGW_FIX_VLANS' },
+    { label: 'HGW・DHCP-PD 固定', l1: 'HGW・DHCP-PD', l2: '固定', key: 'HGW_FIX_VLANS' }
   ];
   container.innerHTML = modeConfigs.map(m => {
     const rawVal = (ll[m.key] || '').trim();
@@ -866,6 +881,7 @@ function readFormValuesToStaging() {
   // 1. Low Layer
   [
     'PPPOE_VLANS', 'SLAAC_DYN_VLANS', 'PD_DYN_VLANS', 'SLAAC_FIX_VLANS', 'PD_FIX_VLANS',
+    'HGW_VLANS', 'HGW_FIX_VLANS',
     'MAPE_IF', 'PPPOE_SERVER_BASE_IP', 'PPPOE_IP_POOL', 'MGT_IF', 'MGT_IP', 'MGT_GW',
     'WEB_DASHBOARD_PORT', 'SYSTEM_DNS', 'SYSTEM_NTP', 'DOMAIN'
   ].forEach(k => {
@@ -900,6 +916,16 @@ function readFormValuesToStaging() {
   ].forEach(k => {
     const el = document.getElementById(`cfg_${k}`);
     if (el) currentConfigStaging.dhcp_pd[k] = el.value.trim();
+  });
+
+  // 6. HGW
+  if (!currentConfigStaging.hgw) currentConfigStaging.hgw = {};
+  [
+    'HGW_BR_BASE', 'HGW_BR_SUFFIX', 'HGW_POOL',
+    'HGW_FIX_BR_BASE', 'HGW_FIX_BR_SUFFIX', 'HGW_FIX_POOL'
+  ].forEach(k => {
+    const el = document.getElementById(`cfg_${k}`);
+    if (el) currentConfigStaging.hgw[k] = el.value.trim();
   });
 
   // PPPoE CSV 編集モードが開かれている場合はテキストエリアの内容を同期

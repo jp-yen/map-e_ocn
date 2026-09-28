@@ -103,6 +103,8 @@ class ConfigManager:
             "PD_DYN_VLANS": raw.get("PD_DYN_VLANS", ""),
             "SLAAC_FIX_VLANS": raw.get("SLAAC_FIX_VLANS", ""),
             "PD_FIX_VLANS": raw.get("PD_FIX_VLANS", ""),
+            "HGW_VLANS": raw.get("HGW_VLANS", ""),
+            "HGW_FIX_VLANS": raw.get("HGW_FIX_VLANS", ""),
             "MAPE_IF": raw.get("MAPE_IF", "eth1"),
             "MGT_IF": raw.get("MGT_IF", "eth0"),
             "MGT_IP": raw.get("MGT_IP", ""),
@@ -186,7 +188,7 @@ class ConfigManager:
 
         ipoe_common = {
             "BR_IPV4_POOL": raw.get("BR_IPV4_POOL", "198.51.0.0/16"),
-            "BASE_SUBNET": raw.get("BASE_SUBNET", "2001:db8"),
+            "BASE_SUBNET": raw.get("BASE_SUBNET", "5f00:3aa"),
             "BR_PREFIX": raw.get("BR_PREFIX", "${BASE_SUBNET}:aaaa"),
             "BR_IPV4_ADDR": raw.get("BR_IPV4_ADDR", "192.0.2.1"),
             "BR_IF": raw.get("BR_IF", "dummy0"),
@@ -203,7 +205,7 @@ class ConfigManager:
             "SLAAC_BR_BASE": raw.get("SLAAC_BR_BASE", "1000"),
             "SLAAC_BR_SUFFIX": raw.get("SLAAC_BR_SUFFIX", "::ff0a"),
             "SLAAC_FIX_BR_PREFIX": raw.get("SLAAC_FIX_BR_PREFIX", "3000"),
-            "SLAAC_FIX_BR_SUFFIX": raw.get("SLAAC_FIX_BR_SUFFIX", "::ff0d"),
+            "SLAAC_FIX_BR_SUFFIX": raw.get("SLAAC_FIX_BR_SUFFIX", "::ff0b"),
             "static_ips": all_static
         }
 
@@ -211,6 +213,15 @@ class ConfigManager:
             "PD_POOL": raw.get("PD_POOL", "2000"),
             "PD_FIX_POOL": raw.get("PD_FIX_POOL", "4000"),
             "static_ips": all_static
+        }
+
+        hgw = {
+            "HGW_BR_BASE": raw.get("HGW_BR_BASE", "5000"),
+            "HGW_BR_SUFFIX": raw.get("HGW_BR_SUFFIX", "::ff0c"),
+            "HGW_POOL": raw.get("HGW_POOL", "5500"),
+            "HGW_FIX_BR_BASE": raw.get("HGW_FIX_BR_BASE", "6000"),
+            "HGW_FIX_BR_SUFFIX": raw.get("HGW_FIX_BR_SUFFIX", "::ff0d"),
+            "HGW_FIX_POOL": raw.get("HGW_FIX_POOL", "6500"),
         }
 
         return {
@@ -222,7 +233,8 @@ class ConfigManager:
             },
             "ipoe_common": ipoe_common,
             "slaac": slaac,
-            "dhcp_pd": dhcp_pd
+            "dhcp_pd": dhcp_pd,
+            "hgw": hgw
         }
 
     @classmethod
@@ -370,7 +382,7 @@ class ConfigManager:
 
         ipoe_common = {
             "BR_IPV4_POOL":     tmpl_vars.get("BR_IPV4_POOL", "198.51.0.0/16"),
-            "BASE_SUBNET":      tmpl_vars.get("BASE_SUBNET", "2001:db8"),
+            "BASE_SUBNET":      tmpl_vars.get("BASE_SUBNET", "5f00:3aa"),
             "BR_PREFIX":        tmpl_vars.get("BR_PREFIX", ""),
             "BR_IPV4_ADDR":     tmpl_vars.get("BR_IPV4_ADDR", "192.0.2.1"),
             "BR_IF":            tmpl_vars.get("BR_IF", "dummy0"),

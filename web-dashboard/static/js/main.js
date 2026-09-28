@@ -99,7 +99,11 @@ async function loadData(manual = false) {
         { key: 'slaac_dyn', label: 'SLAAC 動的', l1: 'SLAAC', l2: '動的' },
         { key: 'pd_dyn', label: 'DHCP-PD 動的', l1: 'DHCP-PD', l2: '動的' },
         { key: 'slaac_fix', label: 'SLAAC 固定', l1: 'SLAAC', l2: '固定' },
-        { key: 'pd_fix', label: 'DHCP-PD 固定', l1: 'DHCP-PD', l2: '固定' }
+        { key: 'pd_fix', label: 'DHCP-PD 固定', l1: 'DHCP-PD', l2: '固定' },
+        { key: 'hgw_dyn', label: 'HGW・SLAAC 動的', l1: 'HGW・SLAAC', l2: '動的' },
+        { key: 'hgw_dyn', label: 'HGW・DHCP-PD 動的', l1: 'HGW・DHCP-PD', l2: '動的' },
+        { key: 'hgw_fix', label: 'HGW・SLAAC 固定', l1: 'HGW・SLAAC', l2: '固定' },
+        { key: 'hgw_fix', label: 'HGW・DHCP-PD 固定', l1: 'HGW・DHCP-PD', l2: '固定' }
       ];
       mapeVlanContainer.innerHTML = modeConfigs.map(m => {
         const vList = data.ipoe_vlans[m.key] || [];

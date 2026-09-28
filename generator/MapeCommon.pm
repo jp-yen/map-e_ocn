@@ -87,6 +87,8 @@ sub check_config {
         parse_vlan_list($ENV{SLAAC_FIX_VLANS} || ''),
         parse_vlan_list($ENV{PD_FIX_VLANS} || ''),
         parse_vlan_list($ENV{PPPOE_VLANS} || ''),
+        parse_vlan_list($ENV{HGW_VLANS} || ''),
+        parse_vlan_list($ENV{HGW_FIX_VLANS} || ''),
     );
     if (!@all_configured_vlans) {
         my $msg = "\n" .
@@ -94,6 +96,39 @@ sub check_config {
             "[ERROR] map-e.conf VLAN未設定エラー\n" .
             "MAP-E または PPPoE の収容 VLAN が 1 つも設定されていません。\n" .
             "SLAAC_DYN_VLANS, PD_DYN_VLANS, SLAAC_FIX_VLANS, PD_FIX_VLANS, PPPOE_VLANS のいずれかに VLAN 番号を設定してください。\n" .
+            "=" x 80 . "\n";
+        die $msg;
+    }
+
+    # MAP-E 方式間での VLAN 重複チェック (同一 VLAN に複数の MAP-E 方式は収容不可)
+    my %mape_vlan_map;
+    my @vlan_conflict_errors;
+    my @mape_categories = (
+        ["SLAAC_DYN_VLANS",  "SLAAC (動的)"],
+        ["PD_DYN_VLANS",     "DHCP-PD (動的)"],
+        ["SLAAC_FIX_VLANS",  "SLAAC (固定)"],
+        ["PD_FIX_VLANS",     "DHCP-PD (固定)"],
+        ["HGW_VLANS",        "HGW配下模擬 (動的)"],
+        ["HGW_FIX_VLANS",    "HGW配下模擬 (固定)"],
+    );
+    for my $cat (@mape_categories) {
+        my ($var_name, $label) = @$cat;
+        for my $v (parse_vlan_list($ENV{$var_name} || '')) {
+            if (exists $mape_vlan_map{$v}) {
+                push @vlan_conflict_errors, "VLAN $v が '$mape_vlan_map{$v}' と '$var_name ($label)' で重複しています。";
+            } else {
+                $mape_vlan_map{$v} = "$var_name ($label)";
+            }
+        }
+    }
+    if (@vlan_conflict_errors) {
+        my $msg = "\n" .
+            "=" x 80 . "\n" .
+            "[ERROR] map-e.conf MAP-E VLAN 重複設定エラー\n" .
+            join("", map { "  - $_\n" } @vlan_conflict_errors) . "\n" .
+            "MAP-E の各方式（SLAAC動的/固定, DHCP-PD動的/固定, HGW動的/固定）間で同一の VLAN ID を重複指定することはできません。\n" .
+            "（Kea DHCPv6 および radvd でインターフェース定義の重複エラーが発生するため）\n" .
+            "それぞれの方式に異なる VLAN 番号を割り当ててください。\n" .
             "=" x 80 . "\n";
         die $msg;
     }
@@ -443,6 +478,21 @@ sub _derive_provisioning_vars {
     if ($ENV{'BASE_SUBNET'} && $ENV{'PD_FIX_POOL'} && !defined $ENV{'MAPE_PD_FIX_PREFIX'}) {
         $ENV{'MAPE_PD_FIX_PREFIX'} = "$ENV{'BASE_SUBNET'}:$ENV{'PD_FIX_POOL'}:";
     }
+
+    # MAPE_HGW_PREFIX : ⑤HGW配下模擬動的用プール(HGW_POOL)の接続文字列表現。
+    #   classify_segment() が受信したIPv6プレフィックスを hgw セグメントと判定するために参照する。
+    #   HGW_POOL は DHCPv6-PD /60 委譲専用の空間で HGW_BR_BASE(リンク用 /64) とは分離。
+    #   例: BASE_SUBNET=5f00:3aa, HGW_POOL=5500 -> MAPE_HGW_PREFIX=5f00:3aa:5500:
+    if ($ENV{'BASE_SUBNET'} && $ENV{'HGW_POOL'} && !defined $ENV{'MAPE_HGW_PREFIX'}) {
+        $ENV{'MAPE_HGW_PREFIX'} = "$ENV{'BASE_SUBNET'}:$ENV{'HGW_POOL'}:";
+    }
+
+    # MAPE_HGW_FIX_PREFIX : ⑥HGW配下模擬固定用プール(HGW_FIX_POOL)の接続文字列表現。
+    #   classify_segment() が受信したIPv6プレフィックスを hgw_fix セグメントと判定するために参照する。
+    #   例: BASE_SUBNET=5f00:3aa, HGW_FIX_POOL=6500 -> MAPE_HGW_FIX_PREFIX=5f00:3aa:6500:
+    if ($ENV{'BASE_SUBNET'} && $ENV{'HGW_FIX_POOL'} && !defined $ENV{'MAPE_HGW_FIX_PREFIX'}) {
+        $ENV{'MAPE_HGW_FIX_PREFIX'} = "$ENV{'BASE_SUBNET'}:$ENV{'HGW_FIX_POOL'}:";
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -485,14 +535,15 @@ sub build_vlan_segments {
     foreach my $spec (@{ $specs_ref || [] }) {
         next unless $spec && defined $spec->{type};
         my $vlans = $spec->{vlans};
-        my $type  = $spec->{type};
-        my $base  = $spec->{base};
+        my %extra = %$spec;
+        delete $extra{vlans};
 
         foreach my $vlan (parse_vlan_list($vlans)) {
             push @segments, {
+                %extra,
                 v => $vlan,
-                t => $type,
-                b => $base,
+                t => $spec->{type},
+                b => $spec->{base},
             };
         }
     }

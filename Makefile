@@ -14,14 +14,23 @@ REQUIRED_PACKAGES := python3 openssl bind9-dnsutils radvd chrony
 
 .DEFAULT_GOAL := help
 .PHONY: help all clean generate check install packages archive check-root check-user \
-        generate_ddns_zones generate_pppoe_configs check_config web-dashboard up down
+        generate_ddns_zones update_syslog check_config web-dashboard up down
 
 check_config:
 	@perl generator/check_config.pl $(CONFIG_FILE)
 
 SYSTEM_TARGETS = \
     system/interfaces \
-    system/99-network-routing.conf
+    system/99-network-routing.conf \
+    system/vrf-setup.sh
+
+PPPOE_UNIFIED_DIR = pppoe/srv-unified
+PPPOE_TARGETS = \
+    $(PPPOE_UNIFIED_DIR)/chap-secrets \
+    $(PPPOE_UNIFIED_DIR)/pap-secrets \
+    $(PPPOE_UNIFIED_DIR)/routes.conf \
+    $(PPPOE_UNIFIED_DIR)/user-services.conf \
+    $(PPPOE_UNIFIED_DIR)/pppoe-server-options
 
 BIND_TARGETS = \
     bind/named.conf \
@@ -52,7 +61,7 @@ GEN_TARGETS = \
     chrony/chrony.conf \
     $(MPE_TARGETS)
 
-TARGETS = $(GEN_TARGETS) $(CERT_TARGETS)
+TARGETS = $(GEN_TARGETS) $(CERT_TARGETS) $(PPPOE_TARGETS) docker-compose.yml
 
 CUR_DIR = $(shell basename $(CURDIR))
 
@@ -77,15 +86,14 @@ help:
 
 all: generate
 
-generate: check-user check_config $(TARGETS) generate_ddns_zones generate_pppoe_configs
+generate: check-user check_config $(TARGETS) generate_ddns_zones update_syslog
 	@echo "Successfully generated all configuration files."
 
 generate_ddns_zones:
 	@mkdir -p bind/dynamic
 	@chmod 777 bind/dynamic 2>/dev/null || true
 	@chmod 666 bind/dynamic/* 2>/dev/null || true
-	@set -a; . ./$(SAFE_CONFIG_FILE); \
-	for domain in $$(perl generator/gen_bind_configs.pl list_domains 2>/dev/null); do \
+	@for domain in $$(perl generator/gen_bind_configs.pl list_domains 2>/dev/null); do \
 	    if [ ! -f "bind/dynamic/db.$$domain" ]; then \
 	        echo "Generating bind/dynamic/db.$$domain via Perl"; \
 	        perl generator/gen_bind_configs.pl ddns_zone "$$domain" > "bind/dynamic/db.$$domain"; \
@@ -94,51 +102,45 @@ generate_ddns_zones:
 	done
 	@chmod 666 bind/dynamic/* 2>/dev/null || true
 
-generate_pppoe_configs:
-	@set -a; . ./$(SAFE_CONFIG_FILE); \
-	echo "Generating unified PPPoE configs (srv-unified)"; \
-	mkdir -p "pppoe/srv-unified"; \
-	perl generator/gen_pppoe_configs.pl all_secrets   > "pppoe/srv-unified/chap-secrets"; \
-	cp "pppoe/srv-unified/chap-secrets" "pppoe/srv-unified/pap-secrets"; \
-	chmod 600 "pppoe/srv-unified/chap-secrets" "pppoe/srv-unified/pap-secrets"; \
-	perl generator/gen_pppoe_configs.pl all_routes    > "pppoe/srv-unified/routes.conf"; \
-	perl generator/gen_pppoe_configs.pl user_services > "pppoe/srv-unified/user-services.conf"; \
-	perl generator/gen_pppoe_configs.pl srv_options unified > "pppoe/srv-unified/pppoe-server-options"; \
-	echo "Generating docker-compose.yml via Perl"; \
-	perl generator/gen_pppoe_configs.pl compose > docker-compose.yml; \
-	echo "Updating syslog-ng.conf PPPoE socket via Perl"; \
-	perl generator/gen_pppoe_configs.pl syslog_update; \
-	if command -v docker > /dev/null 2>&1 && docker ps -q -f name=axosyslog | grep -q .; then \
+# -----------------------------------------------------------------------------
+# PPPoE 統合設定 & Docker Compose & Syslog 更新ルール
+# -----------------------------------------------------------------------------
+$(PPPOE_UNIFIED_DIR)/chap-secrets: $(CONFIG_FILE) generator/gen_pppoe_configs.pl
+	@mkdir -p $(PPPOE_UNIFIED_DIR)
+	@echo "Generating PPPoE credentials via Perl"
+	@perl generator/gen_pppoe_configs.pl all_secrets > $@
+	@chmod 600 $@
+
+$(PPPOE_UNIFIED_DIR)/pap-secrets: $(PPPOE_UNIFIED_DIR)/chap-secrets
+	@cp $< $@
+	@chmod 600 $@
+
+$(PPPOE_UNIFIED_DIR)/routes.conf: $(CONFIG_FILE) generator/gen_pppoe_configs.pl
+	@mkdir -p $(PPPOE_UNIFIED_DIR)
+	@echo "Generating PPPoE routes via Perl"
+	@perl generator/gen_pppoe_configs.pl all_routes > $@
+
+$(PPPOE_UNIFIED_DIR)/user-services.conf: $(CONFIG_FILE) generator/gen_pppoe_configs.pl
+	@mkdir -p $(PPPOE_UNIFIED_DIR)
+	@echo "Generating PPPoE user-services via Perl"
+	@perl generator/gen_pppoe_configs.pl user_services > $@
+
+$(PPPOE_UNIFIED_DIR)/pppoe-server-options: $(CONFIG_FILE) generator/gen_pppoe_configs.pl
+	@mkdir -p $(PPPOE_UNIFIED_DIR)
+	@echo "Generating PPPoE server options via Perl"
+	@perl generator/gen_pppoe_configs.pl srv_options unified > $@
+
+docker-compose.yml: $(CONFIG_FILE) generator/gen_pppoe_configs.pl
+	@echo "Generating docker-compose.yml via Perl"
+	@perl generator/gen_pppoe_configs.pl compose > $@
+
+update_syslog:
+	@echo "Updating syslog-ng.conf PPPoE socket via Perl"
+	@perl generator/gen_pppoe_configs.pl syslog_update
+	@if command -v docker > /dev/null 2>&1 && docker ps -q -f name=axosyslog | grep -q .; then \
 	    echo "Reloading axosyslog configuration..."; \
 	    docker exec axosyslog syslog-ng-ctl reload || true; \
-	fi; \
-	echo "Generating VRF setup script (system/vrf-setup.sh)..."; \
-	mkdir -p system; \
-	{ \
-	  echo '#!/bin/sh'; \
-	  echo '# system/vrf-setup.sh (Auto-generated by make generate -- DO NOT EDIT)'; \
-	  echo '# VRF デバイスを作成・UP するスクリプト。make install 時に実行される。'; \
-	  echo 'modprobe vrf 2>/dev/null || true'; \
-	  awk '!/^#/ && NF>=3 && $$3=="1" { print $$2 }' "pppoe/srv-unified/user-services.conf" | sort -u | \
-	  while read -r srv; do \
-	      s_short=$$(echo "$$srv" | cut -c1-11); \
-	      vrf_dev="vrf-$$s_short"; \
-	      table_id=$$(printf '%d' $$(( 1001 + ( $$(echo -n "$$srv" | cksum | cut -d' ' -f1) % 8999 ) ))); \
-	      echo "if ! ip link show '$$vrf_dev' > /dev/null 2>&1; then"; \
-	      echo "    echo 'Creating VRF: $$vrf_dev (table $$table_id)'"; \
-	      echo "    ip link add dev '$$vrf_dev' type vrf table $$table_id"; \
-	      echo "fi"; \
-	      echo "ip link set '$$vrf_dev' up"; \
-	      echo "ip route replace unreachable default table $$table_id"; \
-	      if [ -n "$$BR_IPV4_ADDR" ]; then \
-	          echo "ip route replace local $$BR_IPV4_ADDR dev lo table $$table_id"; \
-	      fi; \
-	  done; \
-	} > system/vrf-setup.sh; \
-	chmod +x system/vrf-setup.sh; \
-	echo "  -> system/vrf-setup.sh generated (run 'make install' to apply)"
-
-
+	fi
 
 # -----------------------------------------------------------------------------
 # 汎用パターンルール: GEN_TARGETS の各ファイルを Perl スクリプトで生成
@@ -149,7 +151,7 @@ generate_pppoe_configs:
 $(GEN_TARGETS): $(CONFIG_FILE)
 	@mkdir -p $(dir $@)
 	@echo "Generating $@ via Perl"
-	@set -a; . ./$(SAFE_CONFIG_FILE); perl $(GEN_SCRIPT) $(GEN_MODE) > $@
+	@perl $(GEN_SCRIPT) $(GEN_MODE) > $@
 	$(if $(GEN_CHMOD_AFTER),@chmod +x $@)
 
 chrony/chrony.conf: GEN_SCRIPT = generator/gen_chrony_config.pl
@@ -173,6 +175,11 @@ system/interfaces:             generator/gen_system_mod.pl generator/MapeCommon.
 system/99-network-routing.conf: GEN_SCRIPT = generator/gen_system_mod.pl
 system/99-network-routing.conf: GEN_MODE   = sysctl
 system/99-network-routing.conf: generator/gen_system_mod.pl generator/MapeCommon.pm
+
+system/vrf-setup.sh:           GEN_SCRIPT      = generator/gen_pppoe_configs.pl
+system/vrf-setup.sh:           GEN_MODE        = vrf_setup
+system/vrf-setup.sh:           GEN_CHMOD_AFTER = 1
+system/vrf-setup.sh:           $(PPPOE_UNIFIED_DIR)/user-services.conf generator/gen_pppoe_configs.pl
 
 radvd/radvd.conf: GEN_SCRIPT = generator/gen_radvd_mod.pl
 radvd/radvd.conf: GEN_MODE   = radvd
@@ -208,8 +215,6 @@ mape-provisioning-server/server.crt mape-provisioning-server/server.key:
 clean:
 	@echo "Cleaning generated files..."
 	@rm -rf $(TARGETS) \
-	    docker-compose.yml \
-	    system/vrf-setup.sh \
 	    bind/.rndc.key.secret \
 	    bind/dynamic \
 	    pppoe/srv-* \
@@ -266,7 +271,7 @@ install: check-root check_config
 	@echo "Installing host network and kernel routing configurations..."
 	@set -a; . ./$(SAFE_CONFIG_FILE); \
 	if [ -z "$$MAPE_IF" ]; then echo "Error: MAPE_IF is not defined in $(CONFIG_FILE)" >&2; exit 1; fi; \
-	ACTIVE_VLANS="$$SLAAC_DYN_VLANS $$PD_DYN_VLANS $$SLAAC_FIX_VLANS $$PD_FIX_VLANS $$PPPOE_VLANS"; \
+	ACTIVE_VLANS="$$SLAAC_DYN_VLANS $$PD_DYN_VLANS $$SLAAC_FIX_VLANS $$PD_FIX_VLANS $$PPPOE_VLANS $$HGW_VLANS $$HGW_FIX_VLANS"; \
 	echo "Cleaning up unused VLAN interfaces on $$MAPE_IF..."; \
 	for vif in $$(ip -o link show 2>/dev/null | awk -F': ' '{print $$2}' | cut -d@ -f1 | grep -E "^$${MAPE_IF}\.[0-9]+$$" | sort -u); do \
 	    vid="$${vif#$${MAPE_IF}.}"; \

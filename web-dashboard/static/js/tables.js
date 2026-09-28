@@ -298,7 +298,16 @@ function renderMAPETable() {
 
   const mapeModeStack = (mode) => {
     const norm = String(mode || '-').trim();
-    const l1 = (norm.includes('PD') || norm.includes('DHCP-PD')) ? 'DHCP-PD' : 'SLAAC';
+    let l1 = 'SLAAC';
+    if (norm.includes('HGW')) {
+      if (norm.includes('DHCP-PD') || norm.includes('PD')) {
+        l1 = 'HGW・DHCP-PD';
+      } else {
+        l1 = 'HGW・SLAAC';
+      }
+    } else if (norm.includes('PD') || norm.includes('DHCP-PD')) {
+      l1 = 'DHCP-PD';
+    }
     const l2 = (norm.includes('固定') || norm.includes('fix') || norm.includes('static')) ? '固定' : '動的';
     const normKey = `${l1} ${l2}`;
     const badgeStyle = getServiceBadgeStyle(normKey);

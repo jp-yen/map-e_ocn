@@ -43,6 +43,13 @@ if ($mode eq 'hook') {
     my $slaac_fix_br_prefix = $ENV{SLAAC_FIX_BR_PREFIX};
     my $pd_pool             = $ENV{PD_POOL};
     my $pd_fix_pool         = $ENV{PD_FIX_POOL};
+    my $hgw_vlans           = $ENV{HGW_VLANS};
+    my $hgw_br_base         = $ENV{HGW_BR_BASE};
+    my $hgw_pool            = $ENV{HGW_POOL};
+    my $hgw_delegated_len   = $ENV{HGW_PD_DELEGATED_LEN} || 60;
+    my $hgw_fix_vlans       = $ENV{HGW_FIX_VLANS};
+    my $hgw_fix_br_base     = $ENV{HGW_FIX_BR_BASE};
+    my $hgw_fix_pool        = $ENV{HGW_FIX_POOL};
 
     # ---------------------------------------------------------------
     # BR (Border Relay) IPv6アドレスの算出 (共通ロジックは MapeCommon::calc_br_ipv6)
@@ -71,13 +78,15 @@ if ($mode eq 'hook') {
     my $rule_data = "128, $ea_len, $rule_ipv4_len, $rule_ipv4_prefix, $rule_ipv6_prefix/$rule_ipv6_len";
 
     # ---------------------------------------------------------------
-    # VLANセグメント一覧の組み立て (①②③④)
+    # VLANセグメント一覧の組み立て (①②③④⑤⑥)
     # ---------------------------------------------------------------
     my @segs = build_vlan_segments([
-        { vlans => $ENV{SLAAC_DYN_VLANS}, type => 'slaac', base => $slaac_br_base },
-        { vlans => $ENV{PD_DYN_VLANS},    type => 'pd',    base => $pd_pool },
-        { vlans => $ENV{SLAAC_FIX_VLANS}, type => 'slaac', base => $slaac_fix_br_prefix },
-        { vlans => $ENV{PD_FIX_VLANS},    type => 'pd',    base => $pd_fix_pool },
+        { vlans => $ENV{SLAAC_DYN_VLANS}, type => 'slaac',   base => $slaac_br_base },
+        { vlans => $ENV{PD_DYN_VLANS},    type => 'pd',      base => $pd_pool },
+        { vlans => $ENV{SLAAC_FIX_VLANS}, type => 'slaac',   base => $slaac_fix_br_prefix },
+        { vlans => $ENV{PD_FIX_VLANS},    type => 'pd',      base => $pd_fix_pool },
+        { vlans => $hgw_vlans,           type => 'hgw',     base => $hgw_br_base,     pd_pool => $hgw_pool },
+        { vlans => $hgw_fix_vlans,       type => 'hgw_fix', base => $hgw_fix_br_base, pd_pool => $hgw_fix_pool },
     ]);
 
     my $ifaces = join(", ", map { "\"$mape_if.$_->{v}\"" } sort { $a->{v} <=> $b->{v} } @segs);
@@ -93,18 +102,27 @@ if ($mode eq 'hook') {
     my $dummy_pd_reservation_added = 0;
     foreach my $s (sort { $a->{v} <=> $b->{v} } @segs) {
         my $prefix = calc_vlan_prefix($base_subnet, $s->{b}, $s->{v});   # 例: "5f00:3aa:1901"
-        my $pd_pool_prefix = "$base_subnet:$s->{b}::";
-        my $pd_part = ($s->{t} eq "pd")
-            ? "[\n                { \"prefix\": \"$pd_pool_prefix\", \"prefix-len\": 40, \"delegated-len\": $delegated_len }\n            ]"
-            : "[ ]";
+        my $pd_part = "[ ]";
+        if ($s->{t} eq "pd") {
+            my $pd_pool_prefix = "$base_subnet:$s->{b}::";
+            $pd_part = "[\n                { \"prefix\": \"$pd_pool_prefix\", \"prefix-len\": 40, \"delegated-len\": $delegated_len }\n            ]";
+        } elsif ($s->{t} eq "hgw" && defined $s->{pd_pool} && length $s->{pd_pool}) {
+            my $pd_pool_prefix = "$base_subnet:$s->{pd_pool}::";
+            $pd_part = "[\n                { \"prefix\": \"$pd_pool_prefix\", \"prefix-len\": 40, \"delegated-len\": $hgw_delegated_len }\n            ]";
+        } elsif ($s->{t} eq "hgw_fix" && defined $s->{pd_pool} && length $s->{pd_pool}) {
+            my $pd_pool_prefix = "$base_subnet:$s->{pd_pool}::";
+            $pd_part = "[\n                { \"prefix\": \"$pd_pool_prefix\", \"prefix-len\": 40, \"delegated-len\": $hgw_delegated_len }\n            ]";
+        }
 
-        my $is_fixed = ($s->{b} ne $slaac_br_base && $s->{b} ne $pd_pool);
+        my $is_fixed = ($s->{t} eq 'slaac_fix' || $s->{t} eq 'pd_fix' || $s->{t} eq 'hgw_fix'
+                        || ($s->{b} ne $slaac_br_base && $s->{b} ne $pd_pool && (!defined $hgw_br_base || $s->{b} ne $hgw_br_base)));
         my $client_class_line = $is_fixed ? ",\n                    \"client-class\": \"KNOWN\"" : "";
 
         my $add_dummy_pd_reservation = ($s->{t} eq "pd" && !$dummy_pd_reservation_added);
         my $res_json = get_reservations_json(
             $s, $base_subnet, $br_ipv6, $slaac_fix_br_prefix, $pd_pool, $pd_fix_pool,
-            \%static_ips, $add_dummy_pd_reservation
+            \%static_ips, $add_dummy_pd_reservation,
+            $hgw_fix_br_base, $hgw_fix_pool
         );
         $dummy_pd_reservation_added = 1 if $add_dummy_pd_reservation;
 
@@ -135,8 +153,8 @@ if ($mode eq 'hook') {
         MAPE_DNS_IP        => $dns_ip,
         MAPE_NTP_IP        => $ntp_ip,
         MAPE_DOMAIN_SEARCH => $domain,
-        KEA_FLEX_OPTIONS   => get_flex_options_json($br_ipv6, $base_subnet, $slaac_br_base, $slaac_fix_br_prefix, $pd_pool, @segs),
-        KEA_CLIENT_CLASSES => get_client_classes_json($slaac_br_base, $slaac_fix_br_prefix, $pd_pool, $pd_fix_pool, $mape_if, @segs),
+        KEA_FLEX_OPTIONS   => get_flex_options_json($br_ipv6, $base_subnet, $slaac_br_base, $slaac_fix_br_prefix, $pd_pool, $hgw_br_base, @segs),
+        KEA_CLIENT_CLASSES => get_client_classes_json($slaac_br_base, $slaac_fix_br_prefix, $pd_pool, $pd_fix_pool, $hgw_br_base, $mape_if, @segs),
     );
 
     my $template = find_template('kea-dhcp6.conf.tmpl', $script_dir, 'kea-dhcp6');
@@ -162,13 +180,16 @@ sub calculate_option94_fixed_hex {
     my $v4_len = sprintf("%02x", $args{mask} || 32);
     my $v4_hex = ipv4_to_hex($args{ip});
     
-    # 商用 OCN 実機仕様準拠: 固定IP (SLAAC固定 / PD固定) は接続方式を問わず一律 /56 (0x38)
+    # 商用 OCN 実機仕様準拠: 固定IP (SLAAC固定 / PD固定 / HGW固定) は接続方式を問わず一律 /56 (0x38)
     my $v6_len = "38"; # 56bit = 0x38
     my $prefix;
     if ($args{is_slaac}) {
         my $slaac_fix_pfx = $ENV{SLAAC_FIX_BR_PREFIX} || "3000";
         my $hextet = hex($slaac_fix_pfx) + ($args{vlan} || 0);
         $prefix = sprintf("%s:%x::", $args{base_subnet}, $hextet);
+    } elsif ($args{is_hgw_fix}) {
+        my $hgw_fix_pool = $ENV{HGW_FIX_POOL} || "6500";
+        $prefix = "$args{base_subnet}:$hgw_fix_pool" . "::";
     } else {
         my $pd_fix_pool = $ENV{PD_FIX_POOL} || "4000";
         $prefix = "$args{base_subnet}:$pd_fix_pool" . "::";
@@ -183,14 +204,15 @@ sub calculate_option94_fixed_hex {
 }
 
 sub get_reservations_json {
-    my ($s, $base_subnet, $br_ipv6, $slaac_fix_br_prefix, $pd_pool, $pd_fix_pool, $static_ips_ref, $add_dummy_pd_reservation) = @_;
+    my ($s, $base_subnet, $br_ipv6, $slaac_fix_br_prefix, $pd_pool, $pd_fix_pool, $static_ips_ref, $add_dummy_pd_reservation, $hgw_fix_br_base, $hgw_fix_pool) = @_;
     my %static_ips = %{$static_ips_ref};
     my @res_blocks;
     
     my $is_slaac_fix = ($s->{t} eq "slaac" && $s->{b} eq $slaac_fix_br_prefix);
     my $is_pd_fix    = ($s->{t} eq "pd" && $s->{b} eq $pd_fix_pool);
+    my $is_hgw_fix   = ($s->{t} eq "hgw_fix");
     
-    return "" unless $is_slaac_fix || $is_pd_fix || $add_dummy_pd_reservation;
+    return "" unless $is_slaac_fix || $is_pd_fix || $is_hgw_fix || $add_dummy_pd_reservation;
 
         if ($add_dummy_pd_reservation) {
             push @res_blocks, <<~"RESBLOCK";
@@ -210,6 +232,7 @@ sub get_reservations_json {
             mask        => $mask,
             br_ipv6     => $br_ipv6,
             is_slaac    => $is_slaac_fix,
+            is_hgw_fix  => $is_hgw_fix,
             base_subnet => $base_subnet,
             vlan        => $s->{v},
             base        => $s->{b}
@@ -244,7 +267,7 @@ sub get_reservations_json {
 #   Option 90 (BR)    : 005a0010 + br_hex (20B)
 #   Option 89 (Rule)  : 0059000b + 00(flags) 10(ea-len=16) 10(v4-len=16)
 #                       + pool_upper_hex(2B) + 28(v6-len=40) + v6_pfx(5B)
-#   Option 93 (Ports) : 005d000400000000 (offset=0, psid-len=0, psid=0)
+#   Option 93 (Ports) : 005d00040606 + psid_hex (offset=6, psid-len=6, 1,008ポート仕様)
 # ----------------------------------------------------------------------------
 sub _build_slaac_flex_option {
     my (%args) = @_;
@@ -252,7 +275,11 @@ sub _build_slaac_flex_option {
         @args{qw(br_hex pool_upper_hex base_subnet base vlan class_name)};
 
     my $v6_prefix_hex = substr(ipv6_to_hex("${base_subnet}:${base}::"), 0, 10);
-    my $opt94_hex    = "005a0010${br_hex}0059000b001010${pool_upper_hex}28${v6_prefix_hex}005d000400000000";
+    # 商用 OCN 1,008 ポート仕様: psIdOffset=6, psid-len=6, psid (16bit左詰め)
+    my $psid = (($vlan - 1) % 63) + 1;
+    my $psid_hex = sprintf("%04x", $psid << 10);
+    my $opt93_hex = "005d00040606${psid_hex}";
+    my $opt94_hex = "005a0010${br_hex}0059000b001010${pool_upper_hex}28${v6_prefix_hex}${opt93_hex}";
 
     return <<~"BLOCK";
                     {
@@ -272,16 +299,20 @@ sub _build_slaac_flex_option {
 #   Option 90 (BR)    : 005a0010 + br_hex (20B)
 #   Option 89 (Rule)  : 0059000b + 00(flags) 10(ea-len=16) 10(v4-len=16)
 #                       + pool_upper_hex(2B) + 28(v6-len=40) + v6_pfx(5B)
-#   Option 93 (Ports) : 005d000400000000 (offset=0, psid-len=0, psid=0)
+#   Option 93 (Ports) : 005d00040606 + psid_hex (offset=6, psid-len=6, 1,008ポート仕様)
 # ----------------------------------------------------------------------------
 sub _build_pd_flex_option {
     my (%args) = @_;
-    my ($br_hex, $pool_upper_hex, $base_subnet, $base, $class_name) =
-        @args{qw(br_hex pool_upper_hex base_subnet base class_name)};
+    my ($br_hex, $pool_upper_hex, $base_subnet, $base, $vlan, $class_name) =
+        @args{qw(br_hex pool_upper_hex base_subnet base vlan class_name)};
 
     # 委譲プレフィックス /56 から EA-bits (16bit) を抽出するため Rule Prefix は /40 (10 hex文字=5B)
     my $pd_rule_hex = substr(ipv6_to_hex("${base_subnet}:${base}::"), 0, 10);
-    my $opt94_hex   = "005a0010${br_hex}0059000b001010${pool_upper_hex}28${pd_rule_hex}005d000400000000";
+    # 商用 OCN 1,008 ポート仕様: psIdOffset=6, psid-len=6, psid (16bit左詰め)
+    my $psid = (($vlan - 1) % 63) + 1;
+    my $psid_hex = sprintf("%04x", $psid << 10);
+    my $opt93_hex = "005d00040606${psid_hex}";
+    my $opt94_hex = "005a0010${br_hex}0059000b001010${pool_upper_hex}28${pd_rule_hex}${opt93_hex}";
 
     return <<~"BLOCK";
                     {
@@ -294,7 +325,7 @@ sub _build_pd_flex_option {
 }
 
 sub get_flex_options_json {
-    my ($br_ipv6, $base_subnet, $slaac_br_base, $slaac_fix_br_prefix, $pd_pool, @segs) = @_;
+    my ($br_ipv6, $base_subnet, $slaac_br_base, $slaac_fix_br_prefix, $pd_pool, $hgw_br_base, @segs) = @_;
     my @opt_blocks;
 
     my $br_hex = ipv6_to_hex($br_ipv6);
@@ -332,6 +363,21 @@ sub get_flex_options_json {
                 pool_upper_hex => $pool_upper_hex,
                 base_subnet    => $base_subnet,
                 base           => $s->{b},
+                vlan           => $v,
+                class_name     => $class_name,
+            );
+            $block =~ s/\n$//;
+            push @opt_blocks, $block;
+        } elsif ($s->{t} eq 'hgw') {
+            next if defined $hgw_br_base && $s->{b} ne $hgw_br_base;
+            my $class_name = "class-hgw-dyn-$v";
+            my $pool_val = $s->{pd_pool} // $s->{b};
+            my $block = _build_pd_flex_option(
+                br_hex         => $br_hex,
+                pool_upper_hex => $pool_upper_hex,
+                base_subnet    => $base_subnet,
+                base           => $pool_val,
+                vlan           => $v,
                 class_name     => $class_name,
             );
             $block =~ s/\n$//;
@@ -343,7 +389,7 @@ sub get_flex_options_json {
 }
 
 sub get_client_classes_json {
-    my ($slaac_br_base, $slaac_fix_br_prefix, $pd_pool, $pd_fix_pool, $mape_if, @segs) = @_;
+    my ($slaac_br_base, $slaac_fix_br_prefix, $pd_pool, $pd_fix_pool, $hgw_br_base, $mape_if, @segs) = @_;
     my @class_blocks;
 
     foreach my $s (@segs) {
@@ -356,6 +402,10 @@ sub get_client_classes_json {
         } elsif ($s->{t} eq 'pd') {
             next if $s->{b} ne $pd_pool;
             $name = "class-pd-dyn-$v";
+            $test = "pkt.iface == '$mape_if.$v'";
+        } elsif ($s->{t} eq 'hgw') {
+            next if defined $hgw_br_base && $s->{b} ne $hgw_br_base;
+            $name = "class-hgw-dyn-$v";
             $test = "pkt.iface == '$mape_if.$v'";
         } else {
             next;

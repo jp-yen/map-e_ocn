@@ -125,6 +125,8 @@ class AppConfig:
             "pd_dyn": [v.strip() for v in self.get("PD_DYN_VLANS", "").split() if v.strip()],
             "slaac_fix": [v.strip() for v in self.get("SLAAC_FIX_VLANS", "").split() if v.strip()],
             "pd_fix": [v.strip() for v in self.get("PD_FIX_VLANS", "").split() if v.strip()],
+            "hgw_dyn": [v.strip() for v in self.get("HGW_VLANS", "").split() if v.strip()],
+            "hgw_fix": [v.strip() for v in self.get("HGW_FIX_VLANS", "").split() if v.strip()],
         }
 
     @property

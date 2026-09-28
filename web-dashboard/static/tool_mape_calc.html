@@ -644,6 +644,8 @@
           <option value="pd_dyn">② DHCPv6-PD (動的)</option>
           <option value="slaac_fix">③ SLAAC (固定IP)</option>
           <option value="pd_fix">④ DHCPv6-PD (固定IP)</option>
+          <option value="hgw_dyn">⑤ HGW配下模擬 (動的)</option>
+          <option value="hgw_fix">⑥ HGW配下模擬 (固定IP)</option>
         </select>
       </div>
 
@@ -922,29 +924,29 @@
         title: "① SLAAC (動的)",
         badge: "① SLAAC 動的",
         bannerTitle: "SLAAC 動的セグメント",
-        bannerDesc: "VLANごとの RA プレフィックス (SLAAC_BR_BASE + VLAN) からIPv6を構成。EA-bits=8, Offset=4 によりポート共有を行います。",
+        bannerDesc: "VLANごとの RA プレフィックス (SLAAC_BR_BASE + VLAN) からIPv6を構成。商用 OCN 仕様 (EA-bits=16, Offset=6, PSID-bits=6) により 1,008 ポート (16ポート×63セット) のポート制限を行います。",
         vlanRequired: true,
         macRequired: false,
         macHint: "入力すると EUI-64 による CE IPv6 / 個別 IPv4 / ポート範囲を算出します。",
         showStaticIp: false,
         showPdPrefix: false,
-        eaLen: 8,
-        psidLen: 8,
-        psidOffset: 4
+        eaLen: 16,
+        psidLen: 6,
+        psidOffset: 6
       },
       pd_dyn: {
         title: "② DHCPv6-PD (動的)",
         badge: "② PD 動的",
         bannerTitle: "DHCPv6-PD 動的セグメント",
-        bannerDesc: "Kea DHCPv6 から /56 プレフィックスを委譲。EA-bits=8, Offset=4 による動的ポート共有を行います。",
+        bannerDesc: "Kea DHCPv6 から /56 プレフィックスを委譲。商用 OCN 仕様 (EA-bits=16, Offset=6, PSID-bits=6) により 1,008 ポート (16ポート×63セット) の動的ポート制限を行います。",
         vlanRequired: false,
         macRequired: false,
         macHint: "CE の MAC アドレス (DUID 計算・個別IP特定用)",
         showStaticIp: false,
         showPdPrefix: true,
-        eaLen: 8,
-        psidLen: 8,
-        psidOffset: 4
+        eaLen: 16,
+        psidLen: 6,
+        psidOffset: 6
       },
       slaac_fix: {
         title: "③ SLAAC (固定IP)",
@@ -970,6 +972,34 @@
         macHint: "固定IP割り当てを map-e-static-ip.conf から引くための識別子です。",
         showStaticIp: true,
         showPdPrefix: true,
+        eaLen: 0,
+        psidLen: 0,
+        psidOffset: 0
+      },
+      hgw_dyn: {
+        title: "⑤ HGW配下模擬 (動的)",
+        badge: "⑤ HGW 動的",
+        bannerTitle: "HGW配下模擬 動的セグメント (RA /64 + DHCP-PD /60 併用)",
+        bannerDesc: "RA広報 (HGW_BR_BASE + VLAN) と DHCPv6-PD (/60 委譲) を提供。RA方式CE対応のため 1 VLAN 1台収容。商用 OCN 仕様 (EA-bits=16, Offset=6) により 1,008 ポート制限を行います。",
+        vlanRequired: true,
+        macRequired: false,
+        macHint: "CE の MAC アドレス (EUI-64 アドレス算出・特定用)",
+        showStaticIp: false,
+        showPdPrefix: false,
+        eaLen: 16,
+        psidLen: 6,
+        psidOffset: 6
+      },
+      hgw_fix: {
+        title: "⑥ HGW配下模擬 (固定IP)",
+        badge: "⑥ HGW 固定IP",
+        bannerTitle: "HGW配下模擬 固定IPセグメント (RA /64 + DHCP-PD /60 併用)",
+        bannerDesc: "RA広報 (HGW_FIX_BR_BASE + VLAN) と DHCPv6-PD (/60 委譲) を提供し、固定IPv4アドレスを1台専有。RA方式CE対応のため 1 VLAN 1台収容。EA-bits=0, ポート全開放です。",
+        vlanRequired: true,
+        macRequired: true,
+        macHint: "固定IP割り当てを map-e-static-ip.conf から引くための識別子です。",
+        showStaticIp: true,
+        showPdPrefix: false,
         eaLen: 0,
         psidLen: 0,
         psidOffset: 0
@@ -1080,6 +1110,8 @@
       else if (mode === 'pd_dyn') vlansStr = confVars.PD_DYN_VLANS || "62 63";
       else if (mode === 'slaac_fix') vlansStr = confVars.SLAAC_FIX_VLANS || "64 65";
       else if (mode === 'pd_fix') vlansStr = confVars.PD_FIX_VLANS || "66 67";
+      else if (mode === 'hgw_dyn') vlansStr = confVars.HGW_VLANS || "68 69";
+      else if (mode === 'hgw_fix') vlansStr = confVars.HGW_FIX_VLANS || "70 71";
 
       const vlans = vlansStr.trim().split(/\s+/).filter(v => /^\d+$/.test(v));
       if (vlans.length === 0) return;
@@ -1250,8 +1282,8 @@
         ipv6Prefix = `${baseSubnet}::`;
         ipv6PrefixLen = 32;
 
-        const hexStr = vlanHextet.toString();
-        psidVal = parseInt(hexStr.substring(0, 2), 16) || 0;
+        // 商用 OCN 1,008 ポート仕様: psIdOffset=6, psid-len=6, 1〜63 の PSID
+        psidVal = ((vlan - 1) % 63) + 1;
 
         const poolOctets = poolNet.split('.');
         let lastByte = 1;
@@ -1282,7 +1314,8 @@
           ipv6PrefixLen = 48; // BMR Rule IPv6 Prefix 長 (/48)
         }
 
-        psidVal = vlan % 256;
+        // 商用 OCN 1,008 ポート仕様: psIdOffset=6, psid-len=6, 1〜63 の PSID
+        psidVal = ((vlan - 1) % 63) + 1;
 
         const poolOctets = poolNet.split('.');
         // RFC 7597 / MAP-E 仕様: /16 + ea-len 8 = 24bit、ホスト部は 0 パディング
@@ -1350,19 +1383,68 @@
 
         const matchEntry = (confVars.static_entries || []).find(e => e.key.toLowerCase() === mac);
         hostName = matchEntry && matchEntry.note ? matchEntry.note : `ce-${assignedIpv4}.map.ocn.ad.jp`;
+
+      } else if (mode === 'hgw_dyn') {
+        const hgwBrBase = parseInt(confVars.HGW_BR_BASE || "5000", 10);
+        const vlanHextet = hgwBrBase + vlan;
+        ipv6Prefix = `${baseSubnet}::`;
+        ipv6PrefixLen = 32;
+        psidVal = ((vlan - 1) % 63) + 1;
+        const poolOctets = poolNet.split('.');
+        let lastByte = 1;
+        if (mac) {
+          const macParts = mac.split(/[:-]/);
+          if (macParts.length === 6) {
+            const rawLast = parseInt(macParts[5], 16);
+            lastByte = (rawLast === 0 || rawLast === 255) ? ((rawLast % 254) + 1) : rawLast;
+          }
+        }
+        const octet2 = vlan % 256;
+        assignedIpv4 = `${poolOctets[0]}.${poolOctets[1]}.${octet2}.${lastByte}`;
+        const eui64 = mac ? macToEui64(mac) : null;
+        ceIpv6 = eui64 ? `${baseSubnet}:${vlanHextet}:${eui64}` : `${baseSubnet}:${vlanHextet}::1`;
+        hostName = `ce-${assignedIpv4}.map.ocn.ad.jp`;
+
+      } else if (mode === 'hgw_fix') {
+        const hgwFixBrBase = parseInt(confVars.HGW_FIX_BR_BASE || "6000", 10);
+        const vlanHextet = hgwFixBrBase + vlan;
+        ipv6Prefix = `${baseSubnet}:${vlanHextet}::`;
+        ipv6PrefixLen = 56;
+        if (staticIp) {
+          if (staticIp.includes('/')) {
+            const parts = staticIp.split('/');
+            ipv4Prefix = parts[0].trim();
+            ipv4PrefixLen = parseInt(parts[1].trim(), 10) || 32;
+          } else {
+            ipv4Prefix = staticIp;
+            ipv4PrefixLen = 32;
+          }
+        } else {
+          ipv4Prefix = "172.16.18.64";
+          ipv4PrefixLen = 28;
+        }
+        assignedIpv4 = ipv4Prefix;
+        psidVal = 0;
+        const eui64 = mac ? macToEui64(mac) : null;
+        ceIpv6 = eui64 ? `${baseSubnet}:${vlanHextet}:${eui64}` : `${baseSubnet}:${vlanHextet}::1`;
+        const matchEntry = (confVars.static_entries || []).find(e => e.key.toLowerCase() === mac);
+        hostName = matchEntry && matchEntry.note ? matchEntry.note : `ce-${assignedIpv4}.map.ocn.ad.jp`;
       }
 
-      // 利用可能ポートの計算 (RFC 7597)
-      if (eaBitsLen === 0) {
+      // 利用可能ポートの計算 (商用 OCN MAP-E 1,008ポート仕様: psidOffset=6, psidLen=6)
+      if (eaBitsLen === 0 || psidBitsLen === 0) {
         portRangesText = "1 〜 65535 (全ポート専有 / 制限なし)";
       } else {
         const ranges = [];
-        for (let k = 1; k <= 15; k++) {
-          const startPort = (k << 12) | (psidVal << 4);
-          const endPort = startPort + 15;
+        const numBlocks = (1 << psidOffset) - 1; // 63セット
+        const portShift = 16 - psidOffset - psidBitsLen; // 4bit (16ポート)
+        const blockSize = 1 << portShift; // 16
+        for (let k = 1; k <= numBlocks; k++) {
+          const startPort = (k << (16 - psidOffset)) | (psidVal << portShift);
+          const endPort = startPort + blockSize - 1;
           ranges.push(`${startPort}-${endPort}`);
         }
-        portRangesText = `全240ポート (15セット×16) [${ranges.slice(0, 3).join(', ')} ... ${ranges[ranges.length - 1]}]`;
+        portRangesText = `全${ranges.length * blockSize}ポート (${numBlocks}セット×${blockSize}) [${ranges.slice(0, 3).join(', ')} ... ${ranges[ranges.length - 1]}]`;
       }
 
       // UI 8項目へ反映

@@ -18,6 +18,10 @@ sub generate_radvd {
     my $pd_dyn_vlans        = $c->{pd_dyn_vlans};
     my $slaac_fix_vlans     = $c->{slaac_fix_vlans};
     my $pd_fix_vlans        = $c->{pd_fix_vlans};
+    my $hgw_vlans           = $c->{hgw_vlans};
+    my $hgw_br_base         = $c->{hgw_br_base};
+    my $hgw_fix_vlans       = $c->{hgw_fix_vlans};
+    my $hgw_fix_br_base     = $c->{hgw_fix_br_base};
     my $mape_dns_ip         = $c->{mape_dns_ip};
     my $domain              = $c->{domain};
 
@@ -38,6 +42,63 @@ sub generate_radvd {
             : undef;
         _print_radvd_block($vif, $prefix, $mape_dns_ip, $domain);
     }
+
+    # HGW配下模擬 動的 VLAN: RA /64 + AdvManagedFlag on (DHCPv6-PD /60 併用)
+    if ($hgw_br_base) {
+        foreach my $seg (build_vlan_segments([
+            { vlans => $hgw_vlans, type => 'hgw', base => $hgw_br_base },
+        ])) {
+            my $vlan = $seg->{v};
+            my $vif = "$mape_if.$vlan";
+            my $prefix = calc_vlan_prefix($base_subnet, $seg->{b}, $vlan);
+            _print_radvd_hgw_block($vif, $prefix, $mape_dns_ip, $domain);
+        }
+    }
+
+    # HGW配下模擬 固定IPv4 VLAN: RA /64 + AdvManagedFlag on (DHCPv6-PD /60 + 固定IPv4)
+    if ($hgw_fix_br_base) {
+        foreach my $seg (build_vlan_segments([
+            { vlans => $hgw_fix_vlans, type => 'hgw_fix', base => $hgw_fix_br_base },
+        ])) {
+            my $vlan = $seg->{v};
+            my $vif = "$mape_if.$vlan";
+            my $prefix = calc_vlan_prefix($base_subnet, $seg->{b}, $vlan);
+            _print_radvd_hgw_block($vif, $prefix, $mape_dns_ip, $domain);
+        }
+    }
+}
+
+# --- HGW配下模擬VLANのRAブロック ---
+# RA /64 広報 (SLAAC) と AdvManagedFlag on (DHCPv6-PD /60 を促す) を同時に設定する
+sub _print_radvd_hgw_block {
+    my ($vif, $prefix, $dns, $domain) = @_;
+
+    print "interface $vif\n";
+    print "{\n";
+    print "    AdvSendAdvert on;\n";
+    print "    MinRtrAdvInterval 3;\n";
+    print "    MaxRtrAdvInterval 10;\n";
+    print "    # HGW配下模擬: RA /64 広報に加えて AdvManagedFlag on で DHCPv6-PD (/60) を促す\n";
+    print "    AdvManagedFlag on;\n";
+    print "    AdvOtherConfigFlag on;\n\n";
+    print "    # RA用プレフィックス配布 (/64) - AdvAutonomous on で SLAAC (RA) アドレス自動生成を許可し、\n";
+    print "    # AdvManagedFlag on で DHCPv6-PD (/60) も同時に提供 (HGW両用方式。1 VLAN 1台収容)\n";
+    print "    prefix ${prefix}::/64\n";
+    print "    {\n";
+    print "        AdvOnLink on;\n";
+    print "        AdvAutonomous on;\n";
+    print "        AdvRouterAddr on;\n";
+    print "    };\n\n";
+
+    print "    RDNSS $dns\n";
+    print "    {\n";
+    print "        AdvRDNSSLifetime 600;\n";
+    print "    };\n\n";
+    print "    DNSSL $domain\n";
+    print "    {\n";
+    print "        AdvDNSSLLifetime 600;\n";
+    print "    };\n";
+    print "};\n\n";
 }
 
 # --- 各VLANのRAブロック共通テキスト生成ヘルパー ---
@@ -95,6 +156,10 @@ my %config = (
     pd_dyn_vlans        => $ENV{PD_DYN_VLANS},
     slaac_fix_vlans     => $ENV{SLAAC_FIX_VLANS},
     pd_fix_vlans        => $ENV{PD_FIX_VLANS},
+    hgw_vlans           => $ENV{HGW_VLANS},
+    hgw_br_base         => $ENV{HGW_BR_BASE},
+    hgw_fix_vlans       => $ENV{HGW_FIX_VLANS},
+    hgw_fix_br_base     => $ENV{HGW_FIX_BR_BASE},
     mape_dns_ip         => $ENV{MAPE_DNS_IP},
     domain              => $ENV{DOMAIN},
 );

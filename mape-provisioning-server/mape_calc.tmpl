@@ -31,6 +31,17 @@ SLAAC_DYN_VLANS      = "${SLAAC_DYN_VLANS}"
 PD_DYN_VLANS         = "${PD_DYN_VLANS}"
 SLAAC_FIX_VLANS      = "${SLAAC_FIX_VLANS}"
 PD_FIX_VLANS         = "${PD_FIX_VLANS}"
+HGW_BR_BASE          = "${HGW_BR_BASE}"
+HGW_BR_SUFFIX        = "${HGW_BR_SUFFIX}"
+HGW_POOL             = "${HGW_POOL}"
+HGW_PD_DELEGATED_LEN = "${HGW_PD_DELEGATED_LEN}"
+HGW_FIX_BR_BASE      = "${HGW_FIX_BR_BASE}"
+HGW_FIX_BR_SUFFIX    = "${HGW_FIX_BR_SUFFIX}"
+HGW_FIX_POOL         = "${HGW_FIX_POOL}"
+MAPE_HGW_PREFIX      = "${MAPE_HGW_PREFIX}"      # 例: 5f00:3aa:5500:  (MapeCommon.pmが自動算出)
+MAPE_HGW_FIX_PREFIX  = "${MAPE_HGW_FIX_PREFIX}"  # 例: 5f00:3aa:6500:  (MapeCommon.pmが自動算出)
+HGW_VLANS            = "${HGW_VLANS}"
+HGW_FIX_VLANS        = "${HGW_FIX_VLANS}"
 
 # 固定IPマッピング / DDNS設定ファイル。Makefileのinstallルールと同じパスに揃える。
 STATIC_IP_CONF_PATH = "/etc/map-e-static-ip.conf"
@@ -44,10 +55,21 @@ _CFG = {
     'PD_FIX_POOL': PD_FIX_POOL,
     'MAPE_PD_PREFIX': MAPE_PD_PREFIX,
     'MAPE_PD_FIX_PREFIX': MAPE_PD_FIX_PREFIX,
+    'HGW_BR_BASE': HGW_BR_BASE,
+    'HGW_BR_SUFFIX': HGW_BR_SUFFIX,
+    'HGW_POOL': HGW_POOL,
+    'HGW_PD_DELEGATED_LEN': HGW_PD_DELEGATED_LEN,
+    'HGW_FIX_BR_BASE': HGW_FIX_BR_BASE,
+    'HGW_FIX_BR_SUFFIX': HGW_FIX_BR_SUFFIX,
+    'HGW_FIX_POOL': HGW_FIX_POOL,
+    'MAPE_HGW_PREFIX': MAPE_HGW_PREFIX,
+    'MAPE_HGW_FIX_PREFIX': MAPE_HGW_FIX_PREFIX,
     'SLAAC_DYN_VLANS': [int(x) for x in SLAAC_DYN_VLANS.split() if x.isdigit()],
     'PD_DYN_VLANS': [int(x) for x in PD_DYN_VLANS.split() if x.isdigit()],
     'SLAAC_FIX_VLANS': [int(x) for x in SLAAC_FIX_VLANS.split() if x.isdigit()],
     'PD_FIX_VLANS': [int(x) for x in PD_FIX_VLANS.split() if x.isdigit()],
+    'HGW_VLANS': [int(x) for x in HGW_VLANS.split() if x.isdigit()],
+    'HGW_FIX_VLANS': [int(x) for x in HGW_FIX_VLANS.split() if x.isdigit()],
 }
 
 
@@ -377,7 +399,7 @@ def extract_vlan_id(clean_ip, dev=None, mac=None):
 
     clean_ip_str = clean_ip.split('%')[0]
 
-    # SLAAC プレフィックスからの逆算 (${BASE_SUBNET}:1<VLAN>:: または ${BASE_SUBNET}:3<VLAN>::)
+    # SLAAC / HGW プレフィックスからの逆算 (${BASE_SUBNET}:1<VLAN>::, 3<VLAN>::, 5<VLAN>::, 6<VLAN>::)
     try:
         exploded = ipaddress.IPv6Address(clean_ip_str).exploded.split(':')
         base_len = len(_CFG['BASE_SUBNET'].split(':'))
@@ -385,12 +407,22 @@ def extract_vlan_id(clean_ip, dev=None, mac=None):
             seg_hextet = exploded[base_len]
             slaac_base = int(_CFG.get('SLAAC_BR_BASE', 1000))
             slaac_fix_base = int(_CFG.get('SLAAC_FIX_BR_PREFIX', 3000))
+            hgw_base = int(_CFG.get('HGW_BR_BASE', 5000)) if _CFG.get('HGW_BR_BASE') else None
+            hgw_fix_base = int(_CFG.get('HGW_FIX_BR_BASE', 6000)) if _CFG.get('HGW_FIX_BR_BASE') else None
             if seg_hextet.startswith(str(slaac_base)[0]):
                 vlan = int(seg_hextet) - slaac_base
                 if vlan > 0:
                     return vlan
             elif seg_hextet.startswith(str(slaac_fix_base)[0]):
                 vlan = int(seg_hextet) - slaac_fix_base
+                if vlan > 0:
+                    return vlan
+            elif hgw_base and seg_hextet.startswith(str(hgw_base)[0]):
+                vlan = int(seg_hextet) - hgw_base
+                if vlan > 0:
+                    return vlan
+            elif hgw_fix_base and seg_hextet.startswith(str(hgw_fix_base)[0]):
+                vlan = int(seg_hextet) - hgw_fix_base
                 if vlan > 0:
                     return vlan
     except Exception:
@@ -440,7 +472,7 @@ def extract_vlan_id(clean_ip, dev=None, mac=None):
                         if matched:
                             sid = int(parts[s_idx])
                             vlans = []
-                            for k in ('SLAAC_DYN_VLANS', 'PD_DYN_VLANS', 'SLAAC_FIX_VLANS', 'PD_FIX_VLANS'):
+                            for k in ('SLAAC_DYN_VLANS', 'PD_DYN_VLANS', 'SLAAC_FIX_VLANS', 'PD_FIX_VLANS', 'HGW_VLANS', 'HGW_FIX_VLANS'):
                                 for v in str(_CFG.get(k, '')).split():
                                     if v.isdigit():
                                         vlans.append(int(v))
@@ -537,6 +569,49 @@ def update_ddns(mac_str=None, target_v4=None, ce_ipv6=None, vlan=None):
         syslog.syslog(syslog.LOG_ERR, f"[DDNS-UPDATE] Error executing nsupdate: {e}")
 
     return False
+
+def update_ddns_record(hostname, ip_str):
+    """
+    指定された hostname (FQDN) と ip_str (IPv4 または IPv6) に対して
+    nsupdate を実行し、BIND9 の動的ゾーンを再登録・更新する。
+    戻り値: (success: bool, is_changed: bool)
+    """
+    if not hostname or not ip_str:
+        return False, False
+
+    clean_hostname = hostname.rstrip('.')
+    clean_ip = ip_str.split('%')[0].strip()
+
+    try:
+        ip_obj = ipaddress.ip_address(clean_ip)
+    except ValueError:
+        return False, False
+
+    record_type = "AAAA" if ip_obj.version == 6 else "A"
+    now_iso = datetime.datetime.now().astimezone().isoformat()
+
+    # BIND9 への nsupdate スクリプト作成
+    commands = [
+        "server 127.0.0.1",
+        f"update delete {clean_hostname}. {record_type}",
+        f"update add {clean_hostname}. 300 {record_type} {clean_ip}",
+        f"update delete {clean_hostname}. TXT",
+        f"update add {clean_hostname}. 300 TXT \"updated={now_iso}\"",
+        "send"
+    ]
+    script = "\n".join(commands) + "\n"
+
+    try:
+        res = subprocess.run(["nsupdate"], input=script, text=True, capture_output=True, timeout=5)
+        if res.returncode == 0:
+            syslog.syslog(syslog.LOG_INFO, f"[DDNS-UPDATE] Re-registered {clean_hostname} -> {clean_ip} ({record_type}, updated={now_iso})")
+            return True, False
+        else:
+            syslog.syslog(syslog.LOG_ERR, f"[DDNS-UPDATE] nsupdate failed for {clean_hostname}: {res.stderr}")
+            return False, False
+    except Exception as e:
+        syslog.syslog(syslog.LOG_ERR, f"[DDNS-UPDATE] Error executing nsupdate: {e}")
+        return False, False
 
 def get_ddns_hostname(mac_str=None, target_v4=None, vlan=None):
     """
@@ -725,6 +800,10 @@ def classify_segment(prefix_str, cfg, dev=None):
                 return 'slaac_fix'
             if vlan in cfg.get('PD_FIX_VLANS', []):
                 return 'pd_fix'
+            if vlan in cfg.get('HGW_VLANS', []):
+                return 'hgw_dyn'
+            if vlan in cfg.get('HGW_FIX_VLANS', []):
+                return 'hgw_fix'
         return None
 
     try:
@@ -737,21 +816,36 @@ def classify_segment(prefix_str, cfg, dev=None):
         return None
     seg_hextet = exploded[base_len]
 
-    pd_hextet = ipaddress.IPv6Address(f"{cfg['MAPE_PD_PREFIX'].rstrip(':')}::").exploded.split(':')[base_len]
-    pd_fix_hextet = ipaddress.IPv6Address(f"{cfg['MAPE_PD_FIX_PREFIX'].rstrip(':')}::").exploded.split(':')[base_len]
-    slaac_lead = ipaddress.IPv6Address(
-        f"{cfg['BASE_SUBNET']}:{cfg['SLAAC_BR_BASE']}::").exploded.split(':')[base_len][0]
-    slaac_fix_lead = ipaddress.IPv6Address(
-        f"{cfg['BASE_SUBNET']}:{cfg['SLAAC_FIX_BR_PREFIX']}::").exploded.split(':')[base_len][0]
+    pd_hextet = ipaddress.IPv6Address(f"{cfg['MAPE_PD_PREFIX'].rstrip(':')}::").exploded.split(':')[base_len] if cfg.get('MAPE_PD_PREFIX') else None
+    pd_fix_hextet = ipaddress.IPv6Address(f"{cfg['MAPE_PD_FIX_PREFIX'].rstrip(':')}::").exploded.split(':')[base_len] if cfg.get('MAPE_PD_FIX_PREFIX') else None
+    hgw_hextet = ipaddress.IPv6Address(f"{cfg['MAPE_HGW_PREFIX'].rstrip(':')}::").exploded.split(':')[base_len] if cfg.get('MAPE_HGW_PREFIX') else None
+    hgw_fix_hextet = ipaddress.IPv6Address(f"{cfg['MAPE_HGW_FIX_PREFIX'].rstrip(':')}::").exploded.split(':')[base_len] if cfg.get('MAPE_HGW_FIX_PREFIX') else None
 
-    if seg_hextet == pd_hextet:
+    slaac_lead = ipaddress.IPv6Address(
+        f"{cfg['BASE_SUBNET']}:{cfg['SLAAC_BR_BASE']}::").exploded.split(':')[base_len][0] if cfg.get('SLAAC_BR_BASE') else None
+    slaac_fix_lead = ipaddress.IPv6Address(
+        f"{cfg['BASE_SUBNET']}:{cfg['SLAAC_FIX_BR_PREFIX']}::").exploded.split(':')[base_len][0] if cfg.get('SLAAC_FIX_BR_PREFIX') else None
+    hgw_lead = ipaddress.IPv6Address(
+        f"{cfg['BASE_SUBNET']}:{cfg['HGW_BR_BASE']}::").exploded.split(':')[base_len][0] if cfg.get('HGW_BR_BASE') else None
+    hgw_fix_lead = ipaddress.IPv6Address(
+        f"{cfg['BASE_SUBNET']}:{cfg['HGW_FIX_BR_BASE']}::").exploded.split(':')[base_len][0] if cfg.get('HGW_FIX_BR_BASE') else None
+
+    if pd_hextet and seg_hextet == pd_hextet:
         return 'pd_dyn'
-    if seg_hextet == pd_fix_hextet:
+    if pd_fix_hextet and seg_hextet == pd_fix_hextet:
         return 'pd_fix'
-    if seg_hextet[0] == slaac_lead:
+    if hgw_hextet and seg_hextet == hgw_hextet:
+        return 'hgw_dyn'
+    if hgw_fix_hextet and seg_hextet == hgw_fix_hextet:
+        return 'hgw_fix'
+    if slaac_lead and seg_hextet[0] == slaac_lead:
         return 'slaac_dyn'
-    if seg_hextet[0] == slaac_fix_lead:
+    if slaac_fix_lead and seg_hextet[0] == slaac_fix_lead:
         return 'slaac_fix'
+    if hgw_lead and seg_hextet[0] == hgw_lead:
+        return 'hgw_dyn'
+    if hgw_fix_lead and seg_hextet[0] == hgw_fix_lead:
+        return 'hgw_fix'
     return None
 
 def convert_to_data_ipv6(base_prefix_str, target_v4_str, target_psid=0, is_slaac=False):
@@ -824,6 +918,18 @@ def _extract_mac_and_segment(clean_ip, dev):
             vlan_base = int(_CFG['SLAAC_BR_BASE']) if segment == 'slaac_dyn' else int(_CFG['SLAAC_FIX_BR_PREFIX'])
             prefix_hextet = vlan_base + vlan
             clean_ip = f"{_CFG['BASE_SUBNET']}:{prefix_hextet}::"
+        elif segment in ('hgw_dyn', 'hgw_fix'):
+            pd_prefix = get_pd_prefix_from_lease(mac)
+            if pd_prefix:
+                clean_ip = pd_prefix
+            elif dev:
+                parts = dev.split('.')
+                vlan = int(parts[1])
+                vlan_base = int(_CFG['HGW_BR_BASE']) if segment == 'hgw_dyn' else int(_CFG['HGW_FIX_BR_BASE'])
+                prefix_hextet = vlan_base + vlan
+                clean_ip = f"{_CFG['BASE_SUBNET']}:{prefix_hextet}::"
+            else:
+                raise ValueError(f"No DHCPv6-PD lease or device found for MAC {mac} in HGW link-local setup")
         elif segment in ('pd_dyn', 'pd_fix'):
             pd_prefix = get_pd_prefix_from_lease(mac)
             if pd_prefix:
@@ -841,11 +947,35 @@ def _extract_mac_and_segment(clean_ip, dev):
 def _compute_target_v4(mac, clean_ip, segment):
     """
     接続方式に応じて割り当て IPv4 アドレスを決定する。
-    固定セグメント(slaac_fix, pd_fix)は静的マップを参照し、未登録の場合は接続拒否（フォールバックなし）。
-    動的セグメント(slaac_dyn, pd_dyn)は、MAC登録の有無にかかわらず動的IPを割り当てる。
+    固定セグメント(slaac_fix, pd_fix, hgw_fix)は静的マップを参照し、未登録の場合は接続拒否（フォールバックなし）。
+    動的セグメント(slaac_dyn, pd_dyn, hgw_dyn)は、MAC登録の有無にかかわらず動的IPを割り当てる。
     """
-    is_fixed_segment = segment in ('slaac_fix', 'pd_fix')
-    is_slaac = segment in ('slaac_dyn', 'slaac_fix')
+    is_fixed_segment = segment in ('slaac_fix', 'pd_fix', 'hgw_fix')
+
+    # SLAAC (RA /64) 判定:
+    # 1. slaac_dyn / slaac_fix は常に SLAAC
+    # 2. hgw_dyn / hgw_fix の場合、clean_ip が HGW_BR_BASE / HGW_FIX_BR_BASE (RA用 /64) であれば SLAAC、
+    #    HGW_POOL / HGW_FIX_POOL (委譲 /60) であれば PD 方式
+    is_slaac = False
+    if segment in ('slaac_dyn', 'slaac_fix'):
+        is_slaac = True
+    elif segment in ('hgw_dyn', 'hgw_fix'):
+        try:
+            cand = clean_ip if ("::" in clean_ip or clean_ip.count(":") >= 7) else f"{clean_ip}::"
+            exploded = ipaddress.IPv6Address(cand.split('/')[0]).exploded.split(':')
+            base_len = len(_CFG['BASE_SUBNET'].split(':'))
+            seg_hextet = exploded[base_len]
+            hgw_pool_hex = ipaddress.IPv6Address(f"{_CFG['MAPE_HGW_PREFIX'].rstrip(':')}::").exploded.split(':')[base_len] if _CFG.get('MAPE_HGW_PREFIX') else None
+            hgw_fix_pool_hex = ipaddress.IPv6Address(f"{_CFG['MAPE_HGW_FIX_PREFIX'].rstrip(':')}::").exploded.split(':')[base_len] if _CFG.get('MAPE_HGW_FIX_PREFIX') else None
+
+            # HGW_POOL (5500) または HGW_FIX_POOL (6500) と一致する場合は DHCPv6-PD 方式 (/60 委譲)
+            # それ以外 (5108 等のリンクアドレス) は SLAAC (RA /64) 方式
+            if (hgw_pool_hex and seg_hextet == hgw_pool_hex) or (hgw_fix_pool_hex and seg_hextet == hgw_fix_pool_hex):
+                is_slaac = False
+            else:
+                is_slaac = True
+        except Exception:
+            is_slaac = True
 
     # 固定セグメントの場合のみ、map-e-static-ip.conf から固定IPを取得（未登録は接続不可、フォールバックなし）
     if is_fixed_segment:
@@ -891,15 +1021,29 @@ def _compute_target_v4(mac, clean_ip, segment):
         return ipaddress.IPv4Address(f"{pool_octets[0]}.{pool_octets[1]}.{octet2}.{octet3}"), 32, is_slaac
 
 
-def _compute_psid(mac, clean_ip, segment):
+def _compute_psid(mac, clean_ip, segment, dev=None):
     """
     接続方式に応じて PSID を計算する。
-    RFC 7597 / 方針.md 4.2節準拠:
-    - Rule IPv4 Prefix (/16) + EA-bits (16bit) = 32bit のため、
-      EA-bits はすべて IPv4 アドレス合成に消費され、PSID に配分されるビットは 0bit。
-    - また BR 側ではポート制限を実施せず、1 台の CE に 1 つの IPv4 アドレス(/32)を
-      1対1で割り当てる（全ポート専有）ため、全接続方式で PSID は常に 0 を返す。
+    - 動的接続（① SLAAC動的 / ② PD動的 / ⑤ HGW動的）:
+      商用 OCN MAP-E の 1,008 ポート（16ポート × 63ブロック、psIdOffset=6, psid-len=6）仕様に合わせ、
+      各 CE に 1〜63 の範囲の PSID を決定論的に割り当てる。
+      VLAN ID または MAC アドレス等から算出し、CE 側の NAPT で 1,008 ポートのみを使用させる。
+    - 固定接続（③ SLAAC固定 / ④ PD固定 / ⑥ HGW固定）:
+      1 台 1 IP の完全占有（全ポート利用可能）のため、PSID は常に 0 を返す。
     """
+    if segment in ('slaac_dyn', 'pd_dyn', 'hgw_dyn'):
+        vlan = extract_vlan_id(clean_ip, dev=dev, mac=mac)
+        if vlan and int(vlan) > 0:
+            return ((int(vlan) - 1) % 63) + 1
+        if mac and mac != "00:00:00:00:00:00":
+            last_byte = int(mac.split(':')[-1], 16)
+            return (last_byte % 63) + 1
+        try:
+            cand = clean_ip if ("::" in clean_ip or clean_ip.count(":") >= 7) else f"{clean_ip}::"
+            v6_bytes = ipaddress.IPv6Network(f"{cand}/56" if '/' not in cand else cand, strict=False).network_address.packed
+            return (v6_bytes[6] % 63) + 1
+        except Exception:
+            return 1
     return 0
 
 
@@ -927,7 +1071,7 @@ def calc_map_e_params(prefix_str, dev=None):
     対応するIPv4アドレスとCE用データ通信IPv6アドレスを算出する。
 
       ① SLAAC動的 / ② PD動的 : MAC/プレフィックスから決定論的に /32 を決定。
-                                  OCN 動的仕様の PSID ハッシュ分散割り当てを適用。
+                                  OCN 動的仕様の PSID ハッシュ分散割り当て（1,008ポート）を適用。
       ③ SLAAC固定 / ④ PD固定 : map-e-static-ip.conf の MAC エントリを参照。
                                   未登録の場合は接続拒否（フォールバックなし）。
     戻り値: (target_ipv4_str, ce_ipv6_str, segment_str, target_psid_int) [MapEParams]
@@ -936,7 +1080,7 @@ def calc_map_e_params(prefix_str, dev=None):
 
     # --- ① MAC 復元・セグメント判定・リンクローカル解決 ---
     mac, clean_ip, segment = _extract_mac_and_segment(clean_ip, dev)
-    if (not mac or mac == "00:00:00:00:00:00") and segment in ('pd_dyn', 'pd_fix'):
+    if (not mac or mac == "00:00:00:00:00:00") and segment in ('pd_dyn', 'pd_fix', 'hgw_dyn', 'hgw_fix'):
         pd_mac = get_mac_from_pd_prefix(clean_ip)
         if pd_mac:
             mac = pd_mac
@@ -946,8 +1090,8 @@ def calc_map_e_params(prefix_str, dev=None):
     target_v4, v4_prefixlen, is_slaac = res_v4[0], res_v4[1], res_v4[2]
     ce_host_ip = res_v4[3] if len(res_v4) > 3 else target_v4
 
-    # --- ③ PSID 計算 ---
-    target_psid = _compute_psid(mac, clean_ip, segment)
+    # --- ③ PSID 計算 (動的は 1008 ポート対応の 1〜63、固定は 0) ---
+    target_psid = _compute_psid(mac, clean_ip, segment, dev=dev)
 
     # --- ④ CE IPv6 アドレス合成 ---
     ce_ipv6 = convert_to_data_ipv6(clean_ip, str(ce_host_ip), target_psid=target_psid, is_slaac=is_slaac)

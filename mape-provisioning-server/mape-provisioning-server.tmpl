@@ -36,6 +36,10 @@ class HTTPServerV6(HTTPServer):
     address_family = socket.AF_INET6
 
 class MAPEProvisioningHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        # 標準のBaseHTTPRequestHandlerによるstderrアクセスログ出力を抑制（重複ログ防止）
+        pass
+
     def do_GET(self):
         # 1. 接続元の生IPとスコープID情報を安全にデコードして取得
         client_host = self.client_address[0]
@@ -59,9 +63,6 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
         else:
             client_ip_with_scope = f"{client_ip}{client_scope}"
 
-        # 🌟 ログ出力：生のURL（パス＋クエリ）と、スコープID付きの物理接続元IPを記録
-        syslog.syslog(syslog.LOG_INFO, f"Request received - URL: {self.path} from Client-IP: {client_ip_with_scope}")
-
         parsed_url = urlparse(self.path)
         query_params = parse_qs(parsed_url.query)
 
@@ -71,13 +72,22 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
         if parsed_url.path.startswith('/nic/update') or 'ipoe-static' in host_header:
             req_hostname = query_params.get('hostname', [''])[0]
             req_myip = query_params.get('myip', [''])[0]
-            effective_ip = req_myip if req_myip else client_ip
+            effective_ip = req_myip if req_myip else client_ip.split('%')[0]
             syslog.syslog(syslog.LOG_INFO, f"DDNS update request: host={host_header} path={parsed_url.path} hostname={req_hostname} myip={req_myip} effective_ip={effective_ip} from {client_ip_with_scope}")
+
+            # ホスト名が指定されていない場合は、クライアントIPから逆引き決定
+            if not req_hostname:
+                req_hostname = mape_calc.get_ddns_hostname_for_ip(client_ip, target_v4=effective_ip if '.' in effective_ip else None)
+
+            # BIND9 (DNS) へ nsupdate による再登録（レコード更新・TTLリフレッシュ）を実行
+            updated, is_new = mape_calc.update_ddns_record(req_hostname, effective_ip)
+
             self.send_response(200)
             self.send_header("Server", "Apache")
             self.send_header("Content-Type", "text/html; charset=UTF-8")
             self.send_header("Connection", "close")
-            resp_text = f"nochg {effective_ip}\n"
+            status_prefix = "good" if is_new else "nochg"
+            resp_text = f"{status_prefix} {effective_ip}\n"
             body = resp_text.encode("utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -129,7 +139,8 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
         clean_ip = remote_ipv6.split('%')[0]
 
         try:
-            syslog.syslog(syslog.LOG_INFO, f"Processing Request from IP: {clean_ip}")
+            client_info = f"{client_ip_with_scope}" if client_ip_with_scope == clean_ip else f"{client_ip_with_scope} (target: {clean_ip})"
+            syslog.syslog(syslog.LOG_INFO, f"Request received - Client: {client_info} URL: {self.path}")
 
             # 戻り値から接続方式（segment）および target_psid も受け取る
             res = mape_calc.calc_map_e_params(clean_ip, dev=client_scope.lstrip('%') if client_scope else None) 
@@ -143,24 +154,29 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
             mape_calc.setup_tunnel_route(target_ipv4, ce_ipv6, BR_IPV6, prefixlen=v4_prefixlen, mac=mac_val)
 
             # 2. 接続方式と eaBitLength, psIdOffset の対応マッピング（辞書）を定義
-            # 動的(①②)は EA-bits 長 16bit / offset-len=0 を採用し、固定(③④)は 1台1IP占有のため ea-len=0 / offset-len=0 とする
+            # 動的(①②⑤)は 商用OCNの1,008ポート仕様（16ポート×63ブロック）に合わせ EA-bits 長 16bit / psIdOffset=6 を採用し、
+            # 固定(③④⑥)は 1台1IP占有のため ea-len=0 / offset-len=0 とする
             EA_BIT_MAP = {
                 'slaac_dyn': 16, 
                 'pd_dyn':    16, 
+                'hgw_dyn':   16, 
                 'slaac_fix': 0, 
-                'pd_fix':    0 
+                'pd_fix':    0, 
+                'hgw_fix':   0 
             }
             OFFSET_MAP = {
-                'slaac_dyn': 0, 
-                'pd_dyn':    0, 
+                'slaac_dyn': 6, 
+                'pd_dyn':    6, 
+                'hgw_dyn':   6, 
                 'slaac_fix': 0, 
-                'pd_fix':    0 
+                'pd_fix':    0, 
+                'hgw_fix':   0 
             }
 
-            # 該当する方式の値を習得（万が一Noneなら安全に0フォールバック）
+            # 該当する方式の値を取得（万が一Noneなら安全に0フォールバック）
             ea_len = EA_BIT_MAP.get(segment, 0)
             psid_offset = OFFSET_MAP.get(segment, 0)
-            psid_val = target_psid if segment in ('slaac_dyn', 'pd_dyn') else 0 
+            psid_val = target_psid if segment in ('slaac_dyn', 'pd_dyn', 'hgw_dyn') else 0 
 
             # 3. ルール作成 (商用 OCN / FortiOS 実機仕様準拠)
             # FortiGate (FortiOS) は hostName フィールドを要求するため付与
@@ -168,15 +184,28 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
             hostname = mape_calc.get_ddns_hostname_for_ip(clean_ip, target_v4=target_ipv4, dev=client_scope.lstrip('%') if client_scope else None)
 
             # 商用 OCN 実機仕様準拠:
-            # - 動的(①②)は 集約プール (/40) + EA-bits 16bit でルータ側で個別IPv4を自己計算
-            # - 固定(③④)は 1台1IP/サブネット専有のため、クライアント回線の上位56bit (/56) を通知し、余分なオフセット計算を防止
-            if segment in ('pd_fix', 'slaac_fix'):
+            # - 動的(①②⑤)は 集約プール (/40) + EA-bits 16bit でルータ側で個別IPv4を自己計算
+            # - 固定(③④⑥)は 1台1IP/サブネット専有のため、クライアント回線の上位56bit (/56) を通知し、余分なオフセット計算を防止
+            if segment in ('pd_fix', 'slaac_fix', 'hgw_fix'):
                 rule_v6_len = "56"
                 p_net = ipaddress.IPv6Network(f"{clean_ip}/56", strict=False)
                 rule_v6_prefix = str(p_net.network_address)
             elif segment == 'pd_dyn':
                 rule_v6_len = "40"
                 rule_v6_prefix = "${BASE_SUBNET}:${PD_POOL}::"
+            elif segment == 'hgw_dyn':
+                rule_v6_len = "40"
+                try:
+                    exploded = ipaddress.IPv6Address(clean_ip.split('/')[0]).exploded.split(':')
+                    base_len = len("${BASE_SUBNET}".split(':'))
+                    seg_h = exploded[base_len]
+                    hgw_lead = ipaddress.IPv6Address(f"${BASE_SUBNET}:${HGW_BR_BASE}::").exploded.split(':')[base_len][0] if "${HGW_BR_BASE}" else ""
+                    if hgw_lead and seg_h[0] == hgw_lead:
+                        rule_v6_prefix = "${BASE_SUBNET}:${HGW_BR_BASE}::"
+                    else:
+                        rule_v6_prefix = "${BASE_SUBNET}:${HGW_POOL}::"
+                except Exception:
+                    rule_v6_prefix = "${BASE_SUBNET}:${HGW_POOL}::"
             else:
                 rule_v6_len = "40"
                 rule_v6_prefix = "${BASE_SUBNET}:${SLAAC_BR_BASE}::"
