@@ -479,19 +479,20 @@ sub _derive_provisioning_vars {
         $ENV{'MAPE_PD_FIX_PREFIX'} = "$ENV{'BASE_SUBNET'}:$ENV{'PD_FIX_POOL'}:";
     }
 
-    # MAPE_HGW_PREFIX : ⑤HGW配下模擬動的用プール(HGW_POOL)の接続文字列表現。
-    #   classify_segment() が受信したIPv6プレフィックスを hgw セグメントと判定するために参照する。
-    #   HGW_POOL は DHCPv6-PD /60 委譲専用の空間で HGW_BR_BASE(リンク用 /64) とは分離。
-    #   例: BASE_SUBNET=5f00:3aa, HGW_POOL=5500 -> MAPE_HGW_PREFIX=5f00:3aa:5500:
-    if ($ENV{'BASE_SUBNET'} && $ENV{'HGW_POOL'} && !defined $ENV{'MAPE_HGW_PREFIX'}) {
-        $ENV{'MAPE_HGW_PREFIX'} = "$ENV{'BASE_SUBNET'}:$ENV{'HGW_POOL'}:";
+    # MAPE_HGW_PREFIX : ⑤HGW配下模擬動的用の接続文字列表現。
+    #   実機HGW準拠: 各VLANの親 /56 (${HGW_BR_BASE}+VLAN) から RA (/64) と DHCP-PD (/60) を切り出し提供。
+    #   例: BASE_SUBNET=5f00:3aa, HGW_BR_BASE=5000 -> MAPE_HGW_PREFIX=5f00:3aa:5000:
+    if ($ENV{'BASE_SUBNET'} && !defined $ENV{'MAPE_HGW_PREFIX'}) {
+        my $pfx = $ENV{'HGW_BR_BASE'} || $ENV{'HGW_POOL'} || "5000";
+        $ENV{'MAPE_HGW_PREFIX'} = "$ENV{'BASE_SUBNET'}:$pfx:";
     }
 
-    # MAPE_HGW_FIX_PREFIX : ⑥HGW配下模擬固定用プール(HGW_FIX_POOL)の接続文字列表現。
-    #   classify_segment() が受信したIPv6プレフィックスを hgw_fix セグメントと判定するために参照する。
-    #   例: BASE_SUBNET=5f00:3aa, HGW_FIX_POOL=6500 -> MAPE_HGW_FIX_PREFIX=5f00:3aa:6500:
-    if ($ENV{'BASE_SUBNET'} && $ENV{'HGW_FIX_POOL'} && !defined $ENV{'MAPE_HGW_FIX_PREFIX'}) {
-        $ENV{'MAPE_HGW_FIX_PREFIX'} = "$ENV{'BASE_SUBNET'}:$ENV{'HGW_FIX_POOL'}:";
+    # MAPE_HGW_FIX_PREFIX : ⑥HGW配下模擬固定用の接続文字列表現。
+    #   実機HGW準拠: 各VLANの親 /56 (${HGW_FIX_BR_BASE}+VLAN) から RA (/64) と DHCP-PD (/60) を切り出し提供。
+    #   例: BASE_SUBNET=5f00:3aa, HGW_FIX_BR_BASE=6000 -> MAPE_HGW_FIX_PREFIX=5f00:3aa:6000:
+    if ($ENV{'BASE_SUBNET'} && !defined $ENV{'MAPE_HGW_FIX_PREFIX'}) {
+        my $pfx = $ENV{'HGW_FIX_BR_BASE'} || $ENV{'HGW_FIX_POOL'} || "6000";
+        $ENV{'MAPE_HGW_FIX_PREFIX'} = "$ENV{'BASE_SUBNET'}:$pfx:";
     }
 }
 

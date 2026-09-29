@@ -106,12 +106,14 @@ if ($mode eq 'hook') {
         if ($s->{t} eq "pd") {
             my $pd_pool_prefix = "$base_subnet:$s->{b}::";
             $pd_part = "[\n                { \"prefix\": \"$pd_pool_prefix\", \"prefix-len\": 40, \"delegated-len\": $delegated_len }\n            ]";
-        } elsif ($s->{t} eq "hgw" && defined $s->{pd_pool} && length $s->{pd_pool}) {
-            my $pd_pool_prefix = "$base_subnet:$s->{pd_pool}::";
-            $pd_part = "[\n                { \"prefix\": \"$pd_pool_prefix\", \"prefix-len\": 40, \"delegated-len\": $hgw_delegated_len }\n            ]";
-        } elsif ($s->{t} eq "hgw_fix" && defined $s->{pd_pool} && length $s->{pd_pool}) {
-            my $pd_pool_prefix = "$base_subnet:$s->{pd_pool}::";
-            $pd_part = "[\n                { \"prefix\": \"$pd_pool_prefix\", \"prefix-len\": 40, \"delegated-len\": $hgw_delegated_len }\n            ]";
+        } elsif ($s->{t} eq "hgw") {
+            # HGW配下模擬動的: 実機HGW準拠。親 /56 (${prefix}::/56) から切り出した /60 (${prefix}:10::/60) を委譲
+            my $pd_pool_prefix = "${prefix}:10::";
+            $pd_part = "[\n                { \"prefix\": \"$pd_pool_prefix\", \"prefix-len\": 60, \"delegated-len\": $hgw_delegated_len }\n            ]";
+        } elsif ($s->{t} eq "hgw_fix") {
+            # HGW配下模擬固定: 実機HGW準拠。親 /56 (${prefix}::/56) から切り出した /60 (${prefix}:10::/60) を委譲
+            my $pd_pool_prefix = "${prefix}:10::";
+            $pd_part = "[\n                { \"prefix\": \"$pd_pool_prefix\", \"prefix-len\": 60, \"delegated-len\": $hgw_delegated_len }\n            ]";
         }
 
         my $is_fixed = ($s->{t} eq 'slaac_fix' || $s->{t} eq 'pd_fix' || $s->{t} eq 'hgw_fix'
@@ -188,8 +190,9 @@ sub calculate_option94_fixed_hex {
         my $hextet = hex($slaac_fix_pfx) + ($args{vlan} || 0);
         $prefix = sprintf("%s:%x::", $args{base_subnet}, $hextet);
     } elsif ($args{is_hgw_fix}) {
-        my $hgw_fix_pool = $ENV{HGW_FIX_POOL} || "6500";
-        $prefix = "$args{base_subnet}:$hgw_fix_pool" . "::";
+        my $hgw_fix_pfx = $ENV{HGW_FIX_BR_BASE} || "6000";
+        my $hextet = hex($hgw_fix_pfx) + ($args{vlan} || 0);
+        $prefix = sprintf("%s:%x::", $args{base_subnet}, $hextet);
     } else {
         my $pd_fix_pool = $ENV{PD_FIX_POOL} || "4000";
         $prefix = "$args{base_subnet}:$pd_fix_pool" . "::";

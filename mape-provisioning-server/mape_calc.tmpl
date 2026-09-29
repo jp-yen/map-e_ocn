@@ -954,26 +954,37 @@ def _compute_target_v4(mac, clean_ip, segment):
 
     # SLAAC (RA /64) 判定:
     # 1. slaac_dyn / slaac_fix は常に SLAAC
-    # 2. hgw_dyn / hgw_fix の場合、clean_ip が HGW_BR_BASE / HGW_FIX_BR_BASE (RA用 /64) であれば SLAAC、
-    #    HGW_POOL / HGW_FIX_POOL (委譲 /60) であれば PD 方式
+    # 2. hgw_dyn / hgw_fix の場合 (実機HGW準拠: 同一 /56 内で親プレフィックスを共有):
+    #    - プレフィックス長が /60、または第4ヘクステットが 0010 番台 (0x0010〜) であれば DHCPv6-PD (/60 委譲) 方式
+    #    - 第4ヘクステットが 0000 番台 (RA広報用 /64) であれば SLAAC (RA) 方式
+    #    - 従来の後方互換: HGW_POOL / HGW_FIX_POOL (5500/6500) と一致する場合も PD 方式
     is_slaac = False
     if segment in ('slaac_dyn', 'slaac_fix'):
         is_slaac = True
     elif segment in ('hgw_dyn', 'hgw_fix'):
         try:
-            cand = clean_ip if ("::" in clean_ip or clean_ip.count(":") >= 7) else f"{clean_ip}::"
-            exploded = ipaddress.IPv6Address(cand.split('/')[0]).exploded.split(':')
-            base_len = len(_CFG['BASE_SUBNET'].split(':'))
-            seg_hextet = exploded[base_len]
-            hgw_pool_hex = ipaddress.IPv6Address(f"{_CFG['MAPE_HGW_PREFIX'].rstrip(':')}::").exploded.split(':')[base_len] if _CFG.get('MAPE_HGW_PREFIX') else None
-            hgw_fix_pool_hex = ipaddress.IPv6Address(f"{_CFG['MAPE_HGW_FIX_PREFIX'].rstrip(':')}::").exploded.split(':')[base_len] if _CFG.get('MAPE_HGW_FIX_PREFIX') else None
-
-            # HGW_POOL (5500) または HGW_FIX_POOL (6500) と一致する場合は DHCPv6-PD 方式 (/60 委譲)
-            # それ以外 (5108 等のリンクアドレス) は SLAAC (RA /64) 方式
-            if (hgw_pool_hex and seg_hextet == hgw_pool_hex) or (hgw_fix_pool_hex and seg_hextet == hgw_fix_pool_hex):
-                is_slaac = False
+            # プレフィックス長指定のチェック (/60 なら PD, /64 なら SLAAC)
+            if '/' in clean_ip:
+                plen = int(clean_ip.split('/')[1])
+                is_slaac = (plen >= 64)
             else:
-                is_slaac = True
+                cand = clean_ip if ("::" in clean_ip or clean_ip.count(":") >= 7) else f"{clean_ip}::"
+                exploded = ipaddress.IPv6Address(cand.split('/')[0]).exploded.split(':')
+                base_len = len(_CFG['BASE_SUBNET'].split(':'))
+                seg_hextet = exploded[base_len]
+
+                # 第4ヘクステット (base_len + 1): 0010〜 は DHCPv6-PD /60 委譲
+                fourth_hextet = exploded[base_len + 1] if len(exploded) > base_len + 1 else "0000"
+                if int(fourth_hextet, 16) >= 0x0010 and int(fourth_hextet, 16) <= 0x00ff:
+                    is_slaac = False
+                else:
+                    # 後方互換性チェック (HGW_POOL / HGW_FIX_POOL)
+                    hgw_pool_hex = ipaddress.IPv6Address(f"{_CFG['MAPE_HGW_PREFIX'].rstrip(':')}::").exploded.split(':')[base_len] if _CFG.get('MAPE_HGW_PREFIX') else None
+                    hgw_fix_pool_hex = ipaddress.IPv6Address(f"{_CFG['MAPE_HGW_FIX_PREFIX'].rstrip(':')}::").exploded.split(':')[base_len] if _CFG.get('MAPE_HGW_FIX_PREFIX') else None
+                    if (hgw_pool_hex and seg_hextet == hgw_pool_hex) or (hgw_fix_pool_hex and seg_hextet == hgw_fix_pool_hex):
+                        is_slaac = False
+                    else:
+                        is_slaac = True
         except Exception:
             is_slaac = True
 

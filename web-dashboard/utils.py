@@ -236,6 +236,7 @@ def classify_mape_mode(prefix_str, vlan_str, ce_ip6, config=None):
 
     target_ip = prefix_str if (prefix_str and prefix_str != "-") else ce_ip6
     seg = ""
+    fourth_hextet = ""
     is_pd_prefix = False
     if target_ip and target_ip != "-":
         try:
@@ -249,8 +250,18 @@ def classify_mape_mode(prefix_str, vlan_str, ce_ip6, config=None):
             exp = ipaddress.IPv6Address(clean_ip).exploded.split(":")
             if len(exp) >= 3:
                 seg = exp[2].lower()
+            if len(exp) >= 4:
+                fourth_hextet = exp[3].lower()
         except Exception:
             pass
+
+    # 第4ヘクステットが 0010 番台（HGW配下 /60 委譲）か判定
+    is_hgw_pd_addr = False
+    try:
+        if fourth_hextet and int(fourth_hextet, 16) >= 0x0010 and int(fourth_hextet, 16) <= 0x00ff:
+            is_hgw_pd_addr = True
+    except Exception:
+        pass
 
     if vlan is not None:
         slaac_dyn = cfg.get_vlan_list("SLAAC_DYN_VLANS", [60, 61])
@@ -269,11 +280,11 @@ def classify_mape_mode(prefix_str, vlan_str, ce_ip6, config=None):
         elif vlan in pd_fix:
             return "DHCP-PD (固定IP)"
         elif vlan in hgw_dyn:
-            if is_pd_prefix or (seg and seg == hgw_pool_hex):
+            if is_pd_prefix or is_hgw_pd_addr or (seg and seg == hgw_pool_hex):
                 return "HGW・DHCP-PD (動的)"
             return "HGW・SLAAC (動的)"
         elif vlan in hgw_fix:
-            if is_pd_prefix or (seg and seg == hgw_fix_pool_hex):
+            if is_pd_prefix or is_hgw_pd_addr or (seg and seg == hgw_fix_pool_hex):
                 return "HGW・DHCP-PD (固定IP)"
             return "HGW・SLAAC (固定IP)"
 
@@ -288,11 +299,11 @@ def classify_mape_mode(prefix_str, vlan_str, ce_ip6, config=None):
         elif seg.startswith("4"):
             return "DHCP-PD (固定IP)"
         elif seg.startswith("5"):
-            if is_pd_prefix or seg == hgw_pool_hex:
+            if is_pd_prefix or is_hgw_pd_addr or seg == hgw_pool_hex:
                 return "HGW・DHCP-PD (動的)"
             return "HGW・SLAAC (動的)"
         elif seg.startswith("6"):
-            if is_pd_prefix or seg == hgw_fix_pool_hex:
+            if is_pd_prefix or is_hgw_pd_addr or seg == hgw_fix_pool_hex:
                 return "HGW・DHCP-PD (固定IP)"
             return "HGW・SLAAC (固定IP)"
 
