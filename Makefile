@@ -4,6 +4,12 @@
 
 CONFIG_FILE = map-e.conf
 
+# 設定ファイルが存在しない場合は初期化用テンプレート (.tmpl) から自動生成
+$(if $(wildcard $(CONFIG_FILE)),,$(shell cp map-e.conf.tmpl $(CONFIG_FILE) 2>/dev/null))
+$(if $(wildcard ddns.conf),,$(shell cp ddns.conf.tmpl ddns.conf 2>/dev/null))
+$(if $(wildcard map-e-static-ip.conf),,$(shell cp map-e-static-ip.conf.tmpl map-e-static-ip.conf 2>/dev/null))
+$(if $(wildcard pppoe.conf),,$(shell cp pppoe.conf.tmpl pppoe.conf 2>/dev/null))
+
 # シェル変数名に使えないハイフンを含む変数名を自動的にアンダースコアに変換した
 # 一時設定ファイル。make 実行のたびに CONFIG_FILE から自動生成される。
 SAFE_CONFIG_FILE := .map-e.conf.safe
@@ -16,7 +22,31 @@ REQUIRED_PACKAGES := python3 openssl bind9-dnsutils radvd chrony
 .PHONY: help all clean generate check install packages archive check-root check-user \
         generate_ddns_zones update_syslog check_config web-dashboard up down
 
-check_config:
+$(CONFIG_FILE): map-e.conf.tmpl
+	@if [ ! -f $(CONFIG_FILE) ]; then \
+	    echo "Generating $(CONFIG_FILE) from map-e.conf.tmpl..."; \
+	    cp map-e.conf.tmpl $(CONFIG_FILE); \
+	fi
+
+ddns.conf: ddns.conf.tmpl
+	@if [ ! -f ddns.conf ]; then \
+	    echo "Generating ddns.conf from ddns.conf.tmpl..."; \
+	    cp ddns.conf.tmpl ddns.conf; \
+	fi
+
+map-e-static-ip.conf: map-e-static-ip.conf.tmpl
+	@if [ ! -f map-e-static-ip.conf ]; then \
+	    echo "Generating map-e-static-ip.conf from map-e-static-ip.conf.tmpl..."; \
+	    cp map-e-static-ip.conf.tmpl map-e-static-ip.conf; \
+	fi
+
+pppoe.conf: pppoe.conf.tmpl
+	@if [ ! -f pppoe.conf ]; then \
+	    echo "Generating pppoe.conf from pppoe.conf.tmpl..."; \
+	    cp pppoe.conf.tmpl pppoe.conf; \
+	fi
+
+check_config: $(CONFIG_FILE)
 	@perl generator/check_config.pl $(CONFIG_FILE)
 
 SYSTEM_TARGETS = \

@@ -1,4 +1,8 @@
 # Makefile で自動生成される設定ファイル・証明書
+map-e.conf
+ddns.conf
+map-e-static-ip.conf
+pppoe.conf
 system/interfaces
 system/99-network-routing.conf
 system/vrf-setup.sh
@@ -19,6 +23,7 @@ mape-provisioning-server/mape-route-monitor.service
 mape-provisioning-server/server.crt
 mape-provisioning-server/server.key
 pppoe/srv-*
+docker-compose.yml
 
 # アーカイブ・作業用ファイル
 STATUS.TXT
