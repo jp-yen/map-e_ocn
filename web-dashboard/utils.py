@@ -213,18 +213,6 @@ def classify_mape_mode(prefix_str, vlan_str, ce_ip6, config=None):
     """
     cfg = config if config is not None else _get_app_config()
 
-    try:
-        hgw_pool_val = int(cfg.get("HGW_POOL", "5500"))
-        hgw_pool_hex = f"{hgw_pool_val:04x}".lower()
-    except Exception:
-        hgw_pool_hex = "5500"
-
-    try:
-        hgw_fix_pool_val = int(cfg.get("HGW_FIX_POOL", "6500"))
-        hgw_fix_pool_hex = f"{hgw_fix_pool_val:04x}".lower()
-    except Exception:
-        hgw_fix_pool_hex = "6500"
-
     vlan = None
     if vlan_str and vlan_str != "-":
         m = re.search(r"(\d+)", str(vlan_str))
@@ -280,11 +268,11 @@ def classify_mape_mode(prefix_str, vlan_str, ce_ip6, config=None):
         elif vlan in pd_fix:
             return "DHCP-PD (固定IP)"
         elif vlan in hgw_dyn:
-            if is_pd_prefix or is_hgw_pd_addr or (seg and seg == hgw_pool_hex):
+            if is_pd_prefix or is_hgw_pd_addr:
                 return "HGW・DHCP-PD (動的)"
             return "HGW・SLAAC (動的)"
         elif vlan in hgw_fix:
-            if is_pd_prefix or is_hgw_pd_addr or (seg and seg == hgw_fix_pool_hex):
+            if is_pd_prefix or is_hgw_pd_addr:
                 return "HGW・DHCP-PD (固定IP)"
             return "HGW・SLAAC (固定IP)"
 

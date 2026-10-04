@@ -1019,12 +1019,6 @@ diagnose test application vned 99</pre>
                 <div class="config-hint">HGW 動的用 BR IPv6 インターフェースID</div>
               </div>
               <div class="config-form-group">
-                <label class="config-label">HGW 動的 PD プール (HGW_POOL)</label>
-                <input type="text" class="config-input" id="cfg_HGW_POOL" placeholder="5500"
-                  oninput="onConfigInputChanged()">
-                <div class="config-hint">HGW 動的 DHCP-PD /60 委譲プール帯（第3ヘクステット）</div>
-              </div>
-              <div class="config-form-group">
                 <label class="config-label">HGW 固定 RA ベース (HGW_FIX_BR_BASE)</label>
                 <input type="text" class="config-input" id="cfg_HGW_FIX_BR_BASE" placeholder="6000"
                   oninput="onConfigInputChanged()">
@@ -1035,12 +1029,6 @@ diagnose test application vned 99</pre>
                 <input type="text" class="config-input" id="cfg_HGW_FIX_BR_SUFFIX" placeholder="::ff0d"
                   oninput="onConfigInputChanged()">
                 <div class="config-hint">HGW 固定用 BR IPv6 インターフェースID</div>
-              </div>
-              <div class="config-form-group">
-                <label class="config-label">HGW 固定 PD プール (HGW_FIX_POOL)</label>
-                <input type="text" class="config-input" id="cfg_HGW_FIX_POOL" placeholder="6500"
-                  oninput="onConfigInputChanged()">
-                <div class="config-hint">HGW 固定 DHCP-PD /60 委譲プール帯（第3ヘクステット）</div>
               </div>
             </div>
           </div>
@@ -1184,12 +1172,12 @@ diagnose test application vned 99</pre>
   <!-- Toast Notification Container -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="/js/bearded-themes.js"></script>
-  <script src="/js/theme-manager.js"></script>
+  <script src="/js/bearded-themes.js?v=20261004_banana"></script>
+  <script src="/js/theme-manager.js?v=20261004_banana"></script>
   <!-- モジュール分割: tables.js → modals.js → config-editor.js → main.js の順で読み込む -->
   <script src="/js/tables.js"></script>
   <script src="/js/modals.js"></script>
-  <script src="/js/config-editor.js"></script>
+  <script src="/js/config-editor.js?v=20261004_clean"></script>
   <script src="/js/main.js"></script>
 </body>
 

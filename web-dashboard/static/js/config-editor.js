@@ -273,8 +273,8 @@ function bindConfigToForm(cfg) {
   // 6. HGW
   const hgw = cfg.hgw || {};
   [
-    'HGW_BR_BASE', 'HGW_BR_SUFFIX', 'HGW_POOL',
-    'HGW_FIX_BR_BASE', 'HGW_FIX_BR_SUFFIX', 'HGW_FIX_POOL'
+    'HGW_BR_BASE', 'HGW_BR_SUFFIX',
+    'HGW_FIX_BR_BASE', 'HGW_FIX_BR_SUFFIX'
   ].forEach(k => {
     const el = document.getElementById(`cfg_${k}`);
     if (el) el.value = hgw[k] ?? '';
@@ -921,8 +921,8 @@ function readFormValuesToStaging() {
   // 6. HGW
   if (!currentConfigStaging.hgw) currentConfigStaging.hgw = {};
   [
-    'HGW_BR_BASE', 'HGW_BR_SUFFIX', 'HGW_POOL',
-    'HGW_FIX_BR_BASE', 'HGW_FIX_BR_SUFFIX', 'HGW_FIX_POOL'
+    'HGW_BR_BASE', 'HGW_BR_SUFFIX',
+    'HGW_FIX_BR_BASE', 'HGW_FIX_BR_SUFFIX'
   ].forEach(k => {
     const el = document.getElementById(`cfg_${k}`);
     if (el) currentConfigStaging.hgw[k] = el.value.trim();

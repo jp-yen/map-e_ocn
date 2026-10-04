@@ -33,13 +33,11 @@ SLAAC_FIX_VLANS      = "${SLAAC_FIX_VLANS}"
 PD_FIX_VLANS         = "${PD_FIX_VLANS}"
 HGW_BR_BASE          = "${HGW_BR_BASE}"
 HGW_BR_SUFFIX        = "${HGW_BR_SUFFIX}"
-HGW_POOL             = "${HGW_POOL}"
 HGW_PD_DELEGATED_LEN = "${HGW_PD_DELEGATED_LEN}"
 HGW_FIX_BR_BASE      = "${HGW_FIX_BR_BASE}"
 HGW_FIX_BR_SUFFIX    = "${HGW_FIX_BR_SUFFIX}"
-HGW_FIX_POOL         = "${HGW_FIX_POOL}"
-MAPE_HGW_PREFIX      = "${MAPE_HGW_PREFIX}"      # 例: 5f00:3aa:5500:  (MapeCommon.pmが自動算出)
-MAPE_HGW_FIX_PREFIX  = "${MAPE_HGW_FIX_PREFIX}"  # 例: 5f00:3aa:6500:  (MapeCommon.pmが自動算出)
+MAPE_HGW_PREFIX      = "${MAPE_HGW_PREFIX}"      # 例: 5f00:3aa:5000:  (MapeCommon.pmが自動算出)
+MAPE_HGW_FIX_PREFIX  = "${MAPE_HGW_FIX_PREFIX}"  # 例: 5f00:3aa:6000:  (MapeCommon.pmが自動算出)
 HGW_VLANS            = "${HGW_VLANS}"
 HGW_FIX_VLANS        = "${HGW_FIX_VLANS}"
 
@@ -57,11 +55,9 @@ _CFG = {
     'MAPE_PD_FIX_PREFIX': MAPE_PD_FIX_PREFIX,
     'HGW_BR_BASE': HGW_BR_BASE,
     'HGW_BR_SUFFIX': HGW_BR_SUFFIX,
-    'HGW_POOL': HGW_POOL,
     'HGW_PD_DELEGATED_LEN': HGW_PD_DELEGATED_LEN,
     'HGW_FIX_BR_BASE': HGW_FIX_BR_BASE,
     'HGW_FIX_BR_SUFFIX': HGW_FIX_BR_SUFFIX,
-    'HGW_FIX_POOL': HGW_FIX_POOL,
     'MAPE_HGW_PREFIX': MAPE_HGW_PREFIX,
     'MAPE_HGW_FIX_PREFIX': MAPE_HGW_FIX_PREFIX,
     'SLAAC_DYN_VLANS': [int(x) for x in SLAAC_DYN_VLANS.split() if x.isdigit()],
@@ -957,7 +953,6 @@ def _compute_target_v4(mac, clean_ip, segment):
     # 2. hgw_dyn / hgw_fix の場合 (実機HGW準拠: 同一 /56 内で親プレフィックスを共有):
     #    - プレフィックス長が /60、または第4ヘクステットが 0010 番台 (0x0010〜) であれば DHCPv6-PD (/60 委譲) 方式
     #    - 第4ヘクステットが 0000 番台 (RA広報用 /64) であれば SLAAC (RA) 方式
-    #    - 従来の後方互換: HGW_POOL / HGW_FIX_POOL (5500/6500) と一致する場合も PD 方式
     is_slaac = False
     if segment in ('slaac_dyn', 'slaac_fix'):
         is_slaac = True
@@ -978,13 +973,7 @@ def _compute_target_v4(mac, clean_ip, segment):
                 if int(fourth_hextet, 16) >= 0x0010 and int(fourth_hextet, 16) <= 0x00ff:
                     is_slaac = False
                 else:
-                    # 後方互換性チェック (HGW_POOL / HGW_FIX_POOL)
-                    hgw_pool_hex = ipaddress.IPv6Address(f"{_CFG['MAPE_HGW_PREFIX'].rstrip(':')}::").exploded.split(':')[base_len] if _CFG.get('MAPE_HGW_PREFIX') else None
-                    hgw_fix_pool_hex = ipaddress.IPv6Address(f"{_CFG['MAPE_HGW_FIX_PREFIX'].rstrip(':')}::").exploded.split(':')[base_len] if _CFG.get('MAPE_HGW_FIX_PREFIX') else None
-                    if (hgw_pool_hex and seg_hextet == hgw_pool_hex) or (hgw_fix_pool_hex and seg_hextet == hgw_fix_pool_hex):
-                        is_slaac = False
-                    else:
-                        is_slaac = True
+                    is_slaac = True
         except Exception:
             is_slaac = True
 

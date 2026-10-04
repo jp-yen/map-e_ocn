@@ -195,17 +195,7 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
                 rule_v6_prefix = "${BASE_SUBNET}:${PD_POOL}::"
             elif segment == 'hgw_dyn':
                 rule_v6_len = "40"
-                try:
-                    exploded = ipaddress.IPv6Address(clean_ip.split('/')[0]).exploded.split(':')
-                    base_len = len("${BASE_SUBNET}".split(':'))
-                    seg_h = exploded[base_len]
-                    hgw_lead = ipaddress.IPv6Address(f"${BASE_SUBNET}:${HGW_BR_BASE}::").exploded.split(':')[base_len][0] if "${HGW_BR_BASE}" else ""
-                    if hgw_lead and seg_h[0] == hgw_lead:
-                        rule_v6_prefix = "${BASE_SUBNET}:${HGW_BR_BASE}::"
-                    else:
-                        rule_v6_prefix = "${BASE_SUBNET}:${HGW_POOL}::"
-                except Exception:
-                    rule_v6_prefix = "${BASE_SUBNET}:${HGW_POOL}::"
+                rule_v6_prefix = "${BASE_SUBNET}:${HGW_BR_BASE}::"
             else:
                 rule_v6_len = "40"
                 rule_v6_prefix = "${BASE_SUBNET}:${SLAAC_BR_BASE}::"

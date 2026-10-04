@@ -15,7 +15,16 @@ window.THEME_MANAGER = (function () {
   'use strict';
 
   var STORAGE_KEY = 'map_e_dashboard_theme';
+  var DEFAULT_THEME_KEY = 'bearded-theme-milkshake-vanilla-banana';
   var registry = window.BEARDED_THEMES || { themes: [] };
+  if (registry.themes) {
+    for (var ti = 0; ti < registry.themes.length; ti++) {
+      if (registry.themes[ti].key === 'default') {
+        registry.themes[ti].name = 'デフォルト (ISP Dark)';
+        break;
+      }
+    }
+  }
   var lastAppliedKey = null;
 
   /* ---------- minimal color utilities (hex) ---------- */
@@ -131,7 +140,7 @@ window.THEME_MANAGER = (function () {
   /* ---------- application ---------- */
 
   function applyTheme(key) {
-    var theme = getTheme(key) || (registry.themes && registry.themes[0]);
+    var theme = getTheme(key) || getTheme(DEFAULT_THEME_KEY) || (registry.themes && registry.themes[0]);
     if (!theme) return;
     var vars = computeVars(theme);
     var root = document.documentElement;
@@ -170,13 +179,13 @@ window.THEME_MANAGER = (function () {
       var opt = document.createElement('option');
       opt.value = t.key;
       opt.textContent = t.key === 'default'
-        ? t.name
+        ? 'デフォルト (ISP Dark)'
         : 'Bearded Theme — ' + t.name.replace(/^Bearded Theme\s*/, '');
       (t.appearance === 'light' ? lightGroup : darkGroup).appendChild(opt);
     }
     sel.appendChild(darkGroup);
     sel.appendChild(lightGroup);
-    sel.value = lastAppliedKey || 'default';
+    sel.value = lastAppliedKey || DEFAULT_THEME_KEY;
   }
 
   function updateControls(theme) {
@@ -194,7 +203,7 @@ window.THEME_MANAGER = (function () {
     }
 
     var nameEl = document.getElementById('themeName');
-    if (nameEl) nameEl.textContent = theme.name || theme.key;
+    if (nameEl) nameEl.textContent = theme.key === 'default' ? 'デフォルト (ISP Dark)' : (theme.name || theme.key);
 
     var srcEl = document.getElementById('themeSourceLink');
     if (srcEl) {
@@ -237,7 +246,11 @@ window.THEME_MANAGER = (function () {
     populateSelect();
     var saved = null;
     try { saved = localStorage.getItem(STORAGE_KEY); } catch (e) { /* ignore */ }
-    applyTheme(saved || 'default');
+    if (!saved || saved === 'default') {
+      saved = DEFAULT_THEME_KEY;
+      try { localStorage.setItem(STORAGE_KEY, saved); } catch (e) { }
+    }
+    applyTheme(saved);
 
     // 初期適用完了後にのみトランジションを有効化
     // （ページを開いた瞬間のチラつき・ジワッとした変化を防ぐため）

@@ -483,7 +483,7 @@ sub _derive_provisioning_vars {
     #   実機HGW準拠: 各VLANの親 /56 (${HGW_BR_BASE}+VLAN) から RA (/64) と DHCP-PD (/60) を切り出し提供。
     #   例: BASE_SUBNET=5f00:3aa, HGW_BR_BASE=5000 -> MAPE_HGW_PREFIX=5f00:3aa:5000:
     if ($ENV{'BASE_SUBNET'} && !defined $ENV{'MAPE_HGW_PREFIX'}) {
-        my $pfx = $ENV{'HGW_BR_BASE'} || $ENV{'HGW_POOL'} || "5000";
+        my $pfx = $ENV{'HGW_BR_BASE'} || "5000";
         $ENV{'MAPE_HGW_PREFIX'} = "$ENV{'BASE_SUBNET'}:$pfx:";
     }
 
@@ -491,7 +491,7 @@ sub _derive_provisioning_vars {
     #   実機HGW準拠: 各VLANの親 /56 (${HGW_FIX_BR_BASE}+VLAN) から RA (/64) と DHCP-PD (/60) を切り出し提供。
     #   例: BASE_SUBNET=5f00:3aa, HGW_FIX_BR_BASE=6000 -> MAPE_HGW_FIX_PREFIX=5f00:3aa:6000:
     if ($ENV{'BASE_SUBNET'} && !defined $ENV{'MAPE_HGW_FIX_PREFIX'}) {
-        my $pfx = $ENV{'HGW_FIX_BR_BASE'} || $ENV{'HGW_FIX_POOL'} || "6000";
+        my $pfx = $ENV{'HGW_FIX_BR_BASE'} || "6000";
         $ENV{'MAPE_HGW_FIX_PREFIX'} = "$ENV{'BASE_SUBNET'}:$pfx:";
     }
 }

@@ -45,11 +45,9 @@ if ($mode eq 'hook') {
     my $pd_fix_pool         = $ENV{PD_FIX_POOL};
     my $hgw_vlans           = $ENV{HGW_VLANS};
     my $hgw_br_base         = $ENV{HGW_BR_BASE};
-    my $hgw_pool            = $ENV{HGW_POOL};
     my $hgw_delegated_len   = $ENV{HGW_PD_DELEGATED_LEN} || 60;
     my $hgw_fix_vlans       = $ENV{HGW_FIX_VLANS};
     my $hgw_fix_br_base     = $ENV{HGW_FIX_BR_BASE};
-    my $hgw_fix_pool        = $ENV{HGW_FIX_POOL};
 
     # ---------------------------------------------------------------
     # BR (Border Relay) IPv6アドレスの算出 (共通ロジックは MapeCommon::calc_br_ipv6)
@@ -85,8 +83,8 @@ if ($mode eq 'hook') {
         { vlans => $ENV{PD_DYN_VLANS},    type => 'pd',      base => $pd_pool },
         { vlans => $ENV{SLAAC_FIX_VLANS}, type => 'slaac',   base => $slaac_fix_br_prefix },
         { vlans => $ENV{PD_FIX_VLANS},    type => 'pd',      base => $pd_fix_pool },
-        { vlans => $hgw_vlans,           type => 'hgw',     base => $hgw_br_base,     pd_pool => $hgw_pool },
-        { vlans => $hgw_fix_vlans,       type => 'hgw_fix', base => $hgw_fix_br_base, pd_pool => $hgw_fix_pool },
+        { vlans => $hgw_vlans,           type => 'hgw',     base => $hgw_br_base },
+        { vlans => $hgw_fix_vlans,       type => 'hgw_fix', base => $hgw_fix_br_base },
     ]);
 
     my $ifaces = join(", ", map { "\"$mape_if.$_->{v}\"" } sort { $a->{v} <=> $b->{v} } @segs);
@@ -124,7 +122,7 @@ if ($mode eq 'hook') {
         my $res_json = get_reservations_json(
             $s, $base_subnet, $br_ipv6, $slaac_fix_br_prefix, $pd_pool, $pd_fix_pool,
             \%static_ips, $add_dummy_pd_reservation,
-            $hgw_fix_br_base, $hgw_fix_pool
+            $hgw_fix_br_base
         );
         $dummy_pd_reservation_added = 1 if $add_dummy_pd_reservation;
 
@@ -207,7 +205,7 @@ sub calculate_option94_fixed_hex {
 }
 
 sub get_reservations_json {
-    my ($s, $base_subnet, $br_ipv6, $slaac_fix_br_prefix, $pd_pool, $pd_fix_pool, $static_ips_ref, $add_dummy_pd_reservation, $hgw_fix_br_base, $hgw_fix_pool) = @_;
+    my ($s, $base_subnet, $br_ipv6, $slaac_fix_br_prefix, $pd_pool, $pd_fix_pool, $static_ips_ref, $add_dummy_pd_reservation, $hgw_fix_br_base) = @_;
     my %static_ips = %{$static_ips_ref};
     my @res_blocks;
     

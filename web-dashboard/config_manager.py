@@ -218,10 +218,8 @@ class ConfigManager:
         hgw = {
             "HGW_BR_BASE": raw.get("HGW_BR_BASE", "5000"),
             "HGW_BR_SUFFIX": raw.get("HGW_BR_SUFFIX", "::ff0c"),
-            "HGW_POOL": raw.get("HGW_POOL", "5500"),
             "HGW_FIX_BR_BASE": raw.get("HGW_FIX_BR_BASE", "6000"),
             "HGW_FIX_BR_SUFFIX": raw.get("HGW_FIX_BR_SUFFIX", "::ff0d"),
-            "HGW_FIX_POOL": raw.get("HGW_FIX_POOL", "6500"),
         }
 
         return {

@@ -16,7 +16,7 @@ window.BEARDED_THEMES = {
    "licenseName" : "GPL-3.0",
    "licenseUrl" : "https://github.com/BeardedBear/bearded-theme/blob/master/LICENSE",
    "sourceName" : "Bearded Theme",
-   "defaultKey" : "default",
+   "defaultKey" : "bearded-theme-milkshake-vanilla-banana",
    "themes" : [
       {
          "key" : "default",
