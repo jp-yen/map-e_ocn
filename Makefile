@@ -213,6 +213,7 @@ system/vrf-setup.sh:           $(PPPOE_UNIFIED_DIR)/user-services.conf generator
 
 radvd/radvd.conf: GEN_SCRIPT = generator/gen_radvd_mod.pl
 radvd/radvd.conf: GEN_MODE   = radvd
+radvd/radvd.conf: generator/gen_radvd_mod.pl generator/MapeCommon.pm
 
 kea-dhcp6/kea-dhcp6.conf: GEN_SCRIPT     = generator/gen_kea_configs.pl
 kea-dhcp6/kea-dhcp6.conf: GEN_MODE       = dhcp6

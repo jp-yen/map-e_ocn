@@ -105,8 +105,10 @@ if ($mode eq 'hook') {
             my $pd_pool_prefix = "$base_subnet:$s->{b}::";
             $pd_part = "[\n                { \"prefix\": \"$pd_pool_prefix\", \"prefix-len\": 40, \"delegated-len\": $delegated_len }\n            ]";
         } elsif ($s->{t} eq "hgw") {
-            # HGW配下模擬動的: 実機HGW準拠。親 /56 (${prefix}::/56) から切り出した /60 (${prefix}:10::/60) を委譲
-            my $pd_pool_prefix = "${prefix}:10::";
+            # HGW配下模擬動的: 商用 OCN 1,008 ポート仕様。第4ヘクステット上位バイトに PSID を埋め込んだ /60 を委譲
+            my $psid = (($s->{v} - 1) % 63) + 1;
+            my $hextet4_base = sprintf("%02x10", $psid);
+            my $pd_pool_prefix = "${prefix}:${hextet4_base}::";
             $pd_part = "[\n                { \"prefix\": \"$pd_pool_prefix\", \"prefix-len\": 60, \"delegated-len\": $hgw_delegated_len }\n            ]";
         } elsif ($s->{t} eq "hgw_fix") {
             # HGW配下模擬固定: 実機HGW準拠。親 /56 (${prefix}::/56) から切り出した /60 (${prefix}:10::/60) を委譲
@@ -270,17 +272,40 @@ sub get_reservations_json {
 #                       + pool_upper_hex(2B) + 28(v6-len=40) + v6_pfx(5B)
 #   Option 93 (Ports) : 005d00040606 + psid_hex (offset=6, psid-len=6, 1,008ポート仕様)
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# _build_slaac_flex_option
+#   SLAAC 動的（①）および SLAAC 固定（③）の UNKNOWN フォールバック用
+#   Option 94 flex-option ブロック（JSON 断片文字列）を返す。
+#
+#   Option 90 (BR)    : 005a0010 + br_hex (20B)
+#   Option 89 (Rule)  : 0059000c + 00(flags) 12(ea-len=18) 14(v4-len=20)
+#                       + pool_v4_20_hex(3B) + 26(v6-len=38) + v6_pfx(5B)
+#   Option 93 (Ports) : 005d00040606 + psid_hex (offset=6, psid-len=6, 1,008ポート仕様)
+# ----------------------------------------------------------------------------
 sub _build_slaac_flex_option {
     my (%args) = @_;
     my ($br_hex, $pool_upper_hex, $base_subnet, $base, $vlan, $class_name) =
         @args{qw(br_hex pool_upper_hex base_subnet base vlan class_name)};
 
+    # 全体プール (/16) から各セグメント/VLAN 向けに /20 (4,096 IP空間) を切り出す (4 bytes: RFC 7598固定長)
+    my $v4_sub_idx = (($vlan - 1) % 16);
+    my $octet2 = ($v4_sub_idx * 16) & 0xf0;
+    my $pool_v4_32_hex = sprintf("%s%02x00", $pool_upper_hex, $octet2);
+
+    # 商用 OCN 1,008 ポート仕様: Rule IPv6 /38 (5 bytes)
     my $v6_prefix_hex = substr(ipv6_to_hex("${base_subnet}:${base}::"), 0, 10);
+    my $last_byte = hex(substr($v6_prefix_hex, 8, 2)) & 0xfc;
+    substr($v6_prefix_hex, 8, 2, sprintf("%02x", $last_byte));
+
     # 商用 OCN 1,008 ポート仕様: psIdOffset=6, psid-len=6, psid (16bit左詰め)
     my $psid = (($vlan - 1) % 63) + 1;
     my $psid_hex = sprintf("%04x", $psid << 10);
     my $opt93_hex = "005d00040606${psid_hex}";
-    my $opt94_hex = "005a0010${br_hex}0059000b001010${pool_upper_hex}28${v6_prefix_hex}${opt93_hex}";
+
+    # RFC 7598 Section 4.1 / 4.4 / 4.5:
+    # Option 89 payload: flags(1B) + ea-len(1B) + v4-len(1B) + ipv4-pfx(4B固定長) + v6-len(1B) + v6-pfx(5B) + sub-opt93(8B) = 21B (0x0015)
+    my $opt89_hex = "00590015001214${pool_v4_32_hex}26${v6_prefix_hex}${opt93_hex}";
+    my $opt94_hex = "005a0010${br_hex}${opt89_hex}";
 
     return <<~"BLOCK";
                     {
@@ -298,22 +323,34 @@ sub _build_slaac_flex_option {
 #   Option 94 flex-option ブロック（JSON 断片文字列）を返す。
 #
 #   Option 90 (BR)    : 005a0010 + br_hex (20B)
-#   Option 89 (Rule)  : 0059000b + 00(flags) 10(ea-len=16) 10(v4-len=16)
-#                       + pool_upper_hex(2B) + 28(v6-len=40) + v6_pfx(5B)
-#   Option 93 (Ports) : 005d00040606 + psid_hex (offset=6, psid-len=6, 1,008ポート仕様)
+#   Option 89 (Rule)  : 00590015 + 00(flags) 12(ea-len=18) 14(v4-len=20)
+#                       + pool_v4_32_hex(4B) + 26(v6-len=38) + v6_pfx(5B)
+#                       + Option 93 (Ports: 8B, encapsulated inside Option 89)
 # ----------------------------------------------------------------------------
 sub _build_pd_flex_option {
     my (%args) = @_;
     my ($br_hex, $pool_upper_hex, $base_subnet, $base, $vlan, $class_name) =
         @args{qw(br_hex pool_upper_hex base_subnet base vlan class_name)};
 
-    # 委譲プレフィックス /56 から EA-bits (16bit) を抽出するため Rule Prefix は /40 (10 hex文字=5B)
+    # 全体プール (/16) から各セグメント/VLAN 向けに /20 (4,096 IP空間) を切り出す (4 bytes: RFC 7598固定長)
+    my $v4_sub_idx = (($vlan - 1) % 16);
+    my $octet2 = ($v4_sub_idx * 16) & 0xf0;
+    my $pool_v4_32_hex = sprintf("%s%02x00", $pool_upper_hex, $octet2);
+
+    # 商用 OCN 1,008 ポート仕様: Rule IPv6 /38 (5 bytes)
     my $pd_rule_hex = substr(ipv6_to_hex("${base_subnet}:${base}::"), 0, 10);
+    my $last_byte = hex(substr($pd_rule_hex, 8, 2)) & 0xfc;
+    substr($pd_rule_hex, 8, 2, sprintf("%02x", $last_byte));
+
     # 商用 OCN 1,008 ポート仕様: psIdOffset=6, psid-len=6, psid (16bit左詰め)
     my $psid = (($vlan - 1) % 63) + 1;
     my $psid_hex = sprintf("%04x", $psid << 10);
     my $opt93_hex = "005d00040606${psid_hex}";
-    my $opt94_hex = "005a0010${br_hex}0059000b001010${pool_upper_hex}28${pd_rule_hex}${opt93_hex}";
+
+    # RFC 7598 Section 4.1 / 4.4 / 4.5:
+    # Option 89 payload: flags(1B) + ea-len(1B) + v4-len(1B) + ipv4-pfx(4B固定長) + v6-len(1B) + v6-pfx(5B) + sub-opt93(8B) = 21B (0x0015)
+    my $opt89_hex = "00590015001214${pool_v4_32_hex}26${pd_rule_hex}${opt93_hex}";
+    my $opt94_hex = "005a0010${br_hex}${opt89_hex}";
 
     return <<~"BLOCK";
                     {

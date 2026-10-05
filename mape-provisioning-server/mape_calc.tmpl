@@ -940,7 +940,7 @@ def _extract_mac_and_segment(clean_ip, dev):
     return mac, clean_ip, segment
 
 
-def _compute_target_v4(mac, clean_ip, segment):
+def _compute_target_v4(mac, clean_ip, segment, dev=None):
     """
     接続方式に応じて割り当て IPv4 アドレスを決定する。
     固定セグメント(slaac_fix, pd_fix, hgw_fix)は静的マップを参照し、未登録の場合は接続拒否（フォールバックなし）。
@@ -970,7 +970,8 @@ def _compute_target_v4(mac, clean_ip, segment):
 
                 # 第4ヘクステット (base_len + 1): 0010〜 は DHCPv6-PD /60 委譲
                 fourth_hextet = exploded[base_len + 1] if len(exploded) > base_len + 1 else "0000"
-                if int(fourth_hextet, 16) >= 0x0010 and int(fourth_hextet, 16) <= 0x00ff:
+                val4 = int(fourth_hextet, 16)
+                if (val4 & 0x00ff) >= 0x0010:
                     is_slaac = False
                 else:
                     is_slaac = True
@@ -987,38 +988,27 @@ def _compute_target_v4(mac, clean_ip, segment):
                 return net.network_address, net.prefixlen, is_slaac, ce_host_ip
         raise PermissionError(f"Unregistered CE (MAC: {mac}) cannot connect on fixed segment ({segment})")
 
-    # 動的セグメント（または固定セグメントで未登録の場合）: アドレス衝突防止のため /16 固定
+    # 動的セグメント（または固定セグメントで未登録の場合）:
+    # 商用 OCN 1,008 ポート仕様:
+    # 全体プール (/16) から各セグメント/VLAN 向けに /20 (4,096 IP空間) を切り出す。
+    # BMR: prefix4-len=20, ea-len=18 -> PSID長 = 18 - (32 - 20) = 6bit (1,008ポート)
+    # EA-bits 18bit: 上位 12bit が IPv4 ホスト部、下位 6bit が PSID。
     pool_str = BR_IPV4_POOL
     if '/' in pool_str:
         pool_net = ipaddress.IPv4Network(pool_str, strict=False)
     else:
         mask = int(BR_IPV4_MASK) if BR_IPV4_MASK else 16
         pool_net = ipaddress.IPv4Network(f"{pool_str}/{mask}", strict=False)
-
     pool_octets = pool_net.network_address.exploded.split('.')
-    prefix_len = pool_net.prefixlen
 
-    if prefix_len != 16:
-        # アドレス衝突防止のため /16 固定
-        syslog.syslog(syslog.LOG_WARNING, f"BR_IPV4_POOL prefix length is /{prefix_len}, but /16 is required to prevent collisions. Enforcing /16.")
+    cand = clean_ip if ("::" in clean_ip or clean_ip.count(":") >= 7) else f"{clean_ip}::"
+    v6_bytes = ipaddress.IPv6Network(f"{cand}/64" if is_slaac else f"{cand}/56", strict=False).network_address.packed
+    octet2 = v6_bytes[5]  # 第3ヘクステット下位バイト (VLAN空間, 例: 0x60 = 96)
+    octet3 = v6_bytes[6]  # 第4ヘクステット上位バイト (PSID空間, 例: 0x3c = 60)
 
-    raw_last = int(mac.split(':')[-1], 16) if mac and mac != "00:00:00:00:00:00" else 1
-    last_byte = (raw_last % 254) + 1 if (raw_last == 0 or raw_last == 255) else raw_last
-
-    if is_slaac:
-        cand = clean_ip if ("::" in clean_ip or clean_ip.count(":") >= 7) else f"{clean_ip}::"
-        v6_bytes = ipaddress.IPv6Network(f"{cand}/64", strict=False).network_address.packed
-        octet2 = v6_bytes[5]
-        octet3 = v6_bytes[6]
-        # RFC 7597 / MAP-E 仕様: Rule /16 + EA-bits 16bit = 32bit (完全一致、1IP=1台)
-        return ipaddress.IPv4Address(f"{pool_octets[0]}.{pool_octets[1]}.{octet2}.{octet3}"), 32, is_slaac
-    else:
-        cand = clean_ip if ("::" in clean_ip or clean_ip.count(":") >= 7) else f"{clean_ip}::"
-        v6_bytes = ipaddress.IPv6Network(f"{cand}/56", strict=False).network_address.packed
-        octet2 = v6_bytes[5]
-        octet3 = v6_bytes[6]
-        # RFC 7597 / MAP-E 仕様: Rule /16 + EA-bits 16bit = 32bit (完全一致、1IP=1台、例: 10.218.0.1)
-        return ipaddress.IPv4Address(f"{pool_octets[0]}.{pool_octets[1]}.{octet2}.{octet3}"), 32, is_slaac
+    # 1台1IP (重複なし): 全体プール /16 から、セグメント (octet2) と CE (octet3) に応じてユニークな IPv4 を切り出す
+    target_v4 = ipaddress.IPv4Address(f"{pool_octets[0]}.{pool_octets[1]}.{octet2}.{octet3}")
+    return target_v4, 32, is_slaac
 
 
 def _compute_psid(mac, clean_ip, segment, dev=None):
@@ -1027,23 +1017,28 @@ def _compute_psid(mac, clean_ip, segment, dev=None):
     - 動的接続（① SLAAC動的 / ② PD動的 / ⑤ HGW動的）:
       商用 OCN MAP-E の 1,008 ポート（16ポート × 63ブロック、psIdOffset=6, psid-len=6）仕様に合わせ、
       各 CE に 1〜63 の範囲の PSID を決定論的に割り当てる。
-      VLAN ID または MAC アドレス等から算出し、CE 側の NAPT で 1,008 ポートのみを使用させる。
+      IPv6 プレフィックスの EA-bits 下位6bit、または VLAN ID から算出。
     - 固定接続（③ SLAAC固定 / ④ PD固定 / ⑥ HGW固定）:
       1 台 1 IP の完全占有（全ポート利用可能）のため、PSID は常に 0 を返す。
     """
     if segment in ('slaac_dyn', 'pd_dyn', 'hgw_dyn'):
+        cand = clean_ip if ("::" in clean_ip or clean_ip.count(":") >= 7) else f"{clean_ip}::"
+        try:
+            v6_net = ipaddress.IPv6Network(f"{cand}/64" if "slaac" in segment else f"{cand}/56", strict=False)
+            v6_int = int(v6_net.network_address)
+            ea_bits = (v6_int >> 72) & 0x3ffff
+            derived_psid = ea_bits & 0x3f
+            if 1 <= derived_psid <= 63:
+                return derived_psid
+        except Exception:
+            pass
         vlan = extract_vlan_id(clean_ip, dev=dev, mac=mac)
         if vlan and int(vlan) > 0:
             return ((int(vlan) - 1) % 63) + 1
         if mac and mac != "00:00:00:00:00:00":
             last_byte = int(mac.split(':')[-1], 16)
             return (last_byte % 63) + 1
-        try:
-            cand = clean_ip if ("::" in clean_ip or clean_ip.count(":") >= 7) else f"{clean_ip}::"
-            v6_bytes = ipaddress.IPv6Network(f"{cand}/56" if '/' not in cand else cand, strict=False).network_address.packed
-            return (v6_bytes[6] % 63) + 1
-        except Exception:
-            return 1
+        return 1
     return 0
 
 
@@ -1086,7 +1081,7 @@ def calc_map_e_params(prefix_str, dev=None):
             mac = pd_mac
 
     # --- ② IPv4 アドレス決定 ---
-    res_v4 = _compute_target_v4(mac, clean_ip, segment)
+    res_v4 = _compute_target_v4(mac, clean_ip, segment, dev=dev)
     target_v4, v4_prefixlen, is_slaac = res_v4[0], res_v4[1], res_v4[2]
     ce_host_ip = res_v4[3] if len(res_v4) > 3 else target_v4
 
@@ -1094,7 +1089,9 @@ def calc_map_e_params(prefix_str, dev=None):
     target_psid = _compute_psid(mac, clean_ip, segment, dev=dev)
 
     # --- ④ CE IPv6 アドレス合成 ---
-    ce_ipv6 = convert_to_data_ipv6(clean_ip, str(ce_host_ip), target_psid=target_psid, is_slaac=is_slaac)
+    # 商用 OCN 規格: CE ルーター (RTX, IX 等) は Interface ID の末尾 (block7) を 0000 としてトンネルを開設するため、
+    # BR 側のルーティング注入用対向 IPv6 も target_psid=0 として合成する。
+    ce_ipv6 = convert_to_data_ipv6(clean_ip, str(ce_host_ip), target_psid=0, is_slaac=is_slaac)
 
     # --- ⑤ DDNS 自動登録 ---
     vlan_id = extract_vlan_id(clean_ip, dev=dev, mac=mac)

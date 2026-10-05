@@ -30,17 +30,18 @@ sub generate_radvd {
     print "# =============================================================================\n\n";
 
     foreach my $seg (build_vlan_segments([
-        { vlans => $slaac_dyn_vlans, type => 'slaac', base => $slaac_br_base },
-        { vlans => $pd_dyn_vlans,    type => 'pd',    base => undef },
-        { vlans => $slaac_fix_vlans, type => 'slaac', base => $slaac_fix_br_prefix },
-        { vlans => $pd_fix_vlans,    type => 'pd',    base => undef },
+        { vlans => $slaac_dyn_vlans, type => 'slaac',     base => $slaac_br_base },
+        { vlans => $pd_dyn_vlans,    type => 'pd',        base => undef },
+        { vlans => $slaac_fix_vlans, type => 'slaac_fix', base => $slaac_fix_br_prefix },
+        { vlans => $pd_fix_vlans,    type => 'pd',        base => undef },
     ])) {
         my $vlan = $seg->{v};
         my $vif = "$mape_if.$vlan";
-        my $prefix = ($seg->{t} eq 'slaac')
+        my $prefix = ($seg->{t} eq 'slaac' || $seg->{t} eq 'slaac_fix')
             ? calc_vlan_prefix($base_subnet, $seg->{b}, $vlan)
             : undef;
-        _print_radvd_block($vif, $prefix, $mape_dns_ip, $domain);
+        my $is_fix = ($seg->{t} eq 'slaac_fix');
+        _print_radvd_block($vif, $prefix, $mape_dns_ip, $domain, $vlan, $is_fix);
     }
 
     # HGW配下模擬 動的 VLAN: RA /64 + AdvManagedFlag on (DHCPv6-PD /60 併用)
@@ -51,7 +52,7 @@ sub generate_radvd {
             my $vlan = $seg->{v};
             my $vif = "$mape_if.$vlan";
             my $prefix = calc_vlan_prefix($base_subnet, $seg->{b}, $vlan);
-            _print_radvd_hgw_block($vif, $prefix, $mape_dns_ip, $domain);
+            _print_radvd_hgw_block($vif, $prefix, $mape_dns_ip, $domain, $vlan, 0);
         }
     }
 
@@ -63,7 +64,7 @@ sub generate_radvd {
             my $vlan = $seg->{v};
             my $vif = "$mape_if.$vlan";
             my $prefix = calc_vlan_prefix($base_subnet, $seg->{b}, $vlan);
-            _print_radvd_hgw_block($vif, $prefix, $mape_dns_ip, $domain);
+            _print_radvd_hgw_block($vif, $prefix, $mape_dns_ip, $domain, $vlan, 1);
         }
     }
 }
@@ -71,7 +72,13 @@ sub generate_radvd {
 # --- HGW配下模擬VLANのRAブロック ---
 # RA /64 広報 (SLAAC) と AdvManagedFlag on (DHCPv6-PD /60 を促す) を同時に設定する
 sub _print_radvd_hgw_block {
-    my ($vif, $prefix, $dns, $domain) = @_;
+    my ($vif, $prefix, $dns, $domain, $vlan, $is_fix) = @_;
+    my $hextet4 = '';
+    if (!$is_fix) {
+        # 商用 OCN 1,008 ポート仕様: 第4ヘクステットの上位バイトに PSID を配置して EA-bits を整合
+        my $psid = (($vlan - 1) % 63) + 1;
+        $hextet4 = sprintf(":%02x00", $psid);
+    }
 
     print "interface $vif\n";
     print "{\n";
@@ -83,13 +90,12 @@ sub _print_radvd_hgw_block {
     print "    AdvOtherConfigFlag on;\n\n";
     print "    # RA用プレフィックス配布 (/64) - AdvAutonomous on で SLAAC (RA) アドレス自動生成を許可し、\n";
     print "    # AdvManagedFlag on で DHCPv6-PD (/60) も同時に提供 (HGW両用方式。1 VLAN 1台収容)\n";
-    print "    prefix ${prefix}::/64\n";
+    print "    prefix ${prefix}${hextet4}::/64\n";
     print "    {\n";
     print "        AdvOnLink on;\n";
     print "        AdvAutonomous on;\n";
     print "        AdvRouterAddr on;\n";
     print "    };\n\n";
-
     print "    RDNSS $dns\n";
     print "    {\n";
     print "        AdvRDNSSLifetime 600;\n";
@@ -103,7 +109,7 @@ sub _print_radvd_hgw_block {
 
 # --- 各VLANのRAブロック共通テキスト生成ヘルパー ---
 sub _print_radvd_block {
-    my ($vif, $prefix, $dns, $domain) = @_;
+    my ($vif, $prefix, $dns, $domain, $vlan, $is_fix) = @_;
 
     print "interface $vif\n";
     print "{\n";
@@ -111,10 +117,15 @@ sub _print_radvd_block {
     print "    MinRtrAdvInterval 3;\n";
     print "    MaxRtrAdvInterval 10;\n";
     if ($prefix) {
+        my $hextet4 = '';
+        if (!$is_fix) {
+            my $psid = (($vlan - 1) % 63) + 1;
+            $hextet4 = sprintf(":%02x00", $psid);
+        }
         print "    AdvManagedFlag off;\n";
         print "    AdvOtherConfigFlag off;\n\n";
-        print "    # SLAAC用プレフィックス配布\n";
-        print "    prefix ${prefix}::/64\n";
+        print "    # SLAAC用プレフィックス配布 (動的は第4ヘクステットに PSID を埋め込み 1,008 ポート EA-bits に整合)\n";
+        print "    prefix ${prefix}${hextet4}::/64\n";
         print "    {\n";
         print "        AdvOnLink on;\n";
         print "        AdvAutonomous on;\n";

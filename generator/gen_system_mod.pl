@@ -105,9 +105,9 @@ sub generate_interfaces {
             _iface_slaac($vif, $mape_if, $vlan, $base_subnet, $seg->{b},
                          $slaac_br_suffix, $slaac_fix_br_prefix, $slaac_fix_br_suffix);
         } elsif ($seg->{t} eq 'hgw') {
-            _iface_hgw($vif, $mape_if, $vlan, $base_subnet, $seg->{b}, $hgw_br_suffix);
+            _iface_hgw($vif, $mape_if, $vlan, $base_subnet, $seg->{b}, $hgw_br_suffix, 0);
         } elsif ($seg->{t} eq 'hgw_fix') {
-            _iface_hgw($vif, $mape_if, $vlan, $base_subnet, $seg->{b}, $hgw_fix_br_suffix);
+            _iface_hgw($vif, $mape_if, $vlan, $base_subnet, $seg->{b}, $hgw_fix_br_suffix, 1);
         } elsif ($seg->{t} eq 'pppoe') {
             _iface_pppoe($vif, $mape_if, $vlan);
         } else {
@@ -138,12 +138,18 @@ sub _iface_slaac {
     my ($vif, $mape_if, $vlan, $base_subnet, $base,
         $slaac_br_suffix, $slaac_fix_br_prefix, $slaac_fix_br_suffix) = @_;
     my $prefix = calc_vlan_prefix($base_subnet, $base, $vlan);
-    my $suffix = (defined $slaac_fix_br_prefix && $base eq $slaac_fix_br_prefix
-                  && defined $slaac_fix_br_suffix && $slaac_fix_br_suffix ne '')
+    my $is_fix = (defined $slaac_fix_br_prefix && $base eq $slaac_fix_br_prefix);
+    my $suffix = ($is_fix && defined $slaac_fix_br_suffix && $slaac_fix_br_suffix ne '')
         ? $slaac_fix_br_suffix
         : $slaac_br_suffix;
     $suffix =~ s/^:+//;
-    my $ip = "${prefix}::${suffix}";
+    my $hextet4 = '';
+    if (!$is_fix) {
+        # 商用 OCN 1,008 ポート仕様: 第4ヘクステットの上位バイトに PSID を配置して EA-bits を整合
+        my $psid = (($vlan - 1) % 63) + 1;
+        $hextet4 = sprintf(":%02x00", $psid);
+    }
+    my $ip = "${prefix}${hextet4}::${suffix}";
     print <<~"STANZA";
         auto $vif
         iface $vif inet6 static
@@ -160,11 +166,17 @@ sub _iface_slaac {
 #   RA /64 広報と同時に BR アドレス（動的: ::ff0c / 固定: ::ff0d）を静的付与
 # ---------------------------------------------------------------------------
 sub _iface_hgw {
-    my ($vif, $mape_if, $vlan, $base_subnet, $base, $hgw_br_suffix) = @_;
+    my ($vif, $mape_if, $vlan, $base_subnet, $base, $hgw_br_suffix, $is_fix) = @_;
     my $prefix = calc_vlan_prefix($base_subnet, $base, $vlan);
-    my $suffix = $hgw_br_suffix // '::ff0c';
+    my $suffix = $hgw_br_suffix // ($is_fix ? '::ff0d' : '::ff0c');
     $suffix =~ s/^:+//;
-    my $ip = "${prefix}::${suffix}";
+    my $hextet4 = '';
+    if (!$is_fix) {
+        # 商用 OCN 1,008 ポート仕様: 第4ヘクステットの上位バイトに PSID を配置して EA-bits を整合
+        my $psid = (($vlan - 1) % 63) + 1;
+        $hextet4 = sprintf(":%02x00", $psid);
+    }
+    my $ip = "${prefix}${hextet4}::${suffix}";
     print <<~"STANZA";
         auto $vif
         iface $vif inet6 static

@@ -1,52 +1,95 @@
-# Makefile で自動生成される設定ファイル・証明書
-map-e.conf
-ddns.conf
-map-e-static-ip.conf
-pppoe.conf
-system/interfaces
-system/99-network-routing.conf
-system/vrf-setup.sh
-radvd/radvd.conf
-kea-dhcp6/kea-dhcp6.conf
-kea-dhcp6/kea-map-e-hook
-bind/named.conf
-bind/rndc.conf
-bind/.rndc.key.secret
-bind/named.conf.local
-bind/db.*
-chrony/chrony.conf
-mape-provisioning-server/mape-provisioning-server
-mape-provisioning-server/mape_calc
-mape-provisioning-server/mape-provisioning-server.service
-mape-provisioning-server/mape-route-monitor
-mape-provisioning-server/mape-route-monitor.service
-mape-provisioning-server/server.crt
-mape-provisioning-server/server.key
-pppoe/srv-*
-docker-compose.yml
+# ==============================================================================
+# ホワイトリスト方式 .gitignore
+# 全ファイルを原則無視し、トラック対象のファイル・拡張子のみを明示的に指定します。
+# これにより、新しいファイルや一時ファイルを作成しても勝手に Git に登録されません。
+# ==============================================================================
 
-# アーカイブ・作業用ファイル
-STATUS.TXT
-MAP-E.shar*
-MAP-E.tar.xz
-__pycache__/
-*.pyc
-*.bak*
+# 1. すべてのファイルを原則無視
+*
 
-# 検証ツールの生成物
-tools/node_modules/
-tools/package-lock.json
+# 2. ディレクトリの走査を許可（配下のホワイトリストファイルを検出するため）
+!*/
 
-# Web ダッシュボードのランタイムデータ
-web-dashboard/data/
-.map-e.conf.safe
-.config_staging.json
-bind/dynamic/
-dashboard_screenshot.png
-
-# 外部テーマ・スクリプト類 (必要時に git clone)
+# 3. 走査自体を完全にスキップするディレクトリ（巨大・生成物・外部リポジトリ）
 bearded-theme/
+tools/node_modules/
+web-dashboard/__pycache__/
+web-dashboard/data/
+bind/dynamic/
+pppoe/srv-*/
 
-# Playwright テスト環境 (README.md 以外は再現可能なため除外)
-playwright/*
+# ==============================================================================
+# トラック対象ファイル (ホワイトリスト)
+# ==============================================================================
+
+# --- Git / プロジェクト基本ファイル ---
+!.gitignore
+!Makefile
+!*.md
+!verify_calc.py
+
+# --- 設定ファイルおよびテンプレート (ルート直下) ---
+!ddns.conf.tmpl
+!map-e.conf.tmpl
+!map-e-static-ip.conf.tmpl
+!pppoe.conf.tmpl
+
+# --- ディレクトリ維持用 ---
+!.gitkeep
+
+# --- CE-setting (ルータ設定サンプル) ---
+!CE-setting/
+!CE-setting/*.txt
+
+# --- bind (DNS) ---
+!bind/*.tmpl
+
+# --- chrony (NTP) ---
+!chrony/Dockerfile
+!chrony/chrony.conf.tmpl
+!chrony/entrypoint.sh
+
+# --- generator (Perl スクリプト / モジュール) ---
+!generator/*.pl
+!generator/*.pm
+
+# --- kea-dhcp6 (DHCPv6) ---
+!kea-dhcp6/*.tmpl
+
+# --- mape-provisioning-server ---
+!mape-provisioning-server/Dockerfile
+!mape-provisioning-server/*.tmpl
+
+# --- nat ---
+!nat/Dockerfile
+!nat/entrypoint.sh
+
+# --- playwright (E2Eテスト) ---
 !playwright/README.md
+
+# --- pppoe ---
+!pppoe/Dockerfile
+!pppoe/entrypoint.sh
+!pppoe/ip-down
+!pppoe/ip-up
+
+# --- radvd (RA) ---
+!radvd/Dockerfile
+!radvd/entrypoint.sh
+
+# --- syslog-ng ---
+!syslog-ng/Dockerfile
+!syslog-ng/entrypoint.sh
+!syslog-ng/logrotate.conf
+!syslog-ng/syslog-ng.conf
+
+# --- tools ---
+!tools/package.json
+!tools/*.mjs
+
+# --- web-dashboard ---
+!web-dashboard/Dockerfile
+!web-dashboard/*.py
+!web-dashboard/static/*.html
+!web-dashboard/static/css/*.css
+!web-dashboard/static/js/*.js
