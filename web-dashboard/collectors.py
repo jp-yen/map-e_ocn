@@ -206,6 +206,10 @@ def _cleanup_stale_tunnels():
             ce_ip6 = t.get("ce_ipv6")
             if not v4 or not ce_ip6:
                 continue
+            # mape-tunnel-sync が事前登録した経路 (proto 250) は自動削除しない
+            # (未接続の自律型 CE 向けに常時保持する。削除は mape-tunnel-sync が担当)
+            if t.get("preseed"):
+                continue
 
             c_info = client_map.get(v4, {})
             hw = c_info.get("hwaddr")
@@ -807,7 +811,8 @@ class MAPECollector:
                     m_dev = re.search(r"\bdev\s+([^\s]+)", line)
                     dev = m_dev.group(1) if m_dev else "mpe-common"
                     display_v4 = f"{v4}/{plen}" if plen != "32" else v4
-                    tunnels.append({"ipv4": display_v4, "raw_ipv4": v4, "prefixlen": plen, "ce_ipv6": ce_ip6, "dev": dev})
+                    preseed = bool(re.search(r"\bproto\s+250\b", line))
+                    tunnels.append({"ipv4": display_v4, "raw_ipv4": v4, "prefixlen": plen, "ce_ipv6": ce_ip6, "dev": dev, "preseed": preseed})
         return tunnels
 
     @staticmethod

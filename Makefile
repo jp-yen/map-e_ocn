@@ -20,7 +20,7 @@ REQUIRED_PACKAGES := python3 openssl bind9-dnsutils radvd chrony
 
 .DEFAULT_GOAL := help
 .PHONY: help all clean generate check install packages archive check-root check-user \
-        generate_ddns_zones update_syslog check_config web-dashboard up down
+        generate_ddns_zones update_syslog check_config web-dashboard up down tunnels
 
 $(CONFIG_FILE): map-e.conf.tmpl
 	@if [ ! -f $(CONFIG_FILE) ]; then \
@@ -52,7 +52,9 @@ check_config: $(CONFIG_FILE)
 SYSTEM_TARGETS = \
     system/interfaces \
     system/99-network-routing.conf \
-    system/vrf-setup.sh
+    system/vrf-setup.sh \
+    system/mape-tunnel-sync \
+    system/mape-tunnel-sync.service
 
 PPPOE_UNIFIED_DIR = pppoe/srv-unified
 PPPOE_TARGETS = \
@@ -105,6 +107,7 @@ help:
 	@echo "  generate       : 各種設定ファイル（DNS, Kea, PPPoE, compose等）を一括生成 (一般ユーザー)"
 	@echo "  web-dashboard  : Web ダッシュボードのみ先行起動 (一般ユーザー)"
 	@echo "  install        : ホストネットワーク/sysctl設定を適用し、全コンテナを起動 (要 sudo)"
+	@echo "  tunnels        : MAP-E トンネル経路の事前一括登録・不要経路の削除のみ実行 (要 sudo)"
 	@echo "  up             : Docker コンテナを一括起動 (docker compose up -d)"
 	@echo "  down           : Docker コンテナを一括停止 (docker compose down)"
 	@echo "  check          : 各種設定ファイルの構文チェック (要 sudo / コンテナ活用)"
@@ -205,6 +208,14 @@ system/interfaces:             generator/gen_system_mod.pl generator/MapeCommon.
 system/99-network-routing.conf: GEN_SCRIPT = generator/gen_system_mod.pl
 system/99-network-routing.conf: GEN_MODE   = sysctl
 system/99-network-routing.conf: generator/gen_system_mod.pl generator/MapeCommon.pm
+
+system/mape-tunnel-sync:         GEN_SCRIPT      = generator/gen_mape_mod.pl
+system/mape-tunnel-sync:         GEN_MODE        = tunnel_sync
+system/mape-tunnel-sync:         GEN_CHMOD_AFTER = 1
+system/mape-tunnel-sync:         mape-provisioning-server/mape-tunnel-sync.tmpl generator/gen_mape_mod.pl
+system/mape-tunnel-sync.service: GEN_SCRIPT      = generator/gen_mape_mod.pl
+system/mape-tunnel-sync.service: GEN_MODE        = tunnel_sync_service
+system/mape-tunnel-sync.service: mape-provisioning-server/mape-tunnel-sync.service.tmpl
 
 system/vrf-setup.sh:           GEN_SCRIPT      = generator/gen_pppoe_configs.pl
 system/vrf-setup.sh:           GEN_MODE        = vrf_setup
@@ -334,6 +345,14 @@ install: check-root check_config
 	    echo "Applying VRF configuration (system/vrf-setup.sh)..."; \
 	    sh system/vrf-setup.sh; \
 	fi; \
+	echo "Installing MAP-E tunnel pre-registration (mape-tunnel-sync)..."; \
+	install -d -o root -g root -m 755 /usr/local/lib/mape-e; \
+	install -o root -g root -m 644 mape-provisioning-server/mape_calc /usr/local/lib/mape-e/mape_calc; \
+	install -o root -g root -m 755 system/mape-tunnel-sync /usr/local/sbin/mape-tunnel-sync; \
+	install -o root -g root -m 644 system/mape-tunnel-sync.service /etc/systemd/system/mape-tunnel-sync.service; \
+	systemctl daemon-reload 2>/dev/null || true; \
+	systemctl enable mape-tunnel-sync.service 2>/dev/null || true; \
+	/usr/local/sbin/mape-tunnel-sync || true; \
 	echo "Disabling overlapping host systemd services..."; \
 	systemctl stop bind9 radvd kea-dhcp6-server chrony syslog-ng 2>/dev/null || true; \
 	systemctl disable bind9 radvd kea-dhcp6-server chrony syslog-ng 2>/dev/null || true; \
@@ -342,6 +361,12 @@ install: check-root check_config
 	    docker compose up -d --build; \
 	fi; \
 	echo "Successfully installed host network settings and deployed Docker containers."
+
+tunnels: check-root
+	@if [ ! -x system/mape-tunnel-sync ] || [ ! -f mape-provisioning-server/mape_calc ]; then \
+	    echo "Error: system/mape-tunnel-sync がありません。先に 'make generate' を実行してください。" >&2; exit 1; \
+	fi
+	@MAPE_CALC=$(CURDIR)/mape-provisioning-server/mape_calc system/mape-tunnel-sync --interfaces /etc/network/interfaces
 
 web-dashboard: check-user
 	@if [ ! -f docker-compose.yml ]; then $(MAKE) generate; fi

@@ -25,9 +25,11 @@ my $mode = $ARGV[0] || '';
 my %mode_to_template = (
     'mape_calc'           => 'mape_calc.tmpl',
     'provisioning-server' => 'mape-provisioning-server.tmpl',
+    'tunnel_sync'         => 'mape-tunnel-sync.tmpl',
+    'tunnel_sync_service' => 'mape-tunnel-sync.service.tmpl',
 );
 if (!exists $mode_to_template{$mode}) {
-    die "Usage: $0 [mape_calc|provisioning-server]\n";
+    die "Usage: $0 [mape_calc|provisioning-server|tunnel_sync|tunnel_sync_service]\n";
 }
 
 

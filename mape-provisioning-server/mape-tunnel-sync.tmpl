@@ -1,0 +1,375 @@
+#!/usr/bin/env python3
+# =============================================================================
+# mape-tunnel-sync : MAP-E トンネル経路の事前一括登録 / 不要経路の自動削除
+#   (mape-provisioning-server/mape-tunnel-sync.tmpl -> gen_mape_mod.pl tunnel_sync
+#    -> system/mape-tunnel-sync -> /usr/local/sbin/mape-tunnel-sync)
+#
+# ■ 目的
+#   YAMAHA RTX 等の「プロビジョニングサーバーへアクセスせず、内蔵ルールで自律的に
+#   MAP-E トンネルを張る CE」は、mape-provisioning-server 経由の自動ルート注入
+#   (mape_calc.setup_tunnel_route) が発火しない。そこで map-e.conf の VLAN 定義から
+#   CE が使用する IPv4 / CE IPv6 を決定論的に算出し、BR カーネルへ事前登録する。
+#
+# ■ 処理内容 (冪等。何度実行しても同じ結果になる)
+#   1. MAP-E 用 VLAN インターフェースの IPv6 アドレス整合
+#        /etc/network/interfaces に記載されたアドレスのみを残し、過去の VLAN 割当
+#        (接続方式変更前) で付与された古いグローバルアドレスを削除する。
+#   2. トンネルデバイス mpe-common の作成 (MAP-E VLAN が 1 つも無ければ削除)
+#   3. 決定論的に算出可能なセグメントのトンネル経路を事前登録 (proto 250)
+#        ① SLAAC動的   : RA /64      (BASE:<SLAAC_BR_BASE+VLAN>:<PSID>00::/64)
+#        ⑤ HGW動的     : RA /64      (BASE:<HGW_BR_BASE+VLAN>:<PSID>00::/64)
+#                        DHCPv6-PD /60 (BASE:<HGW_BR_BASE+VLAN>:<PSID>10::/60)
+#      ※ ②④ PD 系は /40 プールからの委譲のため事前算出不可 (Kea / プロビジョニング経由)
+#      ※ ③⑥ 固定系は MAC 単位の固定IP割当のため事前算出不可 (プロビジョニング経由)
+#   4. 不要になったトンネル経路の削除
+#        - 事前登録経路 (proto 250) のうち、現在の VLAN 定義から算出されないもの
+#        - 動的登録経路のうち、CE IPv6 が現在の MAP-E VLAN インターフェースへ到達しないもの
+#   5. 不要になった近隣エントリ (NDP) の削除
+#        - MAP-E VLAN 上の PERMANENT エントリのうち、どのトンネル経路の宛先でもないもの
+#
+# ■ 使い方
+#   mape-tunnel-sync              : 同期実行
+#   mape-tunnel-sync --dry-run    : 実行予定のコマンドを表示するのみ
+#   mape-tunnel-sync --flush      : mpe-common の全経路とデバイスを削除
+# =============================================================================
+import argparse
+import ipaddress
+import os
+import re
+import subprocess
+import sys
+import syslog
+from importlib.machinery import SourceFileLoader
+
+MAPE_IF        = "${MAPE_IF}"
+BR_IPV4_ADDR   = "${BR_IPV4_ADDR}"
+BR_IPV6        = "${BR_IPV6}"
+TUNNEL_DEV     = "mpe-common"
+# 事前登録経路の識別子 (ip route の proto 番号)。web-dashboard の自動削除対象外判定にも使用。
+PRESEED_PROTO  = "250"
+INTERFACES_FILE_DEFAULT = "/etc/network/interfaces"
+
+DRY_RUN = False
+QUIET = False
+
+
+# -----------------------------------------------------------------------------
+# 共通ユーティリティ
+# -----------------------------------------------------------------------------
+def log(msg, level=syslog.LOG_INFO):
+    if not QUIET:
+        print(f"[mape-tunnel-sync] {msg}")
+    if not DRY_RUN:
+        syslog.syslog(level, msg)
+
+
+def run(cmd):
+    """読み取り系コマンドを実行して (rc, stdout) を返す"""
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    return r.returncode, r.stdout
+
+
+def apply(cmd, desc=None):
+    """変更系コマンドを実行する (--dry-run 時は表示のみ)"""
+    line = " ".join(cmd)
+    if DRY_RUN:
+        print(f"[dry-run] {line}")
+        return True
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        log(f"FAILED: {line}: {r.stderr.strip()}", syslog.LOG_WARNING)
+        return False
+    if desc:
+        log(desc)
+    return True
+
+
+def load_mape_calc():
+    """設定値・計算ロジックの唯一の実装である mape_calc を読み込む"""
+    here = os.path.dirname(os.path.realpath(__file__))
+    candidates = [
+        os.environ.get("MAPE_CALC", ""),
+        os.path.join(here, "..", "mape-provisioning-server", "mape_calc"),
+        os.path.join(here, "mape_calc"),
+        "/usr/local/lib/mape-e/mape_calc",
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return SourceFileLoader("mape_calc", path).load_module()
+    sys.exit("[mape-tunnel-sync] ERROR: mape_calc not found (set MAPE_CALC=/path/to/mape_calc)")
+
+
+def psid_of(vlan):
+    """商用 OCN 1,008 ポート仕様の PSID (1..63)。gen_system_mod.pl / gen_kea_configs.pl と同一式"""
+    return ((int(vlan) - 1) % 63) + 1
+
+
+def mape_vlans(cfg):
+    keys = ("SLAAC_DYN_VLANS", "PD_DYN_VLANS", "SLAAC_FIX_VLANS",
+            "PD_FIX_VLANS", "HGW_VLANS", "HGW_FIX_VLANS")
+    vlans = set()
+    for k in keys:
+        vlans.update(int(v) for v in cfg.get(k, []))
+    return vlans
+
+
+# -----------------------------------------------------------------------------
+# 1. VLAN インターフェースの IPv6 アドレス整合
+# -----------------------------------------------------------------------------
+def parse_interfaces_file(path):
+    """/etc/network/interfaces から iface 名 -> {IPv6Interface} を取得する"""
+    result = {}
+    if not os.path.isfile(path):
+        return None
+    cur = None
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            m = re.match(r"^iface\s+(\S+)\s+inet6\s+(\S+)", line)
+            if m:
+                cur = m.group(1)
+                result.setdefault(cur, set())
+                continue
+            if re.match(r"^(iface|auto|allow-|source|mapping)\b", line):
+                cur = None
+                continue
+            m = re.match(r"^address\s+(\S+)", line)
+            if m and cur:
+                try:
+                    result[cur].add(ipaddress.IPv6Interface(m.group(1)))
+                except ValueError:
+                    pass
+    return result
+
+
+def current_global_addrs(dev):
+    rc, out = run(["ip", "-6", "-o", "addr", "show", "dev", dev, "scope", "global"])
+    addrs = set()
+    if rc == 0:
+        for line in out.splitlines():
+            m = re.search(r"\binet6\s+(\S+)", line)
+            if m:
+                try:
+                    addrs.add(ipaddress.IPv6Interface(m.group(1)))
+                except ValueError:
+                    pass
+    return addrs
+
+
+def sync_vlan_addresses(active_vifs, interfaces_file):
+    expected_map = parse_interfaces_file(interfaces_file)
+    if expected_map is None:
+        log(f"{interfaces_file} not found; skip address reconciliation", syslog.LOG_WARNING)
+        return
+    for vif in sorted(active_vifs):
+        if run(["ip", "link", "show", vif])[0] != 0:
+            log(f"{vif} does not exist (not yet brought up?)", syslog.LOG_WARNING)
+            continue
+        expected = expected_map.get(vif, set())
+        current = current_global_addrs(vif)
+        for a in sorted(current - expected, key=str):
+            apply(["ip", "-6", "addr", "del", str(a), "dev", vif],
+                  f"[ADDR-CLEANUP] removed stale address {a} from {vif}")
+        for a in sorted(expected - current, key=str):
+            apply(["ip", "-6", "addr", "add", str(a), "dev", vif],
+                  f"[ADDR-ADD] added address {a} to {vif}")
+        for a in sorted(expected, key=str):
+            apply(["ip", "-6", "route", "replace", str(a.network), "dev", vif],
+                  f"[ROUTE-ENSURE] ensured subnet route {a.network} on {vif}")
+
+
+# -----------------------------------------------------------------------------
+# 2-3. 事前登録するトンネルの算出
+# -----------------------------------------------------------------------------
+def desired_tunnels(mc):
+    """{ipv4: {"ce6":..., "vif":..., "desc":...}} を返す"""
+    cfg = mc._CFG
+    base = cfg["BASE_SUBNET"]
+    specs = []
+    for v in cfg.get("SLAAC_DYN_VLANS", []):
+        h3 = int(cfg["SLAAC_BR_BASE"]) + v
+        specs.append((v, "slaac_dyn", f"{base}:{h3}:{psid_of(v):02x}00::", "SLAAC動的 RA/64"))
+    if cfg.get("HGW_BR_BASE"):
+        for v in cfg.get("HGW_VLANS", []):
+            h3 = int(cfg["HGW_BR_BASE"]) + v
+            specs.append((v, "hgw_dyn", f"{base}:{h3}:{psid_of(v):02x}00::", "HGW動的 RA/64"))
+            specs.append((v, "hgw_dyn", f"{base}:{h3}:{psid_of(v):02x}10::", "HGW動的 PD/60"))
+
+    result = {}
+    for vlan, seg, prefix, desc in specs:
+        try:
+            v4, _plen, is_slaac = mc._compute_target_v4("00:00:00:00:00:00", prefix, seg)[:3]
+            ce6 = mc.convert_to_data_ipv6(prefix, str(v4), target_psid=0, is_slaac=is_slaac)
+        except Exception as e:
+            log(f"calc failed for VLAN {vlan} ({prefix}): {e}", syslog.LOG_WARNING)
+            continue
+        v4 = str(v4)
+        vif = f"{MAPE_IF}.{vlan}"
+        if v4 in result and result[v4]["ce6"] != ce6:
+            log(f"conflict: {v4} -> {result[v4]['ce6']} / {ce6} (VLAN {vlan}); keep first",
+                syslog.LOG_WARNING)
+            continue
+        result.setdefault(v4, {"ce6": ce6, "vif": vif, "desc": f"VLAN {vlan} {desc}"})
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 既存トンネル経路の取得
+# -----------------------------------------------------------------------------
+def current_tunnel_routes():
+    rc, out = run(["ip", "route", "show", "dev", TUNNEL_DEV])
+    routes = []
+    if rc != 0:
+        return routes
+    for line in out.splitlines():
+        m = re.search(r"^(\S+)\s+encap ip6.*?\bdst\s+([0-9a-fA-F:]+)", line.strip())
+        if not m:
+            continue
+        dst = m.group(1)
+        v4 = dst.split("/")[0]
+        routes.append({
+            "dst": dst,
+            "v4": v4,
+            "plen": dst.split("/")[1] if "/" in dst else "32",
+            "ce6": ipaddress.IPv6Address(m.group(2)).compressed,
+            "preseed": bool(re.search(rf"\bproto\s+{PRESEED_PROTO}\b", line)),
+        })
+    return routes
+
+
+def egress_dev_of(ipv6):
+    rc, out = run(["ip", "-6", "route", "get", ipv6])
+    if rc != 0:
+        return None
+    m = re.search(r"\bdev\s+(\S+)", out)
+    return m.group(1) if m else None
+
+
+def ensure_tunnel_dev():
+    if run(["ip", "link", "show", TUNNEL_DEV])[0] != 0:
+        apply(["ip", "link", "add", TUNNEL_DEV, "type", "ip6tnl", "mode", "any", "external"],
+              f"[TUNNEL-CREATE] created {TUNNEL_DEV}")
+    apply(["ip", "link", "set", TUNNEL_DEV, "up"])
+
+
+def remove_tunnel_dev():
+    if run(["ip", "link", "show", TUNNEL_DEV])[0] == 0:
+        apply(["ip", "link", "del", TUNNEL_DEV], f"[TUNNEL-DELETE] deleted {TUNNEL_DEV}")
+
+
+def del_route(r, reason):
+    apply(["ip", "route", "del", r["dst"], "dev", TUNNEL_DEV],
+          f"[TUNNEL-CLEANUP] deleted {r['dst']} -> {r['ce6']} ({reason})")
+
+
+# -----------------------------------------------------------------------------
+# 5. 近隣エントリの整理
+# -----------------------------------------------------------------------------
+def cleanup_neighbors(active_vifs, keep_ce6):
+    rc, out = run(["ip", "-6", "neigh", "show"])
+    if rc != 0:
+        return
+    prefix = f"{MAPE_IF}."
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 3 or "dev" not in parts:
+            continue
+        addr = parts[0]
+        dev = parts[parts.index("dev") + 1]
+        if not dev.startswith(prefix):
+            continue
+        if addr.lower().startswith("fe80"):
+            continue
+        try:
+            addr_c = ipaddress.IPv6Address(addr).compressed
+        except ValueError:
+            continue
+        if "PERMANENT" in parts and (dev not in active_vifs or addr_c not in keep_ce6):
+            apply(["ip", "-6", "neigh", "del", addr, "dev", dev],
+                  f"[NEIGH-CLEANUP] deleted stale permanent neigh {addr} dev {dev}")
+
+
+# -----------------------------------------------------------------------------
+# main
+# -----------------------------------------------------------------------------
+def main():
+    global DRY_RUN, QUIET
+    ap = argparse.ArgumentParser(description="MAP-E トンネル経路の事前一括登録 / 不要経路の削除")
+    ap.add_argument("--dry-run", action="store_true", help="変更コマンドを表示のみ")
+    ap.add_argument("--flush", action="store_true", help="mpe-common の全経路とデバイスを削除")
+    ap.add_argument("--quiet", action="store_true", help="標準出力へのログを抑止")
+    ap.add_argument("--interfaces", default=INTERFACES_FILE_DEFAULT,
+                    help=f"VLAN アドレス整合に使う interfaces ファイル (既定: {INTERFACES_FILE_DEFAULT})")
+    ap.add_argument("--no-addr-sync", action="store_true", help="VLAN アドレス整合を行わない")
+    args = ap.parse_args()
+    DRY_RUN, QUIET = args.dry_run, args.quiet
+
+    if os.geteuid() != 0 and not DRY_RUN:
+        sys.exit("[mape-tunnel-sync] ERROR: root 権限が必要です (sudo で実行してください)")
+
+    syslog.openlog("mape-tunnel-sync", syslog.LOG_PID, syslog.LOG_LOCAL0)
+
+    if args.flush:
+        for r in current_tunnel_routes():
+            del_route(r, "flush")
+        remove_tunnel_dev()
+        cleanup_neighbors(set(), set())
+        return 0
+
+    mc = load_mape_calc()
+    vlans = mape_vlans(mc._CFG)
+    active_vifs = {f"{MAPE_IF}.{v}" for v in vlans}
+
+    # 1. VLAN インターフェースのアドレス整合 (旧 VLAN 割当の残骸を除去)
+    if not args.no_addr_sync:
+        sync_vlan_addresses(active_vifs, args.interfaces)
+
+    # MAP-E VLAN が 1 つも無い場合はトンネルごと撤去
+    if not vlans:
+        log("no MAP-E VLAN configured: removing all tunnel routes and device")
+        for r in current_tunnel_routes():
+            del_route(r, "no MAP-E VLAN")
+        remove_tunnel_dev()
+        cleanup_neighbors(active_vifs, set())
+        return 0
+
+    # 2. トンネルデバイス
+    ensure_tunnel_dev()
+
+    # 3. 事前登録
+    desired = desired_tunnels(mc)
+    existing = {r["v4"]: r for r in current_tunnel_routes() if r["plen"] == "32"}
+    for v4, d in sorted(desired.items()):
+        cur = existing.get(v4)
+        if cur and cur["ce6"] == d["ce6"] and cur["preseed"]:
+            log(f"[TUNNEL-OK] {v4} -> {d['ce6']} ({d['desc']})")
+        else:
+            apply(["ip", "route", "replace", f"{v4}/32", "dev", TUNNEL_DEV,
+                   "proto", PRESEED_PROTO, "src", BR_IPV4_ADDR,
+                   "encap", "ip6", "src", BR_IPV6, "dst", d["ce6"]],
+                  f"[TUNNEL-PRESEED] {v4} -> {d['ce6']} ({d['desc']})")
+        egress = egress_dev_of(d["ce6"])
+        if not DRY_RUN and egress != d["vif"]:
+            log(f"WARNING: CE IPv6 {d['ce6']} resolves to dev {egress}, expected {d['vif']}",
+                syslog.LOG_WARNING)
+
+    # 4. 不要経路の削除
+    for r in current_tunnel_routes():
+        if r["preseed"]:
+            if r["v4"] not in desired or r["plen"] != "32":
+                del_route(r, "no longer derived from current VLAN config")
+            continue
+        egress = egress_dev_of(r["ce6"])
+        if egress not in active_vifs:
+            del_route(r, f"CE IPv6 unreachable via active MAP-E VLAN (dev={egress})")
+
+    # 5. 近隣エントリの整理
+    keep_ce6 = {r["ce6"] for r in current_tunnel_routes()}
+    if DRY_RUN:
+        keep_ce6 |= {d["ce6"] for d in desired.values()}
+    cleanup_neighbors(active_vifs, keep_ce6)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

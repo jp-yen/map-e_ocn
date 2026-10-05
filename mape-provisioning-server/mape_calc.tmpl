@@ -160,6 +160,8 @@ def setup_tunnel_route(target_ipv4, ce_ipv6, br_ipv6, prefixlen=32, mac=None):
         ).stdout.strip()
 
         is_update = bool(existing)
+        # mape-tunnel-sync の事前登録経路 (proto 250) を上書きする場合は識別子を引き継ぐ
+        keep_proto = ["proto", "250"] if re.search(r"\bproto\s+250\b", existing) else []
         if is_update:
             subprocess.run(["ip", "route", "del", dst_prefix], check=False, capture_output=True)
             syslog.syslog(syslog.LOG_INFO, f"[ROUTE-CLEANUP] Deleted stale route before re-add: {existing}")
@@ -169,6 +171,7 @@ def setup_tunnel_route(target_ipv4, ce_ipv6, br_ipv6, prefixlen=32, mac=None):
             "ip", "route", "add", dst_prefix,
             "src", BR_IPV4_ADDR,
             "dev", tunnel_dev,
+            *keep_proto,
             "encap", "ip6", "src", br_ipv6, "dst", routing_dst_ipv6
         ], check=True, capture_output=True, text=True)
 

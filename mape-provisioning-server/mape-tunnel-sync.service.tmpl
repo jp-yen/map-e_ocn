@@ -1,0 +1,20 @@
+# =============================================================================
+# mape-tunnel-sync.service
+#   (mape-provisioning-server/mape-tunnel-sync.service.tmpl -> gen_mape_mod.pl
+#    tunnel_sync_service -> system/mape-tunnel-sync.service
+#    -> /etc/systemd/system/mape-tunnel-sync.service)
+#   起動時に MAP-E トンネル経路 (mpe-common) を事前一括登録する。
+# =============================================================================
+[Unit]
+Description=MAP-E tunnel route pre-registration (mpe-common)
+After=network-online.target networking.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/mape-tunnel-sync --quiet
+# ExecStop で --flush しない: 再起動のたびにプロビジョニング経由の動的経路まで消えるため
+
+[Install]
+WantedBy=multi-user.target
