@@ -36,12 +36,11 @@
 
 import argparse
 import ipaddress
-import json
 import os
 import re
+import shutil
 import subprocess
 import sys
-import shutil
 import tempfile
 
 # ---------------------------------------------------------------------------
@@ -311,19 +310,6 @@ def extract_kea_opt94_from_conf(conf_file):
 
     return result
 
-def extract_kea_opt94_reservations(conf_file):
-    """kea-dhcp6.conf から Host Reservation の option-data code:94 を抽出する"""
-    with open(conf_file) as f:
-        content = f.read()
-
-    results = []
-    hw_pattern = re.compile(
-        r'"hw-address"\s*:\s*"([0-9a-fA-F:]+)".*?"code"\s*:\s*94.*?"data"\s*:\s*"([0-9a-fA-F]+)"',
-        re.DOTALL
-    )
-    for m in hw_pattern.finditer(content):
-        results.append({"hw-address": m.group(1), "data": m.group(2).lower()})
-    return results
 
 # ---------------------------------------------------------------------------
 # テスト用 map-e.conf の生成
@@ -353,6 +339,66 @@ def generate_test_conf(base_conf, output_path):
             f.write(f'{k}="{safe_v}"\n')
 
     return env
+
+# ---------------------------------------------------------------------------
+# VLAN 固有 reservation 抽出ヘルパー (validate_fixed の内部用)
+# ---------------------------------------------------------------------------
+
+def _extract_reservation_for_vlan(content, env, mode, vlan, mac):
+    """
+    kea-dhcp6.conf の文字列から、指定 mode/VLAN/MAC の opt94 hex を返す。
+
+    固定方式の subnet アドレスは calc_vlan_prefix と同じ算術
+    (BASE は 10 進整数として加算) で決定される:
+      SLAAC固定: base_subnet:{int(SLAAC_FIX_BR_PREFIX) + vlan}::/64
+      HGW固定  : base_subnet:{int(HGW_FIX_BR_BASE)     + vlan}::/64
+      PD固定   : base_subnet:{int(PD_FIX_POOL)          + vlan}::/64
+    """
+    base_subnet = env.get("BASE_SUBNET", "")
+    if mode == "slaac_fix":
+        base = int(env.get("SLAAC_FIX_BR_PREFIX", "3000"))
+    elif mode == "hgw_fix":
+        base = int(env.get("HGW_FIX_BR_BASE", "6000"))
+    elif mode == "pd_fix":
+        base = int(env.get("PD_FIX_POOL", "4000"))
+    else:
+        return None
+
+    hextet = base + vlan
+    target_subnet = f"{base_subnet}:{hextet}::/64"
+
+    subnet_pos = content.find(f'"subnet": "{target_subnet}"')
+    if subnet_pos == -1:
+        return None
+
+    next_subnet = content.find('"subnet":', subnet_pos + len(target_subnet) + 10)
+    search_block = content[subnet_pos: next_subnet] if next_subnet != -1 else content[subnet_pos:]
+
+    m = re.search(
+        r'"hw-address"\s*:\s*"' + re.escape(mac) + r'".*?"code"\s*:\s*94.*?"data"\s*:\s*"([^"]+)"',
+        search_block,
+        re.DOTALL | re.IGNORECASE,
+    )
+    return m.group(1).lower() if m else None
+
+# ---------------------------------------------------------------------------
+# 接続方式別セクション定義 (Validator.run() から参照)
+#   _DYN_SECTIONS: (mode, section_num, label, env_base_key, vlan_range_offset)
+#   _FIX_SECTIONS: (mode, section_num, label, vlan_range_offset)
+#   vlan_range_offset: 0=SLAAC動的, 1=PD動的, 2=SLAAC固定,
+#                      3=PD固定, 4=HGW動的, 5=HGW固定
+# ---------------------------------------------------------------------------
+
+_DYN_SECTIONS = (
+    ("slaac_dyn", "1", "SLAAC動的 ①", "SLAAC_BR_BASE", 0),
+    ("pd_dyn",    "2", "PD動的 ②",    "PD_POOL",       1),
+    ("hgw_dyn",   "5", "HGW動的 ⑤",  "HGW_BR_BASE",   4),
+)
+_FIX_SECTIONS = (
+    ("slaac_fix", "3", "SLAAC固定 ③", 2),
+    ("pd_fix",    "4", "PD固定 ④",    3),
+    ("hgw_fix",   "6", "HGW固定 ⑥",  5),
+)
 
 # ---------------------------------------------------------------------------
 # メイン検証ロジック
@@ -523,49 +569,19 @@ class Validator:
 
         kea_opt94 = extract_kea_opt94_from_conf(kea_conf)
 
-        vlan_s = VLAN_START
+        # VLAN レンジを方式番号順 (①〜⑥) で生成
+        vlan_ranges = [
+            list(range(VLAN_START + i * VLAN_COUNT, VLAN_START + (i + 1) * VLAN_COUNT))
+            for i in range(6)
+        ]
 
-        print("\n[1] SLAAC動的 ①")
-        self.validate_dynamic(
-            "slaac_dyn", "SLAAC_BR_BASE",
-            list(range(vlan_s, vlan_s + VLAN_COUNT)),
-            kea_opt94
-        )
+        for mode, num, label, base_key, offset in _DYN_SECTIONS:
+            print(f"\n[{num}] {label}")
+            self.validate_dynamic(mode, base_key, vlan_ranges[offset], kea_opt94)
 
-        print("\n[2] PD動的 ②")
-        self.validate_dynamic(
-            "pd_dyn", "PD_POOL",
-            list(range(vlan_s + VLAN_COUNT, vlan_s + 2 * VLAN_COUNT)),
-            kea_opt94
-        )
-
-        print("\n[5] HGW動的 ⑤")
-        self.validate_dynamic(
-            "hgw_dyn", "HGW_BR_BASE",
-            list(range(vlan_s + 4 * VLAN_COUNT, vlan_s + 5 * VLAN_COUNT)),
-            kea_opt94
-        )
-
-        print("\n[3] SLAAC固定 ③")
-        self.validate_fixed(
-            "slaac_fix",
-            list(range(vlan_s + 2 * VLAN_COUNT, vlan_s + 3 * VLAN_COUNT)),
-            kea_conf_content,
-        )
-
-        print("\n[4] PD固定 ④")
-        self.validate_fixed(
-            "pd_fix",
-            list(range(vlan_s + 3 * VLAN_COUNT, vlan_s + 4 * VLAN_COUNT)),
-            kea_conf_content,
-        )
-
-        print("\n[6] HGW固定 ⑥")
-        self.validate_fixed(
-            "hgw_fix",
-            list(range(vlan_s + 5 * VLAN_COUNT, vlan_s + 6 * VLAN_COUNT)),
-            kea_conf_content,
-        )
+        for mode, num, label, offset in _FIX_SECTIONS:
+            print(f"\n[{num}] {label}")
+            self.validate_fixed(mode, vlan_ranges[offset], kea_conf_content)
 
         print()
         print("=" * 70)
@@ -580,50 +596,6 @@ class Validator:
             print(f"  RESULT: ALL PASSED ({self.passed} / {self.total} checks)")
             print("=" * 70)
             return True
-
-
-# ---------------------------------------------------------------------------
-# VLAN 固有 reservation 抽出ヘルパー (validate_fixed の内部用)
-# ---------------------------------------------------------------------------
-
-def _extract_reservation_for_vlan(content, env, mode, vlan, mac):
-    """
-    kea-dhcp6.conf の文字列から、指定 mode/VLAN/MAC の opt94 hex を返す。
-
-    固定方式の subnet アドレスは calc_vlan_prefix と同じ算術
-    (BASE は 10 進整数として加算) で決定される:
-      SLAAC固定: base_subnet:{int(SLAAC_FIX_BR_PREFIX) + vlan}::/64
-      HGW固定  : base_subnet:{int(HGW_FIX_BR_BASE)     + vlan}::/64
-      PD固定   : base_subnet:{int(PD_FIX_POOL)          + vlan}::/64
-    """
-    base_subnet = env.get("BASE_SUBNET", "")
-    if mode == "slaac_fix":
-        base = int(env.get("SLAAC_FIX_BR_PREFIX", "3000"))
-    elif mode == "hgw_fix":
-        base = int(env.get("HGW_FIX_BR_BASE", "6000"))
-    elif mode == "pd_fix":
-        base = int(env.get("PD_FIX_POOL", "4000"))
-    else:
-        return None
-
-    hextet = base + vlan
-    target_subnet = f"{base_subnet}:{hextet}::/64"
-
-    # 当該 subnet ブロック開始位置を探す
-    subnet_pos = content.find(f'"subnet": "{target_subnet}"')
-    if subnet_pos == -1:
-        return None
-
-    # 次の subnet ブロック（または EOF）までを検索対象にする
-    next_subnet = content.find('"subnet":', subnet_pos + len(target_subnet) + 10)
-    search_block = content[subnet_pos: next_subnet] if next_subnet != -1 else content[subnet_pos:]
-
-    m = re.search(
-        r'"hw-address"\s*:\s*"' + re.escape(mac) + r'".*?"code"\s*:\s*94.*?"data"\s*:\s*"([^"]+)"',
-        search_block,
-        re.DOTALL | re.IGNORECASE,
-    )
-    return m.group(1).lower() if m else None
 
 
 # ---------------------------------------------------------------------------
@@ -698,7 +670,11 @@ def main():
                 capture_output=True, text=True,
                 env=env_for_perl,
                 cwd=tmpdir,
+                timeout=60,
             )
+        except subprocess.TimeoutExpired:
+            print("[ERROR] gen_kea_configs.pl がタイムアウトしました (60s)", file=sys.stderr)
+            sys.exit(2)
         except FileNotFoundError:
             print("[ERROR] perl が見つかりません", file=sys.stderr)
             sys.exit(2)
