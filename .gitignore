@@ -52,6 +52,7 @@ pppoe/srv-*/
 # --- generator (Perl スクリプト / モジュール) ---
 !generator/*.pl
 !generator/*.pm
+!generator/validate_option94.py
 
 # --- kea-dhcp6 (DHCPv6) ---
 !kea-dhcp6/*.tmpl
