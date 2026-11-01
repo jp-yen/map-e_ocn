@@ -499,9 +499,9 @@ services:
       - ./radvd/radvd.conf:/etc/radvd.conf:ro
       - syslog_socket:/run/syslog:rw
 
-  # 5. DHCPv6 Server (ISC Kea 2.6.1 Official)
+  # 5. DHCPv6 Server (ISC Kea 3.0.5 Official)
   kea-dhcp6:
-    image: docker.cloudsmith.io/isc/docker/kea-dhcp6:2.6.1
+    image: docker.cloudsmith.io/isc/docker/kea-dhcp6:3.0.5
     container_name: kea-dhcp6
     command: ["/usr/sbin/kea-dhcp6", "-c", "/etc/kea/kea-dhcp6.conf"]
     network_mode: host
@@ -511,14 +511,15 @@ services:
     environment:
       - TZ=JST-9
     healthcheck:
-      test: ["CMD", "python3", "-c", "import socket, json; s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect('/run/kea/kea-dhcp6-ctrl.sock'); s.sendall(json.dumps({'command': 'status-get'}).encode()); res=json.loads(s.recv(4096).decode()); exit(res.get('result', 1))"]
+      test: ["CMD-SHELL", "test -S /run/kea/kea-dhcp6-ctrl.sock"]
       interval: 10s
       timeout: 3s
       retries: 3
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - ./kea-dhcp6/kea-dhcp6.conf:/etc/kea/kea-dhcp6.conf:ro
-      - ./kea-dhcp6/kea-map-e-hook:/usr/local/bin/kea-map-e-hook:ro
+      - ./kea-dhcp6/kea-map-e-hook:/usr/share/kea/scripts/kea-map-e-hook:ro
+      - /run/kea:/var/run/kea:rw
       - kea_leases:/var/lib/kea:rw
       - syslog_socket:/run/syslog:rw
 

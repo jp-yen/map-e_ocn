@@ -16,10 +16,10 @@ SAFE_CONFIG_FILE := .map-e.conf.safe
 $(shell sed 's/^\([A-Za-z0-9_]*\)-\([A-Za-z0-9_-]*\)=/\1_\2=/g;s/^\([A-Za-z0-9_]*\)-\([A-Za-z0-9_-]*\)=/\1_\2=/g;s/^\([A-Za-z0-9_]*\)-\([A-Za-z0-9_-]*\)=/\1_\2=/g' $(CONFIG_FILE) > $(SAFE_CONFIG_FILE) 2>/dev/null || cp $(CONFIG_FILE) $(SAFE_CONFIG_FILE))
 
 # ホスト側構文検査・ツール用パッケージ（コンテナ稼働デーモンを除く）
-REQUIRED_PACKAGES := python3 openssl bind9-dnsutils radvd chrony
+REQUIRED_PACKAGES := python3 openssl bind9-dnsutils radvd chrony nftables
 
 .DEFAULT_GOAL := help
-.PHONY: help all clean generate check install packages archive check-root check-user \
+.PHONY: help all clean generate check validate install packages archive check-root check-user \
         generate_ddns_zones update_syslog check_config web-dashboard up down tunnels
 
 $(CONFIG_FILE): map-e.conf.tmpl
@@ -111,6 +111,7 @@ help:
 	@echo "  up             : Docker コンテナを一括起動 (docker compose up -d)"
 	@echo "  down           : Docker コンテナを一括停止 (docker compose down)"
 	@echo "  check          : 各種設定ファイルの構文チェック (要 sudo / コンテナ活用)"
+	@echo "  validate       : Option 94/89/93 の出力リグレッションテスト (一般ユーザー)"
 	@echo "  clean          : 生成された設定ファイル・中間ファイルを削除"
 	@echo "  archive        : ソースコード一式のアーカイブ (MAP-E.tar.xz) を作成"
 	@echo "  packages       : ホスト側に必要な最小限の検証パッケージを導入 (要 sudo)"
@@ -304,10 +305,23 @@ check: check-root
 	    $$KEA_BIN -t $$(pwd)/kea-dhcp6/kea-dhcp6.conf; \
 	elif command -v docker >/dev/null 2>&1; then \
 	    echo "Checking via Docker container (kea-dhcp6)..."; \
-	    docker run --rm --network host -v $$(pwd)/kea-dhcp6/kea-dhcp6.conf:/etc/kea/kea-dhcp6.conf:ro docker.cloudsmith.io/isc/docker/kea-dhcp6:2.6.1 /usr/sbin/kea-dhcp6 -t /etc/kea/kea-dhcp6.conf; \
+	    docker run --rm --network host -v $$(pwd)/kea-dhcp6/kea-dhcp6.conf:/etc/kea/kea-dhcp6.conf:ro docker.cloudsmith.io/isc/docker/kea-dhcp6:3.0.5 /usr/sbin/kea-dhcp6 -t /etc/kea/kea-dhcp6.conf; \
 	else \
 	    echo "Warning: kea-dhcp6 binary or Docker not available for syntax check." >&2; \
 	fi
+
+# -----------------------------------------------------------------------------
+# Option 94 / Option 89 / Option 93 リグレッションテスト
+#   - 一般ユーザーで実行可能 (root 不要)
+#   - テスト専用の設定を一時生成し、gen_kea_configs.pl の実出力と独立計算した
+#     期待値を突き合わせる。変更前後で出力が変わっていないことを確認する。
+#   - このターゲットは「チェック用プログラム (generator/validate_option94.py) の
+#     変更指示」でのみ修正可能。通常の実装変更では変更しないこと。
+# -----------------------------------------------------------------------------
+validate: check-user check_config
+	@echo "--- Option 94/89/93 Regression Test (6 modes x 30 VLANs) ---"
+	@python3 generator/validate_option94.py --conf $(CONFIG_FILE)
+	@echo "--- validate: OK ---"
 
 install: check-root check_config
 	@echo "Installing host network and kernel routing configurations..."

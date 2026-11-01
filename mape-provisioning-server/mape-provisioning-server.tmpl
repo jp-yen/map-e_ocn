@@ -151,15 +151,16 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
             # CE(ce_ipv6)へ届くようルートを設定する(トンネルデバイスの用意も
             # 含めてmape_calc側で一括して行う)。ルート設定に失敗しても
             mac_val = getattr(res, 'mac', None)
-            mape_calc.setup_tunnel_route(target_ipv4, ce_ipv6, BR_IPV6, prefixlen=v4_prefixlen, mac=mac_val)
+            mape_calc.setup_tunnel_route(target_ipv4, ce_ipv6, BR_IPV6, prefixlen=v4_prefixlen, mac=mac_val, psid=target_psid)
 
             # 2. 接続方式と eaBitLength, psIdOffset の対応マッピング（辞書）を定義
-            # 動的(①②⑤)は 商用OCNの1,008ポート仕様（16ポート×63ブロック）に合わせ EA-bits 長 16bit / psIdOffset=6 を採用し、
+            # 動的(①②⑤)は 商用OCNの1,008ポート仕様（16ポート×63ブロック）に合わせ
+            # Kea Option 94 と完全に統一: EA-bits 長 18bit / psIdOffset=6, Rule IPv4 /20, Rule IPv6 /38
             # 固定(③④⑥)は 1台1IP占有のため ea-len=0 / offset-len=0 とする
             EA_BIT_MAP = {
-                'slaac_dyn': 16, 
-                'pd_dyn':    16, 
-                'hgw_dyn':   16, 
+                'slaac_dyn': 18, 
+                'pd_dyn':    18, 
+                'hgw_dyn':   18, 
                 'slaac_fix': 0, 
                 'pd_fix':    0, 
                 'hgw_fix':   0 
@@ -181,39 +182,39 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
             # 3. ルール作成 (商用 OCN / FortiOS 実機仕様準拠)
             # FortiGate (FortiOS) は hostName フィールドを要求するため付与
             # ddns.conf に該当する FQDN があれば優先し、未設定の場合は従来の ce-{target_ipv4}.map.ocn.ad.jp を使用
-            hostname = mape_calc.get_ddns_hostname_for_ip(clean_ip, target_v4=target_ipv4, dev=client_scope.lstrip('%') if client_scope else None)
+            dev_name = client_scope.lstrip('%') if client_scope else None
+            hostname = mape_calc.get_ddns_hostname_for_ip(clean_ip, target_v4=target_ipv4, dev=dev_name)
+            vlan_id = mape_calc.extract_vlan_id(clean_ip, dev=dev_name, mac=mac_val) or 1
 
             # 商用 OCN 実機仕様準拠:
-            # - 動的(①②⑤)は 集約プール (/40) + EA-bits 16bit でルータ側で個別IPv4を自己計算
-            # - 固定(③④⑥)は 1台1IP/サブネット専有のため、クライアント回線の上位56bit (/56) を通知し、余分なオフセット計算を防止
+            # - 動的(①②⑤)は Kea Option 94 と完全に統一された Rule IPv6 /38, Rule IPv4 /20, EA-bits 18bit
+            # - 固定(③④⑥)は 1台1IP/サブネット専有のため、クライアント回線の上位56bit (/56) を通知
             if segment in ('pd_fix', 'slaac_fix', 'hgw_fix'):
                 rule_v6_len = "56"
                 p_net = ipaddress.IPv6Network(f"{clean_ip}/56", strict=False)
                 rule_v6_prefix = str(p_net.network_address)
-            elif segment == 'pd_dyn':
-                rule_v6_len = "40"
-                rule_v6_prefix = "${BASE_SUBNET}:${PD_POOL}::"
-            elif segment == 'hgw_dyn':
-                rule_v6_len = "40"
-                rule_v6_prefix = "${BASE_SUBNET}:${HGW_BR_BASE}::"
-            else:
-                rule_v6_len = "40"
-                rule_v6_prefix = "${BASE_SUBNET}:${SLAAC_BR_BASE}::"
-
-            # 商用実機応答フォーマット:
-            # - 長さ・ビット長等はすべて文字列型 ("56", "32", "0", "0")
-            # - 固定IP (ea_len == 0) では psId キーを出力しない (商用実環境仕様)
-            # - 動的 (ea_len > 0) の場合のみ psId を出力する
-            # - ルート階層は basicMapRules のみとし、hostName は rule 内に格納
-            # - 動的IP (ea_len > 0) の場合、BMR の ipv4Prefix は動的IPプール (10.248.0.0/16) を返し、
-            #   ルーター(CE)側が自身のIPv6 prefixのEA-bitsから個別IPv4アドレスとPSIDを自己計算する (RFC 7597 / OCN仕様)
-            # - 固定IP (ea_len == 0) の場合、BMR の ipv4Prefix は個別固定IP (target_ipv4 / v4_prefixlen) を返す
-            if ea_len > 0:
-                bmr_v4_prefix = getattr(mape_calc, 'BR_IPV4_POOL', BR_IPV4_POOL)
-                bmr_v4_len = getattr(mape_calc, 'BR_IPV4_MASK', BR_IPV4_MASK)
-            else:
                 bmr_v4_prefix = str(target_ipv4)
                 bmr_v4_len = str(v4_prefixlen)
+            else:
+                rule_v6_len = "38"
+                if segment == 'pd_dyn':
+                    base_v6 = f"${{BASE_SUBNET}}:${{PD_POOL}}::"
+                elif segment == 'hgw_dyn':
+                    base_v6 = f"${{BASE_SUBNET}}:${{HGW_BR_BASE}}::"
+                else:
+                    base_v6 = f"${{BASE_SUBNET}}:${{SLAAC_BR_BASE}}::"
+
+                r6_net = ipaddress.IPv6Network(f"{base_v6}/38", strict=False)
+                rule_v6_prefix = str(r6_net.network_address)
+
+                # 全体プール (/16) から各セグメント/VLAN 向けに /20 (4,096 IP空間) を切り出す (Kea と同一)
+                pool_raw = getattr(mape_calc, 'BR_IPV4_POOL', BR_IPV4_POOL)
+                pool_net = ipaddress.IPv4Network(pool_raw if '/' in pool_raw else f"{pool_raw}/16", strict=False)
+                pool_octs = pool_net.network_address.exploded.split('.')
+                v4_sub_idx = (int(vlan_id) - 1) % 16
+                octet2 = (v4_sub_idx * 16) & 0xf0
+                bmr_v4_prefix = f"{pool_octs[0]}.{pool_octs[1]}.{octet2}.0"
+                bmr_v4_len = "20"
 
             rule = {
                 "ipv6Prefix": rule_v6_prefix,

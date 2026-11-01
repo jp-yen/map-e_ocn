@@ -22,7 +22,7 @@ ${KEA_FLEX_OPTIONS}
         {
             "library": "${KEA_HOOKS_DIR}/libdhcp_run_script.so",
             "parameters": {
-                "name": "/usr/local/bin/kea-map-e-hook",
+                "name": "/usr/share/kea/scripts/kea-map-e-hook",
                 "sync": false
             }
         }
@@ -78,10 +78,12 @@ ${KEA_SUBNET6_BLOCKS}
         }
     ],
 
-    "control-socket": {
-        "socket-type": "unix",
-        "socket-name": "/run/kea/kea-dhcp6-ctrl.sock"
-    },
+    "control-sockets": [
+        {
+            "socket-type": "unix",
+            "socket-name": "/var/run/kea/kea-dhcp6-ctrl.sock"
+        }
+    ],
 
     "lease-database": {
         "type": "memfile",

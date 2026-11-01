@@ -227,6 +227,7 @@ sub get_reservations_json {
             $res_blocks[-1] =~ s/\n$//;  # 末尾改行を除去
         }
     
+    my $mac_idx = 0;
     foreach my $mac (sort keys %static_ips) {
         my $ent = $static_ips{$mac};
         my ($ip, $mask) = ref($ent) eq 'HASH' ? ($ent->{ip}, $ent->{mask}) : ($ent, 32);
@@ -241,9 +242,19 @@ sub get_reservations_json {
             base        => $s->{b}
         );
         
+        my $prefixes_field = "";
+        if ($is_pd_fix) {
+            # 提案2: PD固定において、map-e-static-ip.conf に登録された MAC ごとに
+            # /56 プレフィックスを固定予約する (重複防止のためインデックスでオフセット)
+            my $pfx_hextet = sprintf("%02x00", $mac_idx);
+            my $res_prefix = "${base_subnet}:${pd_fix_pool}:${pfx_hextet}::/56";
+            $prefixes_field = "\n                    \"prefixes\": [ \"$res_prefix\" ],";
+            $mac_idx++;
+        }
+
         push @res_blocks, <<~"RESBLOCK";
                 {
-                    "hw-address": "$mac",
+                    "hw-address": "$mac",$prefixes_field
                     "option-data": [
                         {
                             "code": 94,

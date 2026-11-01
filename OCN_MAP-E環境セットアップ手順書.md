@@ -321,12 +321,11 @@ axosyslog                  map-e/axosyslog:latest                            Up 
 bind9                      internetsystemsconsortium/bind9:9.21              Up (healthy)
 central-nat                map-e/central-nat:latest                          Up
 chrony                     map-e/chrony:latest                               Up (healthy)
-kea-dhcp6                  docker.cloudsmith.io/isc/docker/kea-dhcp6:2.6.1   Up (healthy)
-mape-provisioning-server   map-e/provisioning-server:latest                  Up (healthy)
-pppoe-server-ocn           map-e/pppoe-server:latest                         Up
-pppoe-server-vpn_group1    map-e/pppoe-server:latest                         Up
+kea-dhcp6                  docker.cloudsmith.io/isc/docker/kea-dhcp6:3.0.5   Up (healthy)
+mape-provisioning-server   map-e/provisioning-server:latest                  Up
+pppoe-server               map-e/pppoe-server:latest                         Up
 radvd                      map-e/radvd:latest                                Up
-web-dashboard              map-e/web-dashboard:latest                        Up (healthy)
+web-dashboard              map-e/web-dashboard:latest                        Up
 ```
 
 > [!NOTE]

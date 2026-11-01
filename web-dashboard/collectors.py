@@ -242,8 +242,17 @@ def _cleanup_stale_tunnels():
                 if inactive_sec >= 600:  # 10分以上ネイバー不達
                     print(f"[TUNNEL-AUTOCLEAN] Purging stale tunnel route {v4} -> {ce_ip6} (neighbor unseen for {int(inactive_sec)}s)", file=sys.stderr)
                     # 1. mpe-common トンネルルート削除
-                    run_cmd(["ip", "route", "del", f"{v4}/32", "dev", "mpe-common"], privileged=True)
-                    run_cmd(["ip", "route", "del", v4, "dev", "mpe-common"], privileged=True)
+                    dst = f"{v4}/32" if "/" not in v4 else v4
+                    ret_sh, out_sh, _ = run_cmd(["ip", "route", "show", "table", "all", dst, "dev", "mpe-common"])
+                    if ret_sh == 0 and out_sh.strip():
+                        for r_line in out_sh.splitlines():
+                            m_tbl = re.search(r"\btable\s+(\d+)\b", r_line)
+                            tbl_arg = ["table", m_tbl.group(1)] if m_tbl and m_tbl.group(1) != "254" else []
+                            run_cmd(["ip", "route", "del", dst, "dev", "mpe-common", *tbl_arg], privileged=True)
+                    else:
+                        run_cmd(["ip", "route", "del", dst, "dev", "mpe-common"], privileged=True)
+                        if "/" not in v4:
+                            run_cmd(["ip", "route", "del", v4, "dev", "mpe-common"], privileged=True)
 
                     # 2. 静的 (PERMANENT) ネイバーエントリの削除
                     if ce_ip6 and iface:
@@ -773,9 +782,17 @@ class MAPECollector:
                         print(f"[MAPE-PURGE] Purging stale tunnel route for duplicate MAC {hw}: {old_v4} (keeping {newest.get('ipv4')})", file=sys.stderr)
                         try:
                             dst = old_v4 if "/" in old_v4 else f"{old_v4}/32"
-                            run_cmd(["ip", "route", "del", dst, "dev", "mpe-common"], privileged=True)
-                            if "/" not in old_v4:
-                                run_cmd(["ip", "route", "del", old_v4, "dev", "mpe-common"], privileged=True)
+                            # 現在のテーブルから該当 dst のルートのみをピンポイントで削除
+                            ret_sh, out_sh, _ = run_cmd(["ip", "route", "show", "table", "all", dst, "dev", "mpe-common"])
+                            if ret_sh == 0 and out_sh.strip():
+                                for r_line in out_sh.splitlines():
+                                    m_tbl = re.search(r"\btable\s+(\d+)\b", r_line)
+                                    tbl_arg = ["table", m_tbl.group(1)] if m_tbl and m_tbl.group(1) != "254" else []
+                                    run_cmd(["ip", "route", "del", dst, "dev", "mpe-common", *tbl_arg], privileged=True)
+                            else:
+                                run_cmd(["ip", "route", "del", dst, "dev", "mpe-common"], privileged=True)
+                                if "/" not in old_v4:
+                                    run_cmd(["ip", "route", "del", old_v4, "dev", "mpe-common"], privileged=True)
                         except Exception as e:
                             print(f"[MAPE-PURGE] Failed to del route {old_v4}: {e}", file=sys.stderr)
 
@@ -796,23 +813,61 @@ class MAPECollector:
 
     @staticmethod
     def _get_active_tunnels():
-        ret, out, _ = run_cmd(["ip", "route", "show", "dev", "mpe-common"])
+        # table all により PBR テーブル (301..363) と main テーブルの両方を取得
+        ret, out, _ = run_cmd(["ip", "route", "show", "table", "all", "dev", "mpe-common"])
         if ret != 0 or not out.strip():
-            ret, out, _ = run_cmd(["ip", "route", "show"])
+            ret, out, _ = run_cmd(["ip", "route", "show", "dev", "mpe-common"])
+            if ret != 0 or not out.strip():
+                ret, out, _ = run_cmd(["ip", "route", "show"])
 
         tunnels = []
+        pbr_seen_v4 = set()
         if ret == 0:
-            for line in out.splitlines():
+            lines = out.splitlines()
+            # 1巡目: PBR テーブル (301..363) のルートを優先パース
+            for line in lines:
                 m = re.search(r"^([\d\.]+)(?:/(\d+))?\s+encap ip6.*?dst\s+([0-9a-fA-F:]+)", line)
                 if m:
-                    v4 = m.group(1)
-                    plen = m.group(2) or "32"
-                    ce_ip6 = m.group(3)
-                    m_dev = re.search(r"\bdev\s+([^\s]+)", line)
-                    dev = m_dev.group(1) if m_dev else "mpe-common"
-                    display_v4 = f"{v4}/{plen}" if plen != "32" else v4
-                    preseed = bool(re.search(r"\bproto\s+250\b", line))
-                    tunnels.append({"ipv4": display_v4, "raw_ipv4": v4, "prefixlen": plen, "ce_ipv6": ce_ip6, "dev": dev, "preseed": preseed})
+                    m_tbl = re.search(r"\btable\s+(\d+)\b", line)
+                    tbl_id = int(m_tbl.group(1)) if m_tbl else 254
+                    if 301 <= tbl_id <= 363:
+                        v4 = m.group(1)
+                        plen = m.group(2) or "32"
+                        ce_ip6 = m.group(3)
+                        m_dev = re.search(r"\bdev\s+([^\s]+)", line)
+                        dev = m_dev.group(1) if m_dev else "mpe-common"
+                        display_v4 = f"{v4}/{plen}" if plen != "32" else v4
+                        preseed = bool(re.search(r"\bproto\s+250\b", line))
+                        psid = tbl_id - 300
+                        pbr_seen_v4.add(v4)
+                        tunnels.append({
+                            "ipv4": display_v4, "raw_ipv4": v4, "prefixlen": plen,
+                            "ce_ipv6": ce_ip6, "dev": dev, "preseed": preseed,
+                            "table": tbl_id, "psid": psid
+                        })
+
+            # 2巡目: main テーブルのルート (PBR 未登録のもの、固定IP等) を追加
+            for line in lines:
+                m = re.search(r"^([\d\.]+)(?:/(\d+))?\s+encap ip6.*?dst\s+([0-9a-fA-F:]+)", line)
+                if m:
+                    m_tbl = re.search(r"\btable\s+(\d+)\b", line)
+                    tbl_id = int(m_tbl.group(1)) if m_tbl else 254
+                    if tbl_id == 254:
+                        v4 = m.group(1)
+                        if v4 in pbr_seen_v4:
+                            # 既に PBR テーブルで登録されている同一 IPv4 のフォールバックルートは重複表示しない
+                            continue
+                        plen = m.group(2) or "32"
+                        ce_ip6 = m.group(3)
+                        m_dev = re.search(r"\bdev\s+([^\s]+)", line)
+                        dev = m_dev.group(1) if m_dev else "mpe-common"
+                        display_v4 = f"{v4}/{plen}" if plen != "32" else v4
+                        preseed = bool(re.search(r"\bproto\s+250\b", line))
+                        tunnels.append({
+                            "ipv4": display_v4, "raw_ipv4": v4, "prefixlen": plen,
+                            "ce_ipv6": ce_ip6, "dev": dev, "preseed": preseed,
+                            "table": 254, "psid": 0
+                        })
         return tunnels
 
     @staticmethod
@@ -1065,14 +1120,15 @@ class MAPECollector:
 
         mode_display = classify_mape_mode(prefix_str, vlan_val, ce_ip6)
 
-        psid_val = 0
-        try:
-            exp_v6 = ipaddress.IPv6Address(ce_ip6).exploded.split(":")
-            last_hextet = exp_v6[7]
-            if last_hextet != "0000":
-                psid_val = int(last_hextet[:2], 16)
-        except Exception:
-            psid_val = 0
+        psid_val = tunnel.get("psid", 0)
+        if not psid_val:
+            try:
+                exp_v6 = ipaddress.IPv6Address(ce_ip6).exploded.split(":")
+                last_hextet = exp_v6[7]
+                if last_hextet != "0000":
+                    psid_val = int(last_hextet[:2], 16)
+            except Exception:
+                psid_val = 0
 
         tev = tunnel_events.get(v4) or tunnel_events.get(f"{v4}/32") or tunnel_events.get(v4.split('/')[0]) or {}
         tunnel_created = normalize_datetime(tev.get("tunnel_created", "-"))

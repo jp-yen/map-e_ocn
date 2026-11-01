@@ -106,42 +106,6 @@
       flex-wrap: wrap;
     }
 
-    .theme-select-wrap {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      background: var(--bg-card);
-      border: 1px solid var(--border-strong);
-      border-radius: 8px;
-      padding: 2px 8px;
-    }
-
-    .theme-select-label {
-      font-size: 11px;
-      color: var(--text-muted);
-      font-weight: 500;
-      white-space: nowrap;
-    }
-
-    .theme-select {
-      background: transparent;
-      border: none;
-      color: var(--text-strong);
-      font-size: 12px;
-      padding: 6px 20px 6px 4px;
-      cursor: pointer;
-      outline: none;
-      appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 4px center;
-    }
-
-    .theme-select option {
-      background: var(--bg-card);
-      color: var(--text-strong);
-    }
-
     .btn {
       display: inline-flex;
       align-items: center;
@@ -606,12 +570,6 @@
       </div>
     </div>
     <div class="header-actions">
-      <!-- Theme Selector -->
-      <div class="theme-select-wrap">
-        <span class="theme-select-label">🎨 テーマ:</span>
-        <select id="themeSelect" class="theme-select" onchange="onThemeSelectChanged()"></select>
-      </div>
-
       <button class="btn btn-secondary" onclick="loadMapeConf(true)" title="map-e.confから最新設定を再取得">
         <span>🔄</span> 設定を再読込
       </button>
@@ -924,13 +882,13 @@
         title: "① SLAAC (動的)",
         badge: "① SLAAC 動的",
         bannerTitle: "SLAAC 動的セグメント",
-        bannerDesc: "VLANごとの RA プレフィックス (SLAAC_BR_BASE + VLAN) からIPv6を構成。商用 OCN 仕様 (EA-bits=16, Offset=6, PSID-bits=6) により 1,008 ポート (16ポート×63セット) のポート制限を行います。",
+        bannerDesc: "VLANごとの RA プレフィックス (SLAAC_BR_BASE + VLAN) からIPv6を構成。商用 OCN 仕様 (Rule IPv4 /20, Rule IPv6 /38, EA-bits=18, Offset=6, PSID-bits=6) により 1,008 ポート (16ポート×63セット) のポート制限を行います。",
         vlanRequired: true,
         macRequired: false,
         macHint: "入力すると EUI-64 による CE IPv6 / 個別 IPv4 / ポート範囲を算出します。",
         showStaticIp: false,
         showPdPrefix: false,
-        eaLen: 16,
+        eaLen: 18,
         psidLen: 6,
         psidOffset: 6
       },
@@ -938,13 +896,13 @@
         title: "② DHCPv6-PD (動的)",
         badge: "② PD 動的",
         bannerTitle: "DHCPv6-PD 動的セグメント",
-        bannerDesc: "Kea DHCPv6 から /56 プレフィックスを委譲。商用 OCN 仕様 (EA-bits=16, Offset=6, PSID-bits=6) により 1,008 ポート (16ポート×63セット) の動的ポート制限を行います。",
+        bannerDesc: "Kea DHCPv6 から /56 プレフィックスを委譲。商用 OCN 仕様 (Rule IPv4 /20, Rule IPv6 /38, EA-bits=18, Offset=6, PSID-bits=6) により 1,008 ポート (16ポート×63セット) の動的ポート多重化を行います。",
         vlanRequired: false,
         macRequired: false,
         macHint: "CE の MAC アドレス (DUID 計算・個別IP特定用)",
         showStaticIp: false,
         showPdPrefix: true,
-        eaLen: 16,
+        eaLen: 18,
         psidLen: 6,
         psidOffset: 6
       },
@@ -980,13 +938,13 @@
         title: "⑤ HGW配下模擬 (動的)",
         badge: "⑤ HGW 動的",
         bannerTitle: "HGW配下模擬 動的セグメント (RA /64 + DHCP-PD /60 併用)",
-        bannerDesc: "RA広報 (HGW_BR_BASE + VLAN) と DHCPv6-PD (/60 委譲) を提供。RA方式CE対応のため 1 VLAN 1台収容。商用 OCN 仕様 (EA-bits=16, Offset=6) により 1,008 ポート制限を行います。",
+        bannerDesc: "RA広報 (HGW_BR_BASE + VLAN) と DHCPv6-PD (/60 委譲) を提供。商用 OCN 仕様 (Rule IPv4 /20, Rule IPv6 /38, EA-bits=18, Offset=6, PSID-bits=6) により 1,008 ポート多重化を行います。",
         vlanRequired: true,
         macRequired: false,
         macHint: "CE の MAC アドレス (EUI-64 アドレス算出・特定用)",
         showStaticIp: false,
         showPdPrefix: false,
-        eaLen: 16,
+        eaLen: 18,
         psidLen: 6,
         psidOffset: 6
       },
@@ -1256,6 +1214,13 @@
       // 2 & 3. IPv4 Prefix & Length
       let ipv4Prefix = poolNet;
       let ipv4PrefixLen = poolMask;
+      if (['slaac_dyn', 'pd_dyn', 'hgw_dyn'].includes(mode)) {
+        const v4SubIdx = (vlan - 1) % 16;
+        const oct2 = (v4SubIdx * 16) & 0xf0;
+        const poolOcts = poolNet.split('.');
+        ipv4Prefix = `${poolOcts[0]}.${poolOcts[1]}.${oct2}.0`;
+        ipv4PrefixLen = 20;
+      }
 
       // 4 & 5. IPv6 Prefix & Length
       let ipv6Prefix = "";
@@ -1277,29 +1242,26 @@
 
       if (mode === 'slaac_dyn') {
         const vlanHextet = slaacBrBase + vlan;
-        // 商用OCN実機 BMR ルール仕様 (CE-Fortigatre-RA-static.txt L208 / 方針.md 準拠):
-        // ipv6Prefix: BASE_SUBNET::, ipv6PrefixLength: 32 (Flat Mode)
-        ipv6Prefix = `${baseSubnet}::`;
-        ipv6PrefixLen = 32;
+        // 商用OCN実機 BMR ルール仕様 (Option 89 準拠): Rule IPv6 /38
+        ipv6Prefix = `${baseSubnet}:${slaacBrBase}::`;
+        ipv6PrefixLen = 38;
 
-        // 商用 OCN 1,008 ポート仕様: psIdOffset=6, psid-len=6, 1〜63 の PSID
         psidVal = ((vlan - 1) % 63) + 1;
 
-        const poolOctets = poolNet.split('.');
-        let lastByte = 1;
-        if (mac) {
-          const macParts = mac.split(/[:-]/);
-          if (macParts.length === 6) {
-            const rawLast = parseInt(macParts[5], 16);
-            lastByte = (rawLast === 0 || rawLast === 255) ? ((rawLast % 254) + 1) : rawLast;
-          }
-        }
-        const octet2 = vlan % 256;
-        assignedIpv4 = `${poolOctets[0]}.${poolOctets[1]}.${octet2}.${lastByte}`;
+        // RFC 7597 完全計算: Rule IPv4 /20 + EA-bits (18bit: 上位12bit が IPv4 ホスト部)
+        const v4SubIdx = (vlan - 1) % 16;
+        const oct2 = (v4SubIdx * 16) & 0xf0;
+        const poolOcts = poolNet.split('.');
+        const ruleV4Base = (parseInt(poolOcts[0], 10) << 24) | (parseInt(poolOcts[1], 10) << 16) | (oct2 << 8);
 
-        // 動的IP (SLAAC動的):
-        // BMR の ipv4Prefix / ipv4PrefixLength は動的プール (10.248.0.0 / 16)
-        // ルーター(CE)が EA-bits から個別IPv4アドレスとPSIDを自己計算する
+        // CE IPv6: baseSubnet:vlanHextet:psid00::/64
+        const eaH3 = (vlanHextet & 0x03ff); // 10bit
+        const eaH4 = psidVal;               // 8bit
+        const eaBits = (eaH3 << 8) | eaH4;  // 18bit
+        const v4Suffix = (eaBits >> 6) & 0xfff;
+        const fullV4Int = ruleV4Base | v4Suffix;
+        assignedIpv4 = `${(fullV4Int >>> 24) & 0xff}.${(fullV4Int >>> 16) & 0xff}.${(fullV4Int >>> 8) & 0xff}.${fullV4Int & 0xff}`;
+
         const eui64 = mac ? macToEui64(mac) : null;
         ceIpv6 = eui64 ? `${baseSubnet}:${vlanHextet}:${eui64}` : `${baseSubnet}:${vlanHextet}::1`;
         hostName = `ce-${assignedIpv4}.map.ocn.ad.jp`;
@@ -1308,23 +1270,29 @@
         if (customPdPrefix) {
           const parts = customPdPrefix.split('/');
           ipv6Prefix = parts[0].trim().replace(/:+$/, '') + '::';
-          ipv6PrefixLen = parts.length > 1 ? parseInt(parts[1], 10) : 48;
+          ipv6PrefixLen = parts.length > 1 ? parseInt(parts[1], 10) : 38;
         } else {
           ipv6Prefix = `${baseSubnet}:${pdPool}::`;
-          ipv6PrefixLen = 48; // BMR Rule IPv6 Prefix 長 (/48)
+          ipv6PrefixLen = 38; // BMR Rule IPv6 Prefix 長 (/38)
         }
 
         // 商用 OCN 1,008 ポート仕様: psIdOffset=6, psid-len=6, 1〜63 の PSID
         psidVal = ((vlan - 1) % 63) + 1;
 
-        const poolOctets = poolNet.split('.');
-        // RFC 7597 / MAP-E 仕様: /16 + ea-len 8 = 24bit、ホスト部は 0 パディング
-        assignedIpv4 = `${poolOctets[0]}.${poolOctets[1]}.${vlan % 256}.0`;
+        // RFC 7597 完全計算:
+        const v4SubIdx = (vlan - 1) % 16;
+        const oct2 = (v4SubIdx * 16) & 0xf0;
+        const poolOcts = poolNet.split('.');
+        const ruleV4Base = (parseInt(poolOcts[0], 10) << 24) | (parseInt(poolOcts[1], 10) << 16) | (oct2 << 8);
+        const eaBits = psidVal; // PD 委譲プレフィックスでは H3 は 2000固定 (上位10bit=0)、H4=psid
+        const v4Suffix = (eaBits >> 6) & 0xfff;
+        const fullV4Int = ruleV4Base | v4Suffix;
+        assignedIpv4 = `${(fullV4Int >>> 24) & 0xff}.${(fullV4Int >>> 16) & 0xff}.${(fullV4Int >>> 8) & 0xff}.${fullV4Int & 0xff}`;
 
         // 動的IP (PD動的):
-        // BMR の ipv4Prefix / ipv4PrefixLength は動的プール (10.248.0.0 / 16)
-        const v4Hex = `${parseInt(poolOctets[0], 10).toString(16).padStart(2, '0')}${parseInt(poolOctets[1], 10).toString(16).padStart(2, '0')}:${(vlan % 256).toString(16).padStart(2, '0')}00`;
-        ceIpv6 = `${baseSubnet}:${pdPool}:${(vlan % 256).toString(16).padStart(4, '0')}:0:a:${v4Hex}::`;
+        const hexV4_1 = parseInt(poolOcts[0], 10).toString(16).padStart(2, '0') + parseInt(poolOcts[1], 10).toString(16).padStart(2, '0');
+        const hexV4_2 = oct2.toString(16).padStart(2, '0') + '00';
+        ceIpv6 = `${baseSubnet}:${pdPool}:${psidVal.toString(16).padStart(2, '0')}00:a:${hexV4_1}:${hexV4_2}:0`;
         hostName = `ce-${assignedIpv4}.map.ocn.ad.jp`;
 
       } else if (mode === 'slaac_fix') {
@@ -1387,20 +1355,23 @@
       } else if (mode === 'hgw_dyn') {
         const hgwBrBase = parseInt(confVars.HGW_BR_BASE || "5000", 10);
         const vlanHextet = hgwBrBase + vlan;
-        ipv6Prefix = `${baseSubnet}::`;
-        ipv6PrefixLen = 32;
+        ipv6Prefix = `${baseSubnet}:${hgwBrBase}::`;
+        ipv6PrefixLen = 38;
         psidVal = ((vlan - 1) % 63) + 1;
-        const poolOctets = poolNet.split('.');
-        let lastByte = 1;
-        if (mac) {
-          const macParts = mac.split(/[:-]/);
-          if (macParts.length === 6) {
-            const rawLast = parseInt(macParts[5], 16);
-            lastByte = (rawLast === 0 || rawLast === 255) ? ((rawLast % 254) + 1) : rawLast;
-          }
-        }
-        const octet2 = vlan % 256;
-        assignedIpv4 = `${poolOctets[0]}.${poolOctets[1]}.${octet2}.${lastByte}`;
+
+        // RFC 7597 完全計算:
+        const v4SubIdx = (vlan - 1) % 16;
+        const oct2 = (v4SubIdx * 16) & 0xf0;
+        const poolOcts = poolNet.split('.');
+        const ruleV4Base = (parseInt(poolOcts[0], 10) << 24) | (parseInt(poolOcts[1], 10) << 16) | (oct2 << 8);
+
+        const eaH3 = (vlanHextet & 0x03ff); // 10bit
+        const eaH4 = psidVal;               // 8bit
+        const eaBits = (eaH3 << 8) | eaH4;  // 18bit
+        const v4Suffix = (eaBits >> 6) & 0xfff;
+        const fullV4Int = ruleV4Base | v4Suffix;
+        assignedIpv4 = `${(fullV4Int >>> 24) & 0xff}.${(fullV4Int >>> 16) & 0xff}.${(fullV4Int >>> 8) & 0xff}.${fullV4Int & 0xff}`;
+
         const eui64 = mac ? macToEui64(mac) : null;
         ceIpv6 = eui64 ? `${baseSubnet}:${vlanHextet}:${eui64}` : `${baseSubnet}:${vlanHextet}::1`;
         hostName = `ce-${assignedIpv4}.map.ocn.ad.jp`;

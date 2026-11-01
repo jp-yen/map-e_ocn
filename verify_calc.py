@@ -141,37 +141,38 @@ try:
     for k, v in vlan_map.items():
         print(f'  VLAN {k} -> IPv6: {v[0]}, IPv4: {v[1]}')
 
-    # mape_calc の calc_map_e_params で OCN 互換計算および 1,008 ポート (PSID 1〜63) を突き合わせ
-    # PD 動的 (ens19.62): プレフィックス 2400:4150:2000:1200:: -> 第3ヘクステット下位=0, 第4ヘクステット上位=0x12=18
+    # mape_calc の calc_map_e_params で RFC 7597 / OCN 互換計算および 1,008 ポート (PSID 1〜63) を突き合わせ
+    # PD 動的 (ens19.62): BMR Rule IPv4 /20 = 10.218.208.0/20, EA-bits=0x12 -> v4_suffix=0, psid=18
+    # 同一 /20 内の全 CE（PSID 1..63）が外向け IPv4 10.218.208.0 を共有し、ポート多重化 (A+P) される
     v4_pd, ce_v6_pd, seg_pd, psid_pd = mape_calc.calc_map_e_params('2400:4150:2000:1200::', dev='ens19.62')
     print(f'mape_calc PD calc result: v4={v4_pd}, psid={psid_pd}, segment={seg_pd}, ce_v6={ce_v6_pd}')
     assert 1 <= psid_pd <= 63, f"mape_calc PSID ({psid_pd}) must be in 1..63 for 1008-port specification"
     v4_octs = [int(x) for x in v4_pd.split('.')]
-    assert v4_octs[2] == 0, f"PD octet 2 should be 0, got {v4_octs[2]}"
-    assert v4_octs[3] == 18, f"PD octet 3 should be 18, got {v4_octs[3]}"
+    assert v4_octs[2] == 208, f"PD octet 2 should be 208, got {v4_octs[2]}"
+    assert v4_octs[3] == 0, f"PD octet 3 should be 0, got {v4_octs[3]}"
     # RTX 互換 Interface ID: 末尾 block7 は 0000
     exp_v6 = ipaddress.IPv6Address(ce_v6_pd).exploded.split(':')
     assert exp_v6[7] == '0000', f"CE IPv6 last hextet should be 0000, got {exp_v6[7]}"
     print('  [OK] mape_calc PD calculation and RTX compatible synthesis verified successfully.')
 
-    # SLAAC 動的セグメント (ens19.61, vlan 61): 2400:4150:1061:3d00::1 -> 第3ヘクステット下位=0x61=97, 第4ヘクステット上位=0x3d=61
+    # SLAAC 動的セグメント (ens19.61, vlan 61): 2400:4150:1061:3d00::1 -> BMR Rule IPv4 /20 = 10.218.192.0/20, EA=0x613d -> v4_suffix=0x184, psid=61
     v4_slaac, ce_v6_slaac, seg_slaac, psid_slaac = mape_calc.calc_map_e_params('2400:4150:1061:3d00::1', dev='ens19.61')
     print(f'mape_calc SLAAC calc result: v4={v4_slaac}, psid={psid_slaac}, segment={seg_slaac}, ce_v6={ce_v6_slaac}')
     assert psid_slaac == 61, f"SLAAC PSID ({psid_slaac}) must match VLAN 61 PSID (61)"
     v4_slaac_octs = [int(x) for x in v4_slaac.split('.')]
-    assert v4_slaac_octs[2] == 97, f"SLAAC octet 2 should be 97, got {v4_slaac_octs[2]}"
-    assert v4_slaac_octs[3] == 61, f"SLAAC octet 3 should be 61, got {v4_slaac_octs[3]}"
+    assert v4_slaac_octs[2] == 193, f"SLAAC octet 2 should be 193, got {v4_slaac_octs[2]}"
+    assert v4_slaac_octs[3] == 132, f"SLAAC octet 3 should be 132, got {v4_slaac_octs[3]}"
     exp_v6_slaac = ipaddress.IPv6Address(ce_v6_slaac).exploded.split(':')
     assert exp_v6_slaac[7] == '0000', f"CE IPv6 last hextet should be 0000, got {exp_v6_slaac[7]}"
     print('  [OK] mape_calc SLAAC calculation and RTX compatible synthesis verified successfully.')
 
-    # HGW 動的セグメント (ens19.60, vlan 60): 2400:4150:5060:3c10:: -> 第3ヘクステット下位=0x60=96, 第4ヘクステット上位=0x3c=60
+    # HGW 動的セグメント (ens19.60, vlan 60): 2400:4150:5060:3c10:: -> BMR Rule IPv4 /20 = 10.218.176.0/20, EA=0x603c -> v4_suffix=0x180, psid=60
     v4_hgw, ce_v6_hgw, seg_hgw, psid_hgw = mape_calc.calc_map_e_params('2400:4150:5060:3c10::', dev='ens19.60')
     print(f'mape_calc HGW calc result: v4={v4_hgw}, psid={psid_hgw}, segment={seg_hgw}, ce_v6={ce_v6_hgw}')
     assert psid_hgw == 60, f"HGW PSID ({psid_hgw}) must match VLAN 60 PSID (60)"
     v4_hgw_octs = [int(x) for x in v4_hgw.split('.')]
-    assert v4_hgw_octs[2] == 96, f"HGW octet 2 should be 96, got {v4_hgw_octs[2]}"
-    assert v4_hgw_octs[3] == 60, f"HGW octet 3 should be 60, got {v4_hgw_octs[3]}"
+    assert v4_hgw_octs[2] == 177, f"HGW octet 2 should be 177, got {v4_hgw_octs[2]}"
+    assert v4_hgw_octs[3] == 128, f"HGW octet 3 should be 128, got {v4_hgw_octs[3]}"
     exp_v6_hgw = ipaddress.IPv6Address(ce_v6_hgw).exploded.split(':')
     assert exp_v6_hgw[7] == '0000', f"CE IPv6 last hextet should be 0000, got {exp_v6_hgw[7]}"
     print('  [OK] mape_calc HGW calculation and RTX compatible synthesis verified successfully.')

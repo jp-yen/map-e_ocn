@@ -1,7 +1,8 @@
-FROM ghcr.io/axoflow/axosyslog:latest
+FROM ghcr.io/axoflow/axosyslog:4.29.0
 
-# logrotate と tzdata をインストール
-RUN apk add --no-cache logrotate tzdata
+# パッケージ更新と logrotate のインストール
+RUN apk update && apk upgrade && \
+    apk add --no-cache logrotate
 
 # 設定ファイルとエントリポイントスクリプトを配置
 COPY logrotate.conf /etc/logrotate.d/syslog-ng

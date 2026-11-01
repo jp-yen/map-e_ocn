@@ -1,9 +1,7 @@
-FROM python:3.14-slim-trixie
+FROM python:3.15-alpine
 
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        iproute2 bind9-dnsutils && \
-    rm -rf /var/lib/apt/lists/*
+RUN apk update && apk upgrade && \
+    apk add --no-cache iproute2 bind-tools nftables
 
 WORKDIR /app
 

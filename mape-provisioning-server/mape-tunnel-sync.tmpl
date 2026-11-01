@@ -205,11 +205,12 @@ def desired_tunnels(mc):
             continue
         v4 = str(v4)
         vif = f"{MAPE_IF}.{vlan}"
+        cur_psid = psid_of(vlan)
         if v4 in result and result[v4]["ce6"] != ce6:
             log(f"conflict: {v4} -> {result[v4]['ce6']} / {ce6} (VLAN {vlan}); keep first",
                 syslog.LOG_WARNING)
             continue
-        result.setdefault(v4, {"ce6": ce6, "vif": vif, "desc": f"VLAN {vlan} {desc}"})
+        result.setdefault(v4, {"ce6": ce6, "vif": vif, "desc": f"VLAN {vlan} {desc}", "psid": cur_psid})
     return result
 
 
@@ -217,7 +218,7 @@ def desired_tunnels(mc):
 # 既存トンネル経路の取得
 # -----------------------------------------------------------------------------
 def current_tunnel_routes():
-    rc, out = run(["ip", "route", "show", "dev", TUNNEL_DEV])
+    rc, out = run(["ip", "route", "show", "table", "all", "dev", TUNNEL_DEV])
     routes = []
     if rc != 0:
         return routes
@@ -227,11 +228,14 @@ def current_tunnel_routes():
             continue
         dst = m.group(1)
         v4 = dst.split("/")[0]
+        m_tbl = re.search(r"\btable\s+(\d+)\b", line)
+        tbl_id = int(m_tbl.group(1)) if m_tbl else 254  # 254 is main table
         routes.append({
             "dst": dst,
             "v4": v4,
             "plen": dst.split("/")[1] if "/" in dst else "32",
             "ce6": ipaddress.IPv6Address(m.group(2)).compressed,
+            "table": tbl_id,
             "preseed": bool(re.search(rf"\bproto\s+{PRESEED_PROTO}\b", line)),
         })
     return routes
@@ -249,7 +253,7 @@ def ensure_tunnel_dev():
     if run(["ip", "link", "show", TUNNEL_DEV])[0] != 0:
         apply(["ip", "link", "add", TUNNEL_DEV, "type", "ip6tnl", "mode", "any", "external"],
               f"[TUNNEL-CREATE] created {TUNNEL_DEV}")
-    apply(["ip", "link", "set", TUNNEL_DEV, "up"])
+    apply(["ip", "link", "set", TUNNEL_DEV, "mtu", "1460", "up"])
 
 
 def remove_tunnel_dev():
@@ -258,8 +262,9 @@ def remove_tunnel_dev():
 
 
 def del_route(r, reason):
-    apply(["ip", "route", "del", r["dst"], "dev", TUNNEL_DEV],
-          f"[TUNNEL-CLEANUP] deleted {r['dst']} -> {r['ce6']} ({reason})")
+    tbl_arg = ["table", str(r["table"])] if r.get("table") and r["table"] != 254 else []
+    apply(["ip", "route", "del", r["dst"], "dev", TUNNEL_DEV, *tbl_arg],
+          f"[TUNNEL-CLEANUP] deleted {r['dst']} (table {r.get('table', 'main')}) -> {r['ce6']} ({reason})")
 
 
 # -----------------------------------------------------------------------------
@@ -333,31 +338,64 @@ def main():
         cleanup_neighbors(active_vifs, set())
         return 0
 
-    # 2. トンネルデバイス
+    # 2. トンネルデバイスおよび PBR・nftables の準備
     ensure_tunnel_dev()
+    if hasattr(mc, "ensure_mape_pbr_and_nft"):
+        try:
+            mc.ensure_mape_pbr_and_nft()
+        except Exception as e:
+            log(f"ensure_mape_pbr_and_nft failed: {e}", syslog.LOG_WARNING)
 
     # 3. 事前登録
     desired = desired_tunnels(mc)
-    existing = {r["v4"]: r for r in current_tunnel_routes() if r["plen"] == "32"}
+    existing_all = current_tunnel_routes()
+    # (v4, table) をキーにして既存経路を管理
+    existing = {(r["v4"], r.get("table", 254)): r for r in existing_all if r["plen"] == "32"}
+
     for v4, d in sorted(desired.items()):
-        cur = existing.get(v4)
-        if cur and cur["ce6"] == d["ce6"] and cur["preseed"]:
+        psid = d.get("psid", 0)
+        pbr_tbl = (300 + psid) if psid and 1 <= psid <= 63 else None
+
+        # 3-a. PBR テーブルへの登録 (PSID 1..63)
+        if pbr_tbl:
+            cur_pbr = existing.get((v4, pbr_tbl))
+            if cur_pbr and cur_pbr["ce6"] == d["ce6"] and cur_pbr["preseed"]:
+                log(f"[TUNNEL-PBR-OK] {v4} (table {pbr_tbl}) -> {d['ce6']} ({d['desc']})")
+            else:
+                apply(["ip", "route", "replace", f"{v4}/32", "dev", TUNNEL_DEV,
+                       "table", str(pbr_tbl),
+                       "proto", PRESEED_PROTO, "src", BR_IPV4_ADDR,
+                       "encap", "ip6", "src", BR_IPV6, "dst", d["ce6"]],
+                      f"[TUNNEL-PRESEED-PBR] {v4} (table {pbr_tbl}) -> {d['ce6']} ({d['desc']})")
+
+        # 3-b. main テーブル (254) への登録 (フォールバック / 単一CE時用)
+        cur_main = existing.get((v4, 254))
+        if cur_main and cur_main["ce6"] == d["ce6"] and cur_main["preseed"]:
             log(f"[TUNNEL-OK] {v4} -> {d['ce6']} ({d['desc']})")
         else:
             apply(["ip", "route", "replace", f"{v4}/32", "dev", TUNNEL_DEV,
                    "proto", PRESEED_PROTO, "src", BR_IPV4_ADDR,
                    "encap", "ip6", "src", BR_IPV6, "dst", d["ce6"]],
                   f"[TUNNEL-PRESEED] {v4} -> {d['ce6']} ({d['desc']})")
+
         egress = egress_dev_of(d["ce6"])
         if not DRY_RUN and egress != d["vif"]:
             log(f"WARNING: CE IPv6 {d['ce6']} resolves to dev {egress}, expected {d['vif']}",
                 syslog.LOG_WARNING)
 
     # 4. 不要経路の削除
-    for r in current_tunnel_routes():
+    current_all = current_tunnel_routes()
+    for r in current_all:
         if r["preseed"]:
-            if r["v4"] not in desired or r["plen"] != "32":
-                del_route(r, "no longer derived from current VLAN config")
+            tbl = r.get("table", 254)
+            is_valid_pbr = False
+            if 301 <= tbl <= 363:
+                expected_psid = tbl - 300
+                is_valid_pbr = (r["v4"] in desired and desired[r["v4"]].get("psid") == expected_psid and r["plen"] == "32")
+            is_valid_main = (tbl == 254 and r["v4"] in desired and r["plen"] == "32")
+
+            if not (is_valid_pbr or is_valid_main):
+                del_route(r, f"no longer derived from current VLAN config (table {tbl})")
             continue
         egress = egress_dev_of(r["ce6"])
         if egress not in active_vifs:

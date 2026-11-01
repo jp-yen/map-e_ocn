@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 set -e
 
 # /dev/log が無い場合のみ syslog ソケットへリンク (chronyd は /dev/log 経由で直接 syslog 送信)

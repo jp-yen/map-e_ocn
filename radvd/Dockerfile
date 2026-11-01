@@ -1,10 +1,7 @@
-FROM debian:trixie-slim
+FROM alpine:latest
 
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        radvd \
-        procps && \
-    rm -rf /var/lib/apt/lists/*
+RUN apk update && apk upgrade && \
+    apk add --no-cache radvd procps
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -12,3 +9,4 @@ RUN chmod +x /entrypoint.sh
 EXPOSE 546/udp
 
 ENTRYPOINT ["/entrypoint.sh"]
+

@@ -1,14 +1,17 @@
-FROM python:3.11-slim
+FROM python:3.15-slim
 
 # Install system utilities: iproute2 (ip command), procps (ps/kill), iputils-ping (ping), sudo
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    iproute2 \
-    procps \
-    iputils-ping \
-    fping \
-    make \
-    perl \
-    sudo \
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        iproute2 \
+        procps \
+        iputils-ping \
+        fping \
+        make \
+        perl \
+        sudo \
+        nftables \
     && rm -rf /var/lib/apt/lists/*
 
 # ホストと同じ UID 1000 / GID 1000 の abc123 ユーザーを作成し、docker(989)・kea(101) グループへのアクセス権を設定

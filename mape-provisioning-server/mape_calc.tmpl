@@ -83,17 +83,87 @@ def get_tunnel_dev_name(ipv4_str):
 # こちらへ集約する)
 # -----------------------------------------------------------------------------
 
+MAPE_PBR_TABLE_BASE = 300
+MAPE_FWMARK_BASE = 0x100
+_NFT_PBR_INITIALIZED = False
+
+def ensure_mape_pbr_and_nft():
+    """
+    提案3 (アプローチB): BR側での1 IPv4複数CE共有（ポート多重化）を実現するため、
+    nftablesによるPSID判定・fwmark付与ルールと、ポリシーベースルーティング (ip rule)
+    のルックアップテーブル (301..363) を整備する。
+    """
+    global _NFT_PBR_INITIALIZED
+    if _NFT_PBR_INITIALIZED:
+        return
+
+    # 1. ip rule (fwmark 0x101..0x13f -> table 301..363)
+    try:
+        r_rules = subprocess.run(["ip", "rule", "show"], capture_output=True, text=True)
+        rules_text = r_rules.stdout if r_rules.returncode == 0 else ""
+        for psid in range(1, 64):
+            tbl = MAPE_PBR_TABLE_BASE + psid
+            mark_hex = hex(MAPE_FWMARK_BASE | psid)
+            # 既に存在するかチェック
+            if f"fwmark {mark_hex}" not in rules_text and f"lookup {tbl}" not in rules_text:
+                subprocess.run(
+                    ["ip", "rule", "add", "pref", str(tbl), "fwmark", str(mark_hex), "lookup", str(tbl)],
+                    check=False, capture_output=True
+                )
+    except Exception as e:
+        syslog.syslog(syslog.LOG_WARNING, f"[PBR-INIT] Failed to ensure ip rules: {e}")
+
+    # 2. nftables によるポート・PSID マーキング (table ip mape_ap)
+    try:
+        # 既にテーブルが存在していれば nftables の再適用はスキップ
+        chk_nft = subprocess.run(["nft", "list", "table", "ip", "mape_ap"], capture_output=True, text=True)
+        if chk_nft.returncode != 0:
+            pool_str = BR_IPV4_POOL
+            if '/' in pool_str:
+                pool_net = ipaddress.IPv4Network(pool_str, strict=False)
+            else:
+                mask = int(BR_IPV4_MASK) if BR_IPV4_MASK else 16
+                pool_net = ipaddress.IPv4Network(f"{pool_str}/{mask}", strict=False)
+            pool_cidr = str(pool_net)
+
+            nft_script = f"""
+table ip mape_ap {{
+    chain classify_psid {{
+        meta mark != 0 return
+        meta l4proto {{ tcp, udp }} th dport >= 1024 th dport & 0x03f0 != 0 meta mark set 0x100 | ((th dport & 0x03f0) >> 4) return
+        icmp type {{ echo-request, echo-reply }} icmp id >= 1024 icmp id & 0x03f0 != 0 meta mark set 0x100 | ((icmp id & 0x03f0) >> 4) return
+    }}
+    chain prerouting {{
+        type filter hook prerouting priority mangle; policy accept;
+        ip daddr {pool_cidr} jump classify_psid
+    }}
+    chain output {{
+        type route hook output priority mangle; policy accept;
+        ip daddr {pool_cidr} jump classify_psid
+    }}
+}}
+"""
+            nft_res = subprocess.run(["nft", "-f", "-"], input=nft_script, text=True, capture_output=True)
+            if nft_res.returncode == 0:
+                syslog.syslog(syslog.LOG_INFO, "[NFT-INIT] Configured nftables table ip mape_ap for A+P demux")
+            else:
+                syslog.syslog(syslog.LOG_WARNING, f"[NFT-INIT] nftables setup warning: {nft_res.stderr.strip()}")
+        _NFT_PBR_INITIALIZED = True
+    except Exception as e:
+        syslog.syslog(syslog.LOG_WARNING, f"[NFT-INIT] Error setting up nftables: {e}")
+
 def ensure_tunnel_dev(tunnel_dev):
     """
     tunnel_dev という名前の ip6tnl トンネルデバイスがなければ作成してupにする。
     対向(src/dst)はCEごとにルート単位のencapパラメータで指定するため、
     デバイス自体は特定の対向を持たない "external" モードで作成し、複数の
     ルート(=複数CEになり得る)から共有できるようにする。
+    同時に MTU 1460 を設定して商用 MAP-E 規格 (MTU 1460) に準拠させる。
     既に存在する場合は何もしない(冪等)。
     """
     check = subprocess.run(["ip", "link", "show", tunnel_dev], capture_output=True, text=True)
     if check.returncode == 0:
-        subprocess.run(["ip", "link", "set", tunnel_dev, "up"], check=False, capture_output=True)
+        subprocess.run(["ip", "link", "set", tunnel_dev, "mtu", "1460", "up"], check=False, capture_output=True)
         return True
 
     try:
@@ -101,19 +171,21 @@ def ensure_tunnel_dev(tunnel_dev):
             ["ip", "link", "add", tunnel_dev, "type", "ip6tnl", "mode", "any", "external"],
             check=True, capture_output=True, text=True
         )
-        subprocess.run(["ip", "link", "set", tunnel_dev, "up"], check=True, capture_output=True, text=True)
-        syslog.syslog(syslog.LOG_INFO, f"[TUNNEL-CREATE] Created tunnel device: {tunnel_dev}")
+        subprocess.run(["ip", "link", "set", tunnel_dev, "mtu", "1460", "up"], check=True, capture_output=True, text=True)
+        syslog.syslog(syslog.LOG_INFO, f"[TUNNEL-CREATE] Created tunnel device: {tunnel_dev} (mtu 1460)")
         return True
     except subprocess.CalledProcessError as e:
         syslog.syslog(syslog.LOG_ERR,
                        f"[TUNNEL-CREATE] Failed to create tunnel device {tunnel_dev}: {e.stderr}")
         return False
 
-def setup_tunnel_route(target_ipv4, ce_ipv6, br_ipv6, prefixlen=32, mac=None):
+def setup_tunnel_route(target_ipv4, ce_ipv6, br_ipv6, prefixlen=32, mac=None, psid=0):
     """
     target_ipv4/prefixlen 宛のトラフィックが、対応するmap-eトンネルデバイス経由で
     CE(ce_ipv6)へ届くよう、必要なトンネルデバイスの用意とルートの投入を
     まとめて行う。同時に、該当MACが他VLANに残存させた古い近隣キャッシュを削除する。
+    提案3 (アプローチB): psid が 1..63 の場合は PBR テーブル (300 + psid) にも登録し、
+    同一 IPv4 アドレスを複数 CE 間で共有・ポート多重化可能にする。
     """
     dst_prefix = f"{target_ipv4}/{prefixlen}"
     tunnel_dev = get_tunnel_dev_name(target_ipv4)
@@ -160,15 +232,27 @@ def setup_tunnel_route(target_ipv4, ce_ipv6, br_ipv6, prefixlen=32, mac=None):
         ).stdout.strip()
 
         is_update = bool(existing)
-        # mape-tunnel-sync の事前登録経路 (proto 250) を上書きする場合は識別子を引き継ぐ
         keep_proto = ["proto", "250"] if re.search(r"\bproto\s+250\b", existing) else []
-        if is_update:
-            subprocess.run(["ip", "route", "del", dst_prefix], check=False, capture_output=True)
-            syslog.syslog(syslog.LOG_INFO, f"[ROUTE-CLEANUP] Deleted stale route before re-add: {existing}")
 
-        # routing_dst_ipv6 を使用してルートを追加
+        # 提案3 (アプローチB): PSID が 1..63 の場合は PBR ルールとルーティングテーブル (300 + psid) を整備
+        psid_int = int(psid) if psid else 0
+        if 1 <= psid_int <= 63:
+            ensure_mape_pbr_and_nft()
+            pbr_table = MAPE_PBR_TABLE_BASE + psid_int
+            # PBR テーブル内の古いルートを更新
+            subprocess.run([
+                "ip", "route", "replace", dst_prefix,
+                "src", BR_IPV4_ADDR,
+                "dev", tunnel_dev,
+                *keep_proto,
+                "table", str(pbr_table),
+                "encap", "ip6", "src", br_ipv6, "dst", routing_dst_ipv6
+            ], check=False, capture_output=True)
+            syslog.syslog(syslog.LOG_INFO, f"[PBR-ROUTE] Injected route {dst_prefix} -> table {pbr_table} (PSID={psid_int})")
+
+        # main テーブルにもルートを追加・更新 (未分類パケットやフォールバック用)
         subprocess.run([
-            "ip", "route", "add", dst_prefix,
+            "ip", "route", "replace", dst_prefix,
             "src", BR_IPV4_ADDR,
             "dev", tunnel_dev,
             *keep_proto,
@@ -189,7 +273,7 @@ def setup_tunnel_route(target_ipv4, ce_ipv6, br_ipv6, prefixlen=32, mac=None):
 
         event_type = "TUNNEL_UPDATE" if is_update else "TUNNEL_CREATE"
         syslog.syslog(syslog.LOG_INFO,
-                       f"[{event_type}] {dst_prefix} -> dev {tunnel_dev} (encap ip6 dst {routing_dst_ipv6})")
+                       f"[{event_type}] {dst_prefix} -> dev {tunnel_dev} (encap ip6 dst {routing_dst_ipv6}, psid={psid_int})")
 
         # トンネルイベントをログファイルへ記録（ダッシュボードがトンネル作成時刻・最終プロビジョニング時刻に利用）
         _write_tunnel_event(event_type, str(dst_prefix), routing_dst_ipv6)
@@ -992,10 +1076,14 @@ def _compute_target_v4(mac, clean_ip, segment, dev=None):
         raise PermissionError(f"Unregistered CE (MAC: {mac}) cannot connect on fixed segment ({segment})")
 
     # 動的セグメント（または固定セグメントで未登録の場合）:
-    # 商用 OCN 1,008 ポート仕様:
-    # 全体プール (/16) から各セグメント/VLAN 向けに /20 (4,096 IP空間) を切り出す。
-    # BMR: prefix4-len=20, ea-len=18 -> PSID長 = 18 - (32 - 20) = 6bit (1,008ポート)
-    # EA-bits 18bit: 上位 12bit が IPv4 ホスト部、下位 6bit が PSID。
+    # RFC 7597 / 商用 OCN 1,008 ポート仕様 (BMR 完全自己計算式):
+    # Rule IPv4: /20 (全体プール /16 から v4_sub_idx に応じて切り出し)
+    # Rule IPv6: /38 (SLAAC_BR_BASE, PD_POOL, HGW_BR_BASE)
+    # EA-bits: 18bit
+    #   - 上位 12bit: IPv4 ホスト部 (Rule IPv4 /20 のホスト部に加算して /32 IPv4 を決定)
+    #   - 下位 6bit: PSID (1..63)
+    # これにより、同一の 12bit IPv4 ホスト部を持つ複数の CE（PSID 1..63）が完全に同一の
+    # 外向け IPv4 アドレスを共有し、ポート多重化 (A+P) されます。
     pool_str = BR_IPV4_POOL
     if '/' in pool_str:
         pool_net = ipaddress.IPv4Network(pool_str, strict=False)
@@ -1004,13 +1092,42 @@ def _compute_target_v4(mac, clean_ip, segment, dev=None):
         pool_net = ipaddress.IPv4Network(f"{pool_str}/{mask}", strict=False)
     pool_octets = pool_net.network_address.exploded.split('.')
 
-    cand = clean_ip if ("::" in clean_ip or clean_ip.count(":") >= 7) else f"{clean_ip}::"
-    v6_bytes = ipaddress.IPv6Network(f"{cand}/64" if is_slaac else f"{cand}/56", strict=False).network_address.packed
-    octet2 = v6_bytes[5]  # 第3ヘクステット下位バイト (VLAN空間, 例: 0x60 = 96)
-    octet3 = v6_bytes[6]  # 第4ヘクステット上位バイト (PSID空間, 例: 0x3c = 60)
+    # VLAN ID の特定 (dev または IPv6 アドレスから算出)
+    vlan_id = 1
+    if dev and "." in dev:
+        v_str = dev.split(".")[-1]
+        if v_str.isdigit():
+            vlan_id = int(v_str)
+    else:
+        try:
+            cand = clean_ip if ("::" in clean_ip or clean_ip.count(":") >= 7) else f"{clean_ip}::"
+            exp = ipaddress.IPv6Network(f"{cand}/64", strict=False).network_address.exploded.split(':')
+            h3 = int(exp[2], 16)
+            if segment == 'slaac_dyn':
+                s_base = int(_CFG.get('SLAAC_BR_BASE', 1000))
+                if h3 > s_base:
+                    vlan_id = h3 - s_base
+            elif segment == 'hgw_dyn':
+                h_base = int(_CFG.get('HGW_BR_BASE', 5000))
+                if h3 > h_base:
+                    vlan_id = h3 - h_base
+        except Exception:
+            vlan_id = 1
 
-    # 1台1IP (重複なし): 全体プール /16 から、セグメント (octet2) と CE (octet3) に応じてユニークな IPv4 を切り出す
-    target_v4 = ipaddress.IPv4Address(f"{pool_octets[0]}.{pool_octets[1]}.{octet2}.{octet3}")
+    # BMR Rule IPv4 /20 (gen_kea_configs / validate_option94 と同一)
+    v4_sub_idx = (vlan_id - 1) % 16
+    octet2 = (v4_sub_idx * 16) & 0xf0
+    rule_v4_net = ipaddress.IPv4Network(f"{pool_octets[0]}.{pool_octets[1]}.{octet2}.0/20")
+
+    # CE IPv6 から EA-bits (18bit: ビット 38〜55) を抽出
+    cand = clean_ip if ("::" in clean_ip or clean_ip.count(":") >= 7) else f"{clean_ip}::"
+    v6_net = ipaddress.IPv6Network(f"{cand}/64" if is_slaac else f"{cand}/56", strict=False)
+    v6_int = int(v6_net.network_address)
+    ea_bits = (v6_int >> 72) & 0x3ffff
+    v4_suffix = (ea_bits >> 6) & 0xfff
+
+    # RFC 7597: Target IPv4 = Rule IPv4 Prefix | v4_suffix
+    target_v4 = ipaddress.IPv4Address(int(rule_v4_net.network_address) | v4_suffix)
     return target_v4, 32, is_slaac
 
 

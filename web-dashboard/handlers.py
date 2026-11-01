@@ -734,14 +734,26 @@ diagnose test application vned 99"""
             pd_res = KeaClient.delete_pd_lease(prefix)
             results.extend(pd_res)
 
-        # 2. Linux カーネルトンネル経路 (mpe-common) 削除
+        # 2. Linux カーネルトンネル経路 (mpe-common) 削除 (PBR テーブル 301..363 および main)
         if ipv4 and ipv4 != "-":
-            ret, _, err = run_cmd(["ip", "route", "del", f"{ipv4}/32", "dev", "mpe-common"], privileged=True)
-            if ret != 0:
-                ret, _, err = run_cmd(["ip", "route", "del", ipv4, "dev", "mpe-common"], privileged=True)
-            results.append(f"Route del {ipv4}: code {ret}")
+            clean_v4 = ipv4.split("/")[0]
+            dst = f"{clean_v4}/32"
+            ret_sh, out_sh, _ = run_cmd(["ip", "route", "show", "table", "all", dst, "dev", "mpe-common"])
+            del_count = 0
+            if ret_sh == 0 and out_sh.strip():
+                for r_line in out_sh.splitlines():
+                    m_tbl = re.search(r"\btable\s+(\d+)\b", r_line)
+                    tbl_arg = ["table", m_tbl.group(1)] if m_tbl and m_tbl.group(1) != "254" else []
+                    ret_d, _, _ = run_cmd(["ip", "route", "del", dst, "dev", "mpe-common", *tbl_arg], privileged=True)
+                    if ret_d == 0:
+                        del_count += 1
+            if del_count == 0:
+                ret, _, err = run_cmd(["ip", "route", "del", dst, "dev", "mpe-common"], privileged=True)
+                if ret != 0:
+                    ret, _, err = run_cmd(["ip", "route", "del", clean_v4, "dev", "mpe-common"], privileged=True)
+            results.append(f"Route del {ipv4}: deleted {del_count} entries")
         else:
-            ret, out, _ = run_cmd(["ip", "route", "show", "dev", "mpe-common"])
+            ret, out, _ = run_cmd(["ip", "route", "show", "table", "all", "dev", "mpe-common"])
             if ret == 0:
                 for line in out.splitlines():
                     match = False
@@ -752,12 +764,14 @@ diagnose test application vned 99"""
                         match = True
                     if match:
                         m_v4 = re.match(r"^([\d\.]+)(?:/32)?", line.strip())
+                        m_tbl = re.search(r"\btable\s+(\d+)\b", line)
+                        tbl_arg = ["table", m_tbl.group(1)] if m_tbl and m_tbl.group(1) != "254" else []
                         if m_v4:
                             del_v4 = m_v4.group(1)
-                            ret_d, _, _ = run_cmd(["ip", "route", "del", f"{del_v4}/32", "dev", "mpe-common"], privileged=True)
+                            ret_d, _, _ = run_cmd(["ip", "route", "del", f"{del_v4}/32", "dev", "mpe-common", *tbl_arg], privileged=True)
                             if ret_d != 0:
-                                ret_d, _, _ = run_cmd(["ip", "route", "del", del_v4, "dev", "mpe-common"], privileged=True)
-                            results.append(f"Route del {del_v4}: code {ret_d}")
+                                ret_d, _, _ = run_cmd(["ip", "route", "del", del_v4, "dev", "mpe-common", *tbl_arg], privileged=True)
+                            results.append(f"Route del {del_v4} (table {m_tbl.group(1) if m_tbl else 'main'}): code {ret_d}")
 
         # 3. NDP キャッシュ削除
         if ce_ipv6 and ce_ipv6 != "-":
