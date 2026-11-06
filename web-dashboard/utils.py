@@ -79,10 +79,10 @@ def load_pppoe_conf_notes():
 
 def load_static_ip_notes():
     """
-    map-e-static-ip.conf を解析し、MACアドレスおよび割当IPごとの備考情報を辞書で返す。
-    形式: MAC, IP, [Note...]
+    map-e-static-ip.conf を解析し、VLAN番号および割当IPごとの備考情報を辞書で返す。
+    形式: VLAN番号, IP, [Note...]
     """
-    notes_by_mac = {}
+    notes_by_key = {}
     notes_by_ip = {}
     candidates = [
         os.path.join(WORKSPACE_DIR, "map-e-static-ip.conf"),
@@ -105,18 +105,18 @@ def load_static_ip_notes():
                         continue
                     parts = [x.strip() for x in line.split(",")]
                     if len(parts) >= 2:
-                        mac = parts[0].lower()
+                        key = parts[0].lower()
                         ip_raw = parts[1]
                         ip_clean = ip_raw.split("/")[0] if "/" in ip_raw else ip_raw
                         note = parts[2] if len(parts) >= 3 else ""
                         if note:
-                            notes_by_mac[mac] = note
+                            notes_by_key[key] = note
                             if ip_clean and ip_clean != "-":
                                 notes_by_ip[ip_clean] = note
         except Exception as e:
             print(f"[Config] Error reading {target_path}: {e}", file=sys.stderr)
 
-    return notes_by_mac, notes_by_ip
+    return notes_by_key, notes_by_ip
 
 
 def load_kea_subnet_vlan_map():

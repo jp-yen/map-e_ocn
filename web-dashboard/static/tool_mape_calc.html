@@ -623,7 +623,7 @@
           <span>VLAN ID</span>
           <span class="badge badge-required" id="vlanBadge">必須</span>
         </label>
-        <input type="number" class="form-control mono" id="vlanInput" value="62" min="1" max="4094" oninput="calculate()">
+        <input type="number" class="form-control mono" id="vlanInput" value="62" min="1" max="4094" oninput="onVlanInput()">
         <div class="input-hint" id="vlanHint">map-e.conf の VLAN 番号を指定してください。</div>
         <div class="quick-chips" id="vlanChips"></div>
       </div>
@@ -896,10 +896,10 @@
         title: "② DHCPv6-PD (動的)",
         badge: "② PD 動的",
         bannerTitle: "DHCPv6-PD 動的セグメント",
-        bannerDesc: "Kea DHCPv6 から /56 プレフィックスを委譲。商用 OCN 仕様 (Rule IPv4 /20, Rule IPv6 /38, EA-bits=18, Offset=6, PSID-bits=6) により 1,008 ポート (16ポート×63セット) の動的ポート多重化を行います。",
-        vlanRequired: false,
+        bannerDesc: "Kea DHCPv6 から VLAN ごとの /56 プレフィックス (PD_POOL + VLAN, 第4ヘクステット上位に PSID 埋込) を委譲。商用 OCN 仕様 (Rule IPv4 /20, Rule IPv6 /38, EA-bits=18, Offset=6, PSID-bits=6) により 1,008 ポート (16ポート×63セット) の動的ポート多重化を行います。",
+        vlanRequired: true,
         macRequired: false,
-        macHint: "CE の MAC アドレス (DUID 計算・個別IP特定用)",
+        macHint: "CE の MAC アドレス (任意)",
         showStaticIp: false,
         showPdPrefix: true,
         eaLen: 18,
@@ -910,10 +910,10 @@
         title: "③ SLAAC (固定IP)",
         badge: "③ SLAAC 固定IP",
         bannerTitle: "SLAAC 固定IPセグメント",
-        bannerDesc: "SLAAC_FIX_BR_PREFIX + VLAN にて固定IPv4アドレスを1台専有。EA-bits=0, ポート全開放 (1-65535) です。",
+        bannerDesc: "SLAAC_FIX_BR_PREFIX + VLAN にて VLAN ごとに固定IPv4アドレスを1台専有。商用 OCN と同様に MAC / EUI-64 非依存。EA-bits=0, ポート全開放 (1-65535) です。",
         vlanRequired: true,
-        macRequired: true,
-        macHint: "固定IP割り当てを map-e-static-ip.conf から引くための識別子です。",
+        macRequired: false,
+        macHint: "任意 (EUI-64 表示確認用。固定IP割り当ては VLAN ID で決まります)",
         showStaticIp: true,
         showPdPrefix: false,
         eaLen: 0,
@@ -924,10 +924,10 @@
         title: "④ DHCPv6-PD (固定IP)",
         badge: "④ PD 固定IP",
         bannerTitle: "DHCPv6-PD 固定IPセグメント",
-        bannerDesc: "固定用プール (PD_FIX_POOL) から /56 委譲を受け、固定IPv4アドレスを1台専有。EA-bits=0, ポート全開放です。",
-        vlanRequired: false,
-        macRequired: true,
-        macHint: "固定IP割り当てを map-e-static-ip.conf から引くための識別子です。",
+        bannerDesc: "PD_FIX_POOL + VLAN から /56 委譲を受け、VLAN ごとに固定IPv4アドレスを1台専有。EA-bits=0, ポート全開放です。",
+        vlanRequired: true,
+        macRequired: false,
+        macHint: "任意 (固定IP割り当ては VLAN ID で決まります)",
         showStaticIp: true,
         showPdPrefix: true,
         eaLen: 0,
@@ -941,7 +941,7 @@
         bannerDesc: "RA広報 (HGW_BR_BASE + VLAN) と DHCPv6-PD (/60 委譲) を提供。商用 OCN 仕様 (Rule IPv4 /20, Rule IPv6 /38, EA-bits=18, Offset=6, PSID-bits=6) により 1,008 ポート多重化を行います。",
         vlanRequired: true,
         macRequired: false,
-        macHint: "CE の MAC アドレス (EUI-64 アドレス算出・特定用)",
+        macHint: "CE の MAC アドレス (任意)",
         showStaticIp: false,
         showPdPrefix: false,
         eaLen: 18,
@@ -952,10 +952,10 @@
         title: "⑥ HGW配下模擬 (固定IP)",
         badge: "⑥ HGW 固定IP",
         bannerTitle: "HGW配下模擬 固定IPセグメント (RA /64 + DHCP-PD /60 併用)",
-        bannerDesc: "RA広報 (HGW_FIX_BR_BASE + VLAN) と DHCPv6-PD (/60 委譲) を提供し、固定IPv4アドレスを1台専有。RA方式CE対応のため 1 VLAN 1台収容。EA-bits=0, ポート全開放です。",
+        bannerDesc: "RA広報 (HGW_FIX_BR_BASE + VLAN) と DHCPv6-PD (/60 委譲) を提供し、VLAN ごとに固定IPv4アドレスを1台専有。商用 OCN と同様に MAC / EUI-64 非依存。EA-bits=0, ポート全開放です。",
         vlanRequired: true,
-        macRequired: true,
-        macHint: "固定IP割り当てを map-e-static-ip.conf から引くための識別子です。",
+        macRequired: false,
+        macHint: "任意 (EUI-64 表示確認用。固定IP割り当ては VLAN ID で決まります)",
         showStaticIp: true,
         showPdPrefix: false,
         eaLen: 0,
@@ -1049,9 +1049,9 @@
       renderVlanChips();
       renderMacChips();
 
-      // 固定IP選択時、すでにMACが入っていれば自動補完
+      // 固定IP選択時、VLAN番号から自動補完
       if (info.showStaticIp) {
-        onMacInput();
+        onVlanInput();
       }
 
       calculate();
@@ -1085,7 +1085,7 @@
           document.getElementById('vlanInput').value = vlan;
           document.querySelectorAll('#vlanChips .chip').forEach(c => c.classList.remove('active'));
           chip.classList.add('active');
-          calculate();
+          onVlanInput();
         };
         container.appendChild(chip);
 
@@ -1096,7 +1096,7 @@
       });
     }
 
-    // 登録済みMACプリセットチップ生成
+    // 登録済み固定IP VLAN プリセットチップ生成
     function renderMacChips() {
       const container = document.getElementById('macChips');
       container.innerHTML = '';
@@ -1108,11 +1108,11 @@
         const chip = document.createElement('button');
         chip.type = 'button';
         chip.className = 'chip';
-        const label = entry.note ? `${entry.note} (${entry.key})` : entry.key;
+        const label = entry.note ? `${entry.note} (VLAN ${entry.key})` : `VLAN ${entry.key}`;
         chip.textContent = label;
-        chip.title = `MAC: ${entry.key}, IP: ${entry.ipv4} ${entry.note || ''}`;
+        chip.title = `VLAN: ${entry.key}, IP: ${entry.ipv4} ${entry.note || ''}`;
         chip.onclick = () => {
-          document.getElementById('macInput').value = entry.key;
+          document.getElementById('vlanInput').value = entry.key;
           if (entry.ipv4 && document.getElementById('staticIpInput')) {
             document.getElementById('staticIpInput').value = entry.ipv4;
           }
@@ -1124,17 +1124,22 @@
       });
     }
 
-    // MAC入力時の自動検出
-    function onMacInput() {
-      const mac = document.getElementById('macInput').value.trim().toLowerCase();
+    // VLAN入力時の固定IP自動検出
+    function onVlanInput() {
+      const vlanStr = document.getElementById('vlanInput').value.trim();
       const entries = confVars.static_entries || [];
-      const match = entries.find(e => e.key.toLowerCase() === mac);
+      const match = entries.find(e => String(e.key).trim() === vlanStr);
       if (match && match.ipv4) {
         const staticIpInput = document.getElementById('staticIpInput');
-        if (staticIpInput && (!staticIpInput.value || staticIpInput.value === '')) {
+        if (staticIpInput) {
           staticIpInput.value = match.ipv4;
         }
       }
+      calculate();
+    }
+
+    // MAC入力時の再計算
+    function onMacInput() {
       calculate();
     }
 
@@ -1263,10 +1268,13 @@
         assignedIpv4 = `${(fullV4Int >>> 24) & 0xff}.${(fullV4Int >>> 16) & 0xff}.${(fullV4Int >>> 8) & 0xff}.${fullV4Int & 0xff}`;
 
         const eui64 = mac ? macToEui64(mac) : null;
-        ceIpv6 = eui64 ? `${baseSubnet}:${vlanHextet}:${eui64}` : `${baseSubnet}:${vlanHextet}::1`;
+        const psidHex4 = `${psidVal.toString(16).padStart(2, '0')}00`;
+        ceIpv6 = eui64 ? `${baseSubnet}:${vlanHextet}:${psidHex4}:${eui64}` : `${baseSubnet}:${vlanHextet}:${psidHex4}::1`;
         hostName = `ce-${assignedIpv4}.map.ocn.ad.jp`;
 
       } else if (mode === 'pd_dyn') {
+        const pdBaseInt = parseInt(pdPool, 10) || 2000;
+        const vlanHextet = pdBaseInt + vlan;
         if (customPdPrefix) {
           const parts = customPdPrefix.split('/');
           ipv6Prefix = parts[0].trim().replace(/:+$/, '') + '::';
@@ -1279,20 +1287,22 @@
         // 商用 OCN 1,008 ポート仕様: psIdOffset=6, psid-len=6, 1〜63 の PSID
         psidVal = ((vlan - 1) % 63) + 1;
 
-        // RFC 7597 完全計算:
+        // RFC 7597 完全計算 (Rule IPv6 /38 + EA-bits 18bit: H3下位10bit + H4上位8bit)
         const v4SubIdx = (vlan - 1) % 16;
         const oct2 = (v4SubIdx * 16) & 0xf0;
         const poolOcts = poolNet.split('.');
         const ruleV4Base = (parseInt(poolOcts[0], 10) << 24) | (parseInt(poolOcts[1], 10) << 16) | (oct2 << 8);
-        const eaBits = psidVal; // PD 委譲プレフィックスでは H3 は 2000固定 (上位10bit=0)、H4=psid
+        const eaH3 = (vlanHextet & 0x03ff); // 10bit
+        const eaH4 = psidVal;               // 8bit
+        const eaBits = (eaH3 << 8) | eaH4;  // 18bit
         const v4Suffix = (eaBits >> 6) & 0xfff;
         const fullV4Int = ruleV4Base | v4Suffix;
         assignedIpv4 = `${(fullV4Int >>> 24) & 0xff}.${(fullV4Int >>> 16) & 0xff}.${(fullV4Int >>> 8) & 0xff}.${fullV4Int & 0xff}`;
 
-        // 動的IP (PD動的):
-        const hexV4_1 = parseInt(poolOcts[0], 10).toString(16).padStart(2, '0') + parseInt(poolOcts[1], 10).toString(16).padStart(2, '0');
-        const hexV4_2 = oct2.toString(16).padStart(2, '0') + '00';
-        ceIpv6 = `${baseSubnet}:${pdPool}:${psidVal.toString(16).padStart(2, '0')}00:a:${hexV4_1}:${hexV4_2}:0`;
+        // 動的IP (PD動的): 委譲 /56 プレフィックス ${baseSubnet}:${vlanHextet}:${psid}00::/56
+        const hexV4_1 = ((fullV4Int >>> 16) & 0xffff).toString(16).padStart(4, '0');
+        const hexV4_2 = (fullV4Int & 0xffff).toString(16).padStart(4, '0');
+        ceIpv6 = `${baseSubnet}:${vlanHextet}:${psidVal.toString(16).padStart(2, '0')}00:0:${hexV4_1}:${hexV4_2}:${psidVal.toString(16)}`;
         hostName = `ce-${assignedIpv4}.map.ocn.ad.jp`;
 
       } else if (mode === 'slaac_fix') {
@@ -1317,18 +1327,20 @@
         psidVal = 0;
 
         const eui64 = mac ? macToEui64(mac) : null;
-        ceIpv6 = eui64 ? `${baseSubnet}:${vlanHextet}:${eui64}` : `${baseSubnet}:${vlanHextet}::1`;
+        ceIpv6 = eui64 ? `${baseSubnet}:${vlanHextet}::${eui64}` : `${baseSubnet}:${vlanHextet}::1`;
 
-        const matchEntry = (confVars.static_entries || []).find(e => e.key.toLowerCase() === mac);
+        const matchEntry = (confVars.static_entries || []).find(e => String(e.key).trim() === String(vlan));
         hostName = matchEntry && matchEntry.note ? matchEntry.note : `ce-${assignedIpv4}.map.ocn.ad.jp`;
 
       } else if (mode === 'pd_fix') {
+        const pdFixBaseInt = parseInt(pdFixPool, 10) || 4000;
+        const vlanHextet = pdFixBaseInt + vlan;
         if (customPdPrefix) {
           const parts = customPdPrefix.split('/');
           ipv6Prefix = parts[0].trim().replace(/:+$/, '') + '::';
           ipv6PrefixLen = parts.length > 1 ? parseInt(parts[1], 10) : 56;
         } else {
-          ipv6Prefix = `${baseSubnet}:${pdFixPool}::`;
+          ipv6Prefix = `${baseSubnet}:${vlanHextet}::`;
           ipv6PrefixLen = 56; // CEへの委譲プレフィックス長 (/56)
         }
 
@@ -1347,9 +1359,9 @@
         }
         assignedIpv4 = ipv4Prefix;
         psidVal = 0;
-        ceIpv6 = `${baseSubnet}:${pdFixPool}:0100::1`;
+        ceIpv6 = `${baseSubnet}:${vlanHextet}::1`;
 
-        const matchEntry = (confVars.static_entries || []).find(e => e.key.toLowerCase() === mac);
+        const matchEntry = (confVars.static_entries || []).find(e => String(e.key).trim() === String(vlan));
         hostName = matchEntry && matchEntry.note ? matchEntry.note : `ce-${assignedIpv4}.map.ocn.ad.jp`;
 
       } else if (mode === 'hgw_dyn') {
@@ -1373,7 +1385,8 @@
         assignedIpv4 = `${(fullV4Int >>> 24) & 0xff}.${(fullV4Int >>> 16) & 0xff}.${(fullV4Int >>> 8) & 0xff}.${fullV4Int & 0xff}`;
 
         const eui64 = mac ? macToEui64(mac) : null;
-        ceIpv6 = eui64 ? `${baseSubnet}:${vlanHextet}:${eui64}` : `${baseSubnet}:${vlanHextet}::1`;
+        const psidHex4 = `${psidVal.toString(16).padStart(2, '0')}00`;
+        ceIpv6 = eui64 ? `${baseSubnet}:${vlanHextet}:${psidHex4}:${eui64}` : `${baseSubnet}:${vlanHextet}:${psidHex4}::1`;
         hostName = `ce-${assignedIpv4}.map.ocn.ad.jp`;
 
       } else if (mode === 'hgw_fix') {
@@ -1397,8 +1410,8 @@
         assignedIpv4 = ipv4Prefix;
         psidVal = 0;
         const eui64 = mac ? macToEui64(mac) : null;
-        ceIpv6 = eui64 ? `${baseSubnet}:${vlanHextet}:${eui64}` : `${baseSubnet}:${vlanHextet}::1`;
-        const matchEntry = (confVars.static_entries || []).find(e => e.key.toLowerCase() === mac);
+        ceIpv6 = eui64 ? `${baseSubnet}:${vlanHextet}::${eui64}` : `${baseSubnet}:${vlanHextet}::1`;
+        const matchEntry = (confVars.static_entries || []).find(e => String(e.key).trim() === String(vlan));
         hostName = matchEntry && matchEntry.note ? matchEntry.note : `ce-${assignedIpv4}.map.ocn.ad.jp`;
       }
 

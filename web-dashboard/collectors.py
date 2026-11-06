@@ -1061,16 +1061,19 @@ class MAPECollector:
                 except Exception:
                     pass
 
-        # 3. 同一 dev 内の Modified EUI-64 neigh から MAC を逆算
+        # 3. 同一 dev 内の近隣エントリから MAC を補完 (Modified EUI-64 優先、なければ非 EUI-64 の有効な近隣 MAC)
         if hwaddr == "-" and iface_val != "-":
             try:
                 ce_net = ipaddress.IPv6Network(f"{ce_ip6}/64", strict=False)
             except Exception:
                 ce_net = None
-            if ce_net:
-                for (nip, ndev), ninfo in neigh_cache.items():
-                    if ndev != iface_val or not ninfo.get("mac"):
-                        continue
+            fallback_dev_mac = None
+            for (nip, ndev), ninfo in neigh_cache.items():
+                if ndev != iface_val or not ninfo.get("mac"):
+                    continue
+                if not fallback_dev_mac:
+                    fallback_dev_mac = ninfo["mac"]
+                if ce_net:
                     try:
                         n_addr = ipaddress.IPv6Address(nip)
                         if n_addr not in ce_net:
@@ -1082,6 +1085,8 @@ class MAPECollector:
                             break
                     except Exception:
                         pass
+            if hwaddr == "-" and fallback_dev_mac:
+                hwaddr = fallback_dev_mac
 
         # 4. gateway_ipv6 で neigh_cache 検索
         if hwaddr == "-" and gw_ip6 != "-":
@@ -1097,19 +1102,9 @@ class MAPECollector:
         # ddns.conf の登録ホスト名があれば優先連動
         try:
             ddns_map = ConfigManager._parse_ddns_conf()
-            ddns_ent = None
-            if hwaddr and hwaddr != "-":
-                mac_norm = hwaddr.lower().replace("-", ":")
-                if ":" not in mac_norm and len(mac_norm) == 12:
-                    mac_norm = ":".join(mac_norm[i:i+2] for i in range(0, 12, 2))
-                ddns_ent = ddns_map.get(mac_norm)
-            if not ddns_ent and vlan_val and vlan_val != "-":
-                ddns_ent = ddns_map.get(str(vlan_val))
+            ddns_ent = ddns_map.get(str(vlan_val)) if (vlan_val and vlan_val != "-") else None
             if ddns_ent:
-                if ddns_ent.get("v4"):
-                    hostname = ddns_ent["v4"]
-                elif ddns_ent.get("v6"):
-                    hostname = ddns_ent["v6"]
+                hostname = ddns_ent.get("v4") or ddns_ent.get("v6") or hostname
         except Exception:
             pass
 
@@ -1151,14 +1146,18 @@ class MAPECollector:
         if tunnel_created == "-" and connect_start != "-":
             tunnel_created = connect_start
 
-        # 備考の取得 (MACまたはIPからマッチング)
+        # 備考の取得 (VLAN番号またはIPからマッチング)
         client_note = ""
         if static_notes_mac:
-            mac_key = hwaddr.strip().lower()
-            if mac_key != "-" and mac_key in static_notes_mac:
-                client_note = static_notes_mac[mac_key]
-        if not client_note and static_notes_ip and v4 != "-" and v4 in static_notes_ip:
-            client_note = static_notes_ip[v4]
+            vlan_key = str(vlan_val).strip().lower()
+            if vlan_key and vlan_key != "-" and vlan_key in static_notes_mac:
+                client_note = static_notes_mac[vlan_key]
+        if not client_note and static_notes_ip and v4 != "-":
+            bare_v4 = v4.split("/")[0]
+            if v4 in static_notes_ip:
+                client_note = static_notes_ip[v4]
+            elif bare_v4 in static_notes_ip:
+                client_note = static_notes_ip[bare_v4]
 
         return {
             "prefix": prefix_str,

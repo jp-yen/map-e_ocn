@@ -28,7 +28,6 @@ our @EXPORT_OK = qw(
     calc_vlan_prefix
     parse_vlan_list
     build_vlan_segments
-    build_psid_hex
     find_template
     load_conf_file
     load_static_ips
@@ -341,8 +340,8 @@ sub find_template {
 
 # ---------------------------------------------------------------------------
 # map-e-static-ip.conf の読み込み
-#   書式: <MAC>,<IP>[/<mask>] [<コメント>]
-#   戻り値: MAC アドレス (小文字) -> IPv4 アドレス のハッシュ
+#   書式: <VLAN番号>,<IP>[/<mask>] [,<コメント>]
+#   戻り値: VLAN番号 (整数) -> { ip => IPv4アドレス, mask => マスク長 } のハッシュ
 # ---------------------------------------------------------------------------
 sub load_static_ips {
     my ($file) = @_;
@@ -351,15 +350,18 @@ sub load_static_ips {
         open my $fh, '<', $file or die "Cannot open $file: $!";
         while (<$fh>) {
             chomp;
+            s/\r$//;
             next if /^\s*#/ || /^\s*$/;
-            my ($mac, $ip_mask) = split(/\s*,\s*/, $_);
-            if ($mac && $ip_mask && $ip_mask =~ /^\d+\.\d+\.\d+\.\d+/) {
-                $mac =~ s/^\s+|\s+$//g;
-                $mac = lc($mac);
+            my ($vlan, $ip_mask) = split(/\s*,\s*/, $_);
+            if (defined $vlan && defined $ip_mask) {
+                $vlan =~ s/^\s+|\s+$//g;
+                next unless $vlan =~ /^\d+$/;
+                $ip_mask =~ s/^\s+|\s+$//g;
+                next unless $ip_mask =~ /^\d+\.\d+\.\d+\.\d+/;
                 my ($ip, $mask) = split(/\//, $ip_mask);
                 $ip =~ s/^\s+|\s+$//g;
-                $mask = defined($mask) ? int($mask) : 32;
-                $map{$mac} = { ip => $ip, mask => $mask };
+                $mask = defined($mask) && $mask =~ /^\d+$/ ? int($mask) : 32;
+                $map{int($vlan)} = { ip => $ip, mask => $mask };
             }
         }
         close $fh;
@@ -550,38 +552,6 @@ sub build_vlan_segments {
     }
 
     return @segments;
-}
-
-# ---------------------------------------------------------------------------
-# PSID 値の計算と hex 変換 (1 バイト)
-#
-#   SLAAC 動的 / PD 動的ともに Option 93 (PortParams) の PSID フィールドに
-#   設定する 1 バイトのプレースホルダー値を生成する。
-#
-#   SLAAC: $base + $vlan の 10 進数値（hextet 値）の上位 1 桁を 16 進変換。
-#          例: base=1000, vlan=101 -> hextet=1101 -> 上位2桁="11" -> 0x11
-#   PD   : $base（文字列）の先頭 2 桁を数値として 16 進変換。
-#          例: base="2000" -> 先頭2桁=20 -> 0x14
-#
-#   この値は Kea の flex-option 式に静的に埋め込まれる参考 PSID であり、
-#   CE 側が EA-bits から自己計算した実 PSID とは別物である点に注意。
-#   (Kea 式内では concat で DUID 末尾とペアにして完全な 1byte を構成する)
-# ---------------------------------------------------------------------------
-sub build_psid_hex {
-    my (%args) = @_;
-    my $type = $args{type} // '';
-    my $base = $args{base} // 0;
-    my $vlan = $args{vlan} // 0;
-
-    if ($type eq 'slaac') {
-        # hextet 値（10 進）の上位 2 桁を 16 進に変換
-        my $hextet = $base + $vlan;
-        return substr(sprintf("%04d", $hextet), 0, 2);
-    } else {
-        # PD: base 文字列先頭 2 桁を数値として解釈し 16 進変換
-        my $psid_val = int(substr(sprintf("%04s", $base), 0, 2)) || 0;
-        return sprintf("%02x", $psid_val);
-    }
 }
 
 1;

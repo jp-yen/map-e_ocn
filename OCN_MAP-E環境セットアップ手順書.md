@@ -26,9 +26,9 @@
 | | `BR_IPV4_POOL` | `198.51.0.0/16` | **CEへ払い出す動的 IPv4 プール（アドレス衝突防止のため /16 固定）** |
 | | `BR_IPV4_ADDR` | `192.0.2.1` | BR IPv4 アドレス (RFC 5737 TEST-NET-1) |
 | **方式別 VLAN** | `SLAAC_DYN_VLANS` | `101 102` | ① SLAAC動的用 VLAN（代表接続例: VLAN `101`、1VLAN 1台収容） |
-| | `PD_DYN_VLANS` | `103 104` | ② DHCPv6-PD動的用 VLAN（代表接続例: VLAN `103`、複数台収容可） |
+| | `PD_DYN_VLANS` | `103 104` | ② DHCPv6-PD動的用 VLAN（代表接続例: VLAN `103`、1VLAN 1台収容） |
 | | `SLAAC_FIX_VLANS` | `105` | ③ SLAAC固定用 VLAN（代表接続例: VLAN `105`、1VLAN 1台収容） |
-| | `PD_FIX_VLANS` | `106` | ④ DHCPv6-PD固定用 VLAN（代表接続例: VLAN `106`、複数台収容可） |
+| | `PD_FIX_VLANS` | `106` | ④ DHCPv6-PD固定用 VLAN（代表接続例: VLAN `106`、1VLAN 1台収容） |
 | | `HGW_VLANS` | `108 109` | ⑤ HGW配下模擬 動的用 VLAN（RA /64 + DHCP-PD /60 併用、1VLAN 1台収容） |
 | | `HGW_FIX_VLANS` | `110 111` | ⑥ HGW配下模擬 固定IPv4用 VLAN（RA /64 + DHCP-PD /60 + 固定IPv4、1VLAN 1台収容） |
 | | `PPPOE_VLANS` | `107` | PPPoE接続用 VLAN（マルチサービス収容） |
@@ -150,7 +150,7 @@ Web 画面上で以下の各項目を設定します：
 3. **PPPoE サービス & アカウント認証情報**:
    - サービス定義、ユーザー名・パスワード、割り当て IP アドレスをテーブル形式または CSV 一括貼り付けで入力
 4. **個別固定 IP マッピング & DDNS マッピング 【任意】**:
-   - 固定 IPv4（方式③・④用）: CE の MAC アドレスと固定 IPv4 の対応表
+   - 固定 IPv4（方式③・④・⑥用）: 回線 VLAN 番号と固定 IPv4 の対応表（商用 OCN と同様に MAC アドレスや EUI-64 に依存せず VLAN 単位で固定 IP を割り当て）
    - DDNS FQDN: CE 接続時に BIND へ自動動的登録するドメイン・ホスト名
 
 #### Step A-4: 「反映を実行（Apply）」による全自動起動
@@ -210,14 +210,14 @@ NAT_ENABLED="0"                    # Central NAT (0: 無効, 1: 有効)
 #### Step B-1.5: 個別マッピング定義 【任意】
 
 * **固定IPv4マッピング (`map-e-static-ip.conf`)**:
-  方式③（SLAAC固定）または方式④（PD固定）で顧客指定の固定IPv4を割り当てる場合、MACアドレスとIPv4の対応表を記述します。
+  方式③（SLAAC固定）、方式④（PD固定）、または方式⑥（HGW固定）で顧客指定の固定IPv4を割り当てる場合、VLAN番号とIPv4の対応表を記述します（MACアドレス不要）。
   ```bash
   vi map-e-static-ip.conf
   ```
   ```text
-  # MACアドレス, 固定IPv4/プレフィックス長
-  00:a0:de:11:22:33,198.51.100.1/32
-  00:a0:de:44:55:66,198.51.200.1/32
+  # VLAN番号, 固定IPv4/プレフィックス長
+  105,198.51.100.1/32
+  106,198.51.200.1/32
   ```
 
 * **DDNSホスト名マッピング (`ddns.conf`)**:
@@ -226,8 +226,8 @@ NAT_ENABLED="0"                    # Central NAT (0: 無効, 1: 有効)
   vi ddns.conf
   ```
   ```text
-  # MACアドレス, IPv6用FQDN, IPv4用FQDN (未登録時は ce-<IPv4アドレス>.map.ocn.ad.jp が自動適用)
-  00:a0:de:11:22:33, cebox1.p-ns.flets-west.jp, cebox1.v4.flets-west.jp
+  # VLAN番号(またはPPPoEユーザー名), IPv6用FQDN, IPv4用FQDN (未登録時は ce-<IPv4アドレス>.map.ocn.ad.jp が自動適用)
+  105, cebox1.p-ns.flets-west.jp, cebox1.v4.flets-west.jp
   ```
 
 #### Step B-2: 設定ファイル & Docker Compose の一括自動生成 (`make generate`)
@@ -274,10 +274,10 @@ sudo make install
 
 | 接続方式 | 設定変数名 | 自動割り当てされるIPv6アドレス帯 | 設定例（VLAN ID: `101`, `BASE_SUBNET="5f00:3aa"`） |
 |---|---|---|---|
-| **① SLAAC動的** | `SLAAC_DYN_VLANS` | `${BASE_SUBNET}:1<VLAN ID>::/64` | `5f00:3aa:1101::/64` （BR側: `::ff0a`） |
-| **② DHCPv6-PD動的** | `PD_DYN_VLANS` | `${BASE_SUBNET}:2000::/40` （全PD VLAN共有、`/56`ずつ各CEへ委譲） | 共通委譲プール: `5f00:3aa:2000::/40` |
-| **③ SLAAC固定** | `SLAAC_FIX_VLANS` | `${BASE_SUBNET}:3<VLAN ID>::/64` | `5f00:3aa:3105::/64` （BR側: `::ff0d`） |
-| **④ DHCPv6-PD固定** | `PD_FIX_VLANS` | ②共通プールより動的委譲。<br>Option 94用Rule Prefix: `${BASE_SUBNET}:4000::/56` | 共通委譲プールより動的委譲 |
+| **① SLAAC動的** | `SLAAC_DYN_VLANS` | `${BASE_SUBNET}:1<VLAN ID>:<PSID>00::/64` | `5f00:3aa:1101:2600::/64` （BR側: `::ff0a`） |
+| **② DHCPv6-PD動的** | `PD_DYN_VLANS` | `${BASE_SUBNET}:2<VLAN ID>:<PSID>00::/56` | `5f00:3aa:2103:2800::/56` |
+| **③ SLAAC固定** | `SLAAC_FIX_VLANS` | `${BASE_SUBNET}:3<VLAN ID>::/64` | `5f00:3aa:3105::/64` （BR側: `::ff0b`） |
+| **④ DHCPv6-PD固定** | `PD_FIX_VLANS` | `${BASE_SUBNET}:4<VLAN ID>::/56` | `5f00:3aa:4106::/56` |
 
 #### 3. Kea flex-option: /16 プール固定によるアドレス重複防止
 - Kea DHCPv6 の flex-option モジュールによる Option 94 合成において、バイト単位抽出による安全な払い出しを担保するため、`BR_IPV4_POOL` は **/16 固定**（例: `198.51.0.0/16`）としています。

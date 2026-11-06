@@ -97,42 +97,11 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
         req_prefix = query_params.get('ipv6Prefix', [None])[0]
         req_prefix_len = query_params.get('ipv6PrefixLength', [None])[0]
 
-        # SLAAC接続とDHCPv6-PD接続 of IP自動判別
+        # SLAAC接続とDHCPv6-PD接続のIP自動判別
+        # 固定IP・動的IPともに回線(VLAN)およびプレフィックスから決定論的に算出されるため、
+        # クライアントのInterface IDがEUI-64かランダム(プライバシー拡張)かに依存しない。
         if req_prefix and req_prefix != '::':
-            # client_ip が req_prefix のネットワーク配下にあり、かつ SLAAC セグメント（MAC復元が必要）の場合のみ client_ip を優先
-            # それ以外（DHCP-PD環境、リンクローカルからの接続、管理/テストIPからの接続など）は要求プレフィックス req_prefix を採用
-            use_client_ip = False
-            if not client_ip.lower().startswith('fe80'):
-                try:
-                    req_net = ipaddress.IPv6Network(req_prefix if '/' in req_prefix else f"{req_prefix}/64", strict=False)
-                    client_addr = ipaddress.IPv6Address(client_ip.split('%')[0])
-                    if client_addr in req_net:
-                        seg = mape_calc.classify_segment(req_prefix, mape_calc._CFG)
-                        if seg in ('slaac_dyn', 'slaac_fix'):
-                            use_client_ip = True
-                except Exception:
-                    pass
-            else:
-                # リンクローカル(fe80)接続の場合、SLAAC環境であれば req_prefix(上位64bit) + client_ipのInterface ID(下位64bit)
-                # を合成してグローバルIPv6(EUI-64)を復元し、MACアドレスを即座に特定・固定IP判定可能にする
-                try:
-                    seg = mape_calc.classify_segment(req_prefix, mape_calc._CFG)
-                    if seg in ('slaac_dyn', 'slaac_fix'):
-                        pfx_clean = req_prefix.split('/')[0].rstrip(':')
-                        ll_addr = ipaddress.IPv6Address(client_ip.split('%')[0])
-                        ll_words = ll_addr.exploded.split(':')
-                        iid_str = ":".join(ll_words[4:])
-                        composed_ip = f"{pfx_clean}:0:{iid_str}"
-                        ipaddress.IPv6Address(composed_ip)
-                        client_ip = composed_ip
-                        use_client_ip = True
-                except Exception:
-                    pass
-
-            if use_client_ip:
-                remote_ipv6 = client_ip
-            else:
-                remote_ipv6 = req_prefix
+            remote_ipv6 = req_prefix
         else:
             remote_ipv6 = client_ip 
 
@@ -153,31 +122,14 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
             mac_val = getattr(res, 'mac', None)
             mape_calc.setup_tunnel_route(target_ipv4, ce_ipv6, BR_IPV6, prefixlen=v4_prefixlen, mac=mac_val, psid=target_psid)
 
-            # 2. 接続方式と eaBitLength, psIdOffset の対応マッピング（辞書）を定義
+            # 2. 接続方式と eaBitLength, psIdOffset の対応
             # 動的(①②⑤)は 商用OCNの1,008ポート仕様（16ポート×63ブロック）に合わせ
             # Kea Option 94 と完全に統一: EA-bits 長 18bit / psIdOffset=6, Rule IPv4 /20, Rule IPv6 /38
             # 固定(③④⑥)は 1台1IP占有のため ea-len=0 / offset-len=0 とする
-            EA_BIT_MAP = {
-                'slaac_dyn': 18, 
-                'pd_dyn':    18, 
-                'hgw_dyn':   18, 
-                'slaac_fix': 0, 
-                'pd_fix':    0, 
-                'hgw_fix':   0 
-            }
-            OFFSET_MAP = {
-                'slaac_dyn': 6, 
-                'pd_dyn':    6, 
-                'hgw_dyn':   6, 
-                'slaac_fix': 0, 
-                'pd_fix':    0, 
-                'hgw_fix':   0 
-            }
-
-            # 該当する方式の値を取得（万が一Noneなら安全に0フォールバック）
-            ea_len = EA_BIT_MAP.get(segment, 0)
-            psid_offset = OFFSET_MAP.get(segment, 0)
-            psid_val = target_psid if segment in ('slaac_dyn', 'pd_dyn', 'hgw_dyn') else 0 
+            is_dyn = segment in ('slaac_dyn', 'pd_dyn', 'hgw_dyn')
+            ea_len = 18 if is_dyn else 0
+            psid_offset = 6 if is_dyn else 0
+            psid_val = target_psid if is_dyn else 0 
 
             # 3. ルール作成 (商用 OCN / FortiOS 実機仕様準拠)
             # FortiGate (FortiOS) は hostName フィールドを要求するため付与

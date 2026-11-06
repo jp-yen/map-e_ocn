@@ -15,12 +15,15 @@
 #        /etc/network/interfaces に記載されたアドレスのみを残し、過去の VLAN 割当
 #        (接続方式変更前) で付与された古いグローバルアドレスを削除する。
 #   2. トンネルデバイス mpe-common の作成 (MAP-E VLAN が 1 つも無ければ削除)
-#   3. 決定論的に算出可能なセグメントのトンネル経路を事前登録 (proto 250)
-#        ① SLAAC動的   : RA /64      (BASE:<SLAAC_BR_BASE+VLAN>:<PSID>00::/64)
-#        ⑤ HGW動的     : RA /64      (BASE:<HGW_BR_BASE+VLAN>:<PSID>00::/64)
+#   3. 決定論的に算出可能な全セグメントのトンネル経路を事前登録 (proto 250)
+#        ① SLAAC動的   : RA /64        (BASE:<SLAAC_BR_BASE+VLAN>:<PSID>00::/64)
+#        ② PD動的      : DHCPv6-PD /56 (BASE:<PD_POOL+VLAN>:<PSID>00::/56)
+#        ③ SLAAC固定   : RA /64        (BASE:<SLAAC_FIX_BR_PREFIX+VLAN>::/64) ※map-e-static-ip.conf登録VLAN
+#        ④ PD固定      : DHCPv6-PD /56 (BASE:<PD_FIX_POOL+VLAN>::/56)         ※map-e-static-ip.conf登録VLAN
+#        ⑤ HGW動的     : RA /64        (BASE:<HGW_BR_BASE+VLAN>:<PSID>00::/64)
 #                        DHCPv6-PD /60 (BASE:<HGW_BR_BASE+VLAN>:<PSID>10::/60)
-#      ※ ②④ PD 系は /40 プールからの委譲のため事前算出不可 (Kea / プロビジョニング経由)
-#      ※ ③⑥ 固定系は MAC 単位の固定IP割当のため事前算出不可 (プロビジョニング経由)
+#        ⑥ HGW固定     : RA /64        (BASE:<HGW_FIX_BR_BASE+VLAN>::/64)     ※map-e-static-ip.conf登録VLAN
+#                        DHCPv6-PD /60 (BASE:<HGW_FIX_BR_BASE+VLAN>:10::/60)  ※map-e-static-ip.conf登録VLAN
 #   4. 不要になったトンネル経路の削除
 #        - 事前登録経路 (proto 250) のうち、現在の VLAN 定義から算出されないもの
 #        - 動的登録経路のうち、CE IPv6 が現在の MAP-E VLAN インターフェースへ到達しないもの
@@ -182,35 +185,55 @@ def sync_vlan_addresses(active_vifs, interfaces_file):
 # 2-3. 事前登録するトンネルの算出
 # -----------------------------------------------------------------------------
 def desired_tunnels(mc):
-    """{ipv4: {"ce6":..., "vif":..., "desc":...}} を返す"""
+    """{ipv4: {"ce6":..., "vif":..., "desc":..., "psid":..., "plen":...}} を返す"""
     cfg = mc._CFG
     base = cfg["BASE_SUBNET"]
     specs = []
     for v in cfg.get("SLAAC_DYN_VLANS", []):
         h3 = int(cfg["SLAAC_BR_BASE"]) + v
-        specs.append((v, "slaac_dyn", f"{base}:{h3}:{psid_of(v):02x}00::", "SLAAC動的 RA/64"))
+        specs.append((v, "slaac_dyn", f"{base}:{h3}:{psid_of(v):02x}00::", "SLAAC動的 RA/64", psid_of(v)))
+    if cfg.get("PD_POOL"):
+        for v in cfg.get("PD_DYN_VLANS", []):
+            h3 = int(cfg["PD_POOL"]) + v
+            specs.append((v, "pd_dyn", f"{base}:{h3}:{psid_of(v):02x}00::", "PD動的 PD/56", psid_of(v)))
+    if cfg.get("SLAAC_FIX_BR_PREFIX"):
+        for v in cfg.get("SLAAC_FIX_VLANS", []):
+            if mc.load_static_map(mc.STATIC_IP_CONF_PATH, v):
+                h3 = int(cfg["SLAAC_FIX_BR_PREFIX"]) + v
+                specs.append((v, "slaac_fix", f"{base}:{h3}::", "SLAAC固定 RA/64", 0))
+    if cfg.get("PD_FIX_POOL"):
+        for v in cfg.get("PD_FIX_VLANS", []):
+            if mc.load_static_map(mc.STATIC_IP_CONF_PATH, v):
+                h3 = int(cfg["PD_FIX_POOL"]) + v
+                specs.append((v, "pd_fix", f"{base}:{h3}::", "PD固定 PD/56", 0))
     if cfg.get("HGW_BR_BASE"):
         for v in cfg.get("HGW_VLANS", []):
             h3 = int(cfg["HGW_BR_BASE"]) + v
-            specs.append((v, "hgw_dyn", f"{base}:{h3}:{psid_of(v):02x}00::", "HGW動的 RA/64"))
-            specs.append((v, "hgw_dyn", f"{base}:{h3}:{psid_of(v):02x}10::", "HGW動的 PD/60"))
+            specs.append((v, "hgw_dyn", f"{base}:{h3}:{psid_of(v):02x}00::", "HGW動的 RA/64", psid_of(v)))
+            specs.append((v, "hgw_dyn", f"{base}:{h3}:{psid_of(v):02x}10::", "HGW動的 PD/60", psid_of(v)))
+    if cfg.get("HGW_FIX_BR_BASE"):
+        for v in cfg.get("HGW_FIX_VLANS", []):
+            if mc.load_static_map(mc.STATIC_IP_CONF_PATH, v):
+                h3 = int(cfg["HGW_FIX_BR_BASE"]) + v
+                specs.append((v, "hgw_fix", f"{base}:{h3}::", "HGW固定 RA/64", 0))
+                specs.append((v, "hgw_fix", f"{base}:{h3}:10::", "HGW固定 PD/60", 0))
 
     result = {}
-    for vlan, seg, prefix, desc in specs:
+    for vlan, seg, prefix, desc, cur_psid in specs:
         try:
-            v4, _plen, is_slaac = mc._compute_target_v4("00:00:00:00:00:00", prefix, seg)[:3]
+            vif = f"{MAPE_IF}.{vlan}"
+            v4, plen, is_slaac = mc._compute_target_v4("00:00:00:00:00:00", prefix, seg, dev=vif)[:3]
             ce6 = mc.convert_to_data_ipv6(prefix, str(v4), target_psid=0, is_slaac=is_slaac)
         except Exception as e:
             log(f"calc failed for VLAN {vlan} ({prefix}): {e}", syslog.LOG_WARNING)
             continue
         v4 = str(v4)
-        vif = f"{MAPE_IF}.{vlan}"
-        cur_psid = psid_of(vlan)
+        plen_str = str(plen)
         if v4 in result and result[v4]["ce6"] != ce6:
             log(f"conflict: {v4} -> {result[v4]['ce6']} / {ce6} (VLAN {vlan}); keep first",
                 syslog.LOG_WARNING)
             continue
-        result.setdefault(v4, {"ce6": ce6, "vif": vif, "desc": f"VLAN {vlan} {desc}", "psid": cur_psid})
+        result.setdefault(v4, {"ce6": ce6, "vif": vif, "desc": f"VLAN {vlan} {desc}", "psid": cur_psid, "plen": plen_str})
     return result
 
 
@@ -349,34 +372,36 @@ def main():
     # 3. 事前登録
     desired = desired_tunnels(mc)
     existing_all = current_tunnel_routes()
-    # (v4, table) をキーにして既存経路を管理
-    existing = {(r["v4"], r.get("table", 254)): r for r in existing_all if r["plen"] == "32"}
+    # (v4, plen, table) をキーにして既存経路を管理
+    existing = {(r["v4"], r["plen"], r.get("table", 254)): r for r in existing_all}
 
     for v4, d in sorted(desired.items()):
         psid = d.get("psid", 0)
+        plen = d.get("plen", "32")
+        dst_cidr = f"{v4}/{plen}"
         pbr_tbl = (300 + psid) if psid and 1 <= psid <= 63 else None
 
         # 3-a. PBR テーブルへの登録 (PSID 1..63)
         if pbr_tbl:
-            cur_pbr = existing.get((v4, pbr_tbl))
+            cur_pbr = existing.get((v4, plen, pbr_tbl))
             if cur_pbr and cur_pbr["ce6"] == d["ce6"] and cur_pbr["preseed"]:
-                log(f"[TUNNEL-PBR-OK] {v4} (table {pbr_tbl}) -> {d['ce6']} ({d['desc']})")
+                log(f"[TUNNEL-PBR-OK] {dst_cidr} (table {pbr_tbl}) -> {d['ce6']} ({d['desc']})")
             else:
-                apply(["ip", "route", "replace", f"{v4}/32", "dev", TUNNEL_DEV,
+                apply(["ip", "route", "replace", dst_cidr, "dev", TUNNEL_DEV,
                        "table", str(pbr_tbl),
                        "proto", PRESEED_PROTO, "src", BR_IPV4_ADDR,
                        "encap", "ip6", "src", BR_IPV6, "dst", d["ce6"]],
-                      f"[TUNNEL-PRESEED-PBR] {v4} (table {pbr_tbl}) -> {d['ce6']} ({d['desc']})")
+                      f"[TUNNEL-PRESEED-PBR] {dst_cidr} (table {pbr_tbl}) -> {d['ce6']} ({d['desc']})")
 
-        # 3-b. main テーブル (254) への登録 (フォールバック / 単一CE時用)
-        cur_main = existing.get((v4, 254))
+        # 3-b. main テーブル (254) への登録 (フォールバック / 単一CE時 / 固定IP用)
+        cur_main = existing.get((v4, plen, 254))
         if cur_main and cur_main["ce6"] == d["ce6"] and cur_main["preseed"]:
-            log(f"[TUNNEL-OK] {v4} -> {d['ce6']} ({d['desc']})")
+            log(f"[TUNNEL-OK] {dst_cidr} -> {d['ce6']} ({d['desc']})")
         else:
-            apply(["ip", "route", "replace", f"{v4}/32", "dev", TUNNEL_DEV,
+            apply(["ip", "route", "replace", dst_cidr, "dev", TUNNEL_DEV,
                    "proto", PRESEED_PROTO, "src", BR_IPV4_ADDR,
                    "encap", "ip6", "src", BR_IPV6, "dst", d["ce6"]],
-                  f"[TUNNEL-PRESEED] {v4} -> {d['ce6']} ({d['desc']})")
+                  f"[TUNNEL-PRESEED] {dst_cidr} -> {d['ce6']} ({d['desc']})")
 
         egress = egress_dev_of(d["ce6"])
         if not DRY_RUN and egress != d["vif"]:
@@ -388,11 +413,13 @@ def main():
     for r in current_all:
         if r["preseed"]:
             tbl = r.get("table", 254)
+            d_ent = desired.get(r["v4"])
+            expected_plen = d_ent.get("plen", "32") if d_ent else None
             is_valid_pbr = False
             if 301 <= tbl <= 363:
                 expected_psid = tbl - 300
-                is_valid_pbr = (r["v4"] in desired and desired[r["v4"]].get("psid") == expected_psid and r["plen"] == "32")
-            is_valid_main = (tbl == 254 and r["v4"] in desired and r["plen"] == "32")
+                is_valid_pbr = bool(d_ent and d_ent.get("psid") == expected_psid and r["plen"] == expected_plen)
+            is_valid_main = bool(tbl == 254 and d_ent and r["plen"] == expected_plen)
 
             if not (is_valid_pbr or is_valid_main):
                 del_route(r, f"no longer derived from current VLAN config (table {tbl})")

@@ -348,22 +348,22 @@
 
           <!-- Static IP & Note Section -->
           <div class="info-card-blue" style="margin-top: 20px; margin-bottom: 12px;">
-            <div style="font-weight:700; margin-bottom:4px; font-size:13.5px;">💡 固定IP・端末備考および DDNS（ホスト名）の登録について</div>
-            ・<strong>固定 IP を割り当てる場合</strong>: VLAN 番号（例: <code>841</code>）または MAC アドレスと 固定 IPv4 アドレス（例: <code>192.168.200.1/32</code>）を入力します。<br>
+            <div style="font-weight:700; margin-bottom:4px; font-size:13.5px;">💡 固定IP・回線備考および DDNS（ホスト名）の登録について</div>
+            ・<strong>固定 IP を割り当てる場合</strong>: VLAN 番号（例: <code>62</code>）と 固定 IPv4 アドレス（例: <code>192.168.200.1/32</code>）を入力します（商用 OCN と同様に MAC アドレスや EUI-64 に依存せず回線 VLAN 単位で固定 IP が割り当てられます）。<br>
             ・<strong>動的 IP のまま備考や DDNS を登録する場合</strong>: 固定 IPv4 アドレスを<strong>空欄</strong>のまま入力してください（動的IP扱いとなります）。<br>
             ・<strong>DDNS ホスト名</strong>: DNS に自動登録するホスト名（例: <code>cebox1.p-ns.flets-west.jp</code>）を入力します（空欄可）。
           </div>
 
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
             <div style="font-weight:600; color:var(--text-strong); font-size:13.5px;">IPoE クライアント登録</div>
-            <button class="btn-add-row" onclick="addStaticIPRow('ipoe')">＋ 端末追加</button>
+            <button class="btn-add-row" onclick="addStaticIPRow('ipoe')">＋ 回線追加</button>
           </div>
 
           <div class="table-editor-container" style="margin-bottom: 8px;">
             <table class="table-editor">
               <thead>
                 <tr>
-                  <th style="width: 16%;" class="config-sortable" onclick="sortConfigTable('ipoeStatic','mac')">VLAN・MACアドレス <span class="config-sort-indicator" id="staticInd-mac"></span></th>
+                  <th style="width: 16%;" class="config-sortable" onclick="sortConfigTable('ipoeStatic','mac')">VLAN 番号 <span class="config-sort-indicator" id="staticInd-mac"></span></th>
                   <th style="width: 16%;" class="config-sortable" onclick="sortConfigTable('ipoeStatic','ip')">固定 IPv4 (空欄で動的) <span class="config-sort-indicator" id="staticInd-ip"></span></th>
                   <th style="width: 18%;" class="config-sortable" onclick="sortConfigTable('ipoeStatic','ddns_v6')">IPv6 DDNS ホスト名 (FQDN) <span class="config-sort-indicator" id="staticInd-ddns_v6"></span></th>
                   <th style="width: 18%;" class="config-sortable" onclick="sortConfigTable('ipoeStatic','ddns_v4')">IPv4 DDNS ホスト名 (FQDN) <span class="config-sort-indicator" id="staticInd-ddns_v4"></span></th>
@@ -482,9 +482,9 @@
               <span>📦</span> ②④ MAP-E (DHCP-PD方式: ひかり電話あり)
             </div>
             <div class="info-card-blue" style="margin-bottom: 14px;">
-              <div style="font-weight:700; margin-bottom:4px; font-size:13px;">ℹ️ DHCP-PD 方式（個別事前設定不要 / 複数台収容可）</div>
-              CE が DHCPv6-PD リクエストを送信すると、Kea DHCPv6 のプレフィックスプール（<code>PD_POOL</code>）から空きプレフィックス（/56）が動的に貸し出され、IPv4 と PSID が自動算出されます。<br>
-              ※ 複数端末を同一 VLAN に収容可能です。
+              <div style="font-weight:700; margin-bottom:4px; font-size:13px;">ℹ️ DHCP-PD 方式（個別事前設定不要 / 1 VLAN 1台収容）</div>
+              CE が DHCPv6-PD リクエストを送信すると、VLAN ごとに割り当てられた /56 プレフィックス（<code>${BASE_SUBNET}:${PD_POOL+VLAN}:${PSID}00::/56</code>）が委譲され、EA-bits から IPv4 と PSID が一意に算出されます。<br>
+              ※ 商用 OCN と同じ「1 VLAN = 1 契約回線（1台収容）」モデルです。
             </div>
             <div class="config-grid-2">
               <div class="config-form-group">

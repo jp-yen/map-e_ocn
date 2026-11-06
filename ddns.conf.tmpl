@@ -2,19 +2,17 @@
 # DDNS (Dynamic DNS) Hostname Mapping Configuration (DDNS設定ファイル)
 # =============================================================================
 # フォーマット:
-# 識別キー (VLAN番号 または MACアドレス または PPPoEユーザー名), IPv6用FQDN, IPv4用FQDN
+# 識別キー (VLAN番号 または PPPoEユーザー名), IPv6用FQDN, IPv4用FQDN
 #
-# ・1列目: VLAN番号 (半角数字)、MACアドレス (12桁Hexまたはコロン区切り)、または PPPoEユーザー名
+# ・1列目: VLAN番号 (半角数字) または PPPoEユーザー名
 # ・2列目: IPv6用FQDN (AAAA レコード + TXT レコードが登録されます。PPPoE等は -)
 # ・3列目: IPv4用FQDN (A レコード + TXT レコードが登録されます)
 # ※ 未登録のクライアントは標準形式 (ce-<IPv4アドレス>.map.ocn.ad.jp) が自動適用されます。
 #
-# --- IPoE (MAP-E) クライアント (MACアドレス指定) ---
-00:00:5e:00:53:01, sample-ix.v6.example.jp, sample-ix.v4.example.jp
-00:00:5e:00:53:02, sample-rtx.v6.example.jp, sample-rtx.v4.example.jp
-00:00:5e:00:53:03, sample-fg.v6.example.jp, sample-fg.v4.example.jp
-
 # --- IPoE (MAP-E) クライアント (VLAN ID 指定) ---
+63, sample-ix.v6.example.jp, sample-ix.v4.example.jp
+64, sample-rtx.v6.example.jp, sample-rtx.v4.example.jp
+65, sample-fg.v6.example.jp, sample-fg.v4.example.jp
 # 101, sample-vlan101.v6.example.jp, sample-vlan101.v4.example.jp
 
 # --- PPPoE クライアント (ユーザー名指定) ---

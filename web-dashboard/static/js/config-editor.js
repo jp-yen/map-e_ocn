@@ -786,11 +786,11 @@ function renderStaticIPTable(type, list) {
   const tbody = document.getElementById(`cfg_${type}_static_tbody`);
   if (!tbody) return;
   if (!list || list.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--text-faint); padding:12px;">固定 IP / 端末備考の登録はありません。「＋ 固定 IP / 端末追加」から登録できます。</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--text-faint); padding:12px;">固定 IP / 回線備考の登録はありません。「＋ 回線追加」から登録できます。</td></tr>`;
   } else {
     tbody.innerHTML = sortStagedList(list, configSortState.ipoeStatic).map(({ item, idx }) => `
         <tr>
-          <td><input type="text" class="table-input" value="${escapeHtml(item.mac || '')}" placeholder="例: 841 または 04:01:a1:8f:a9:3a" oninput="onStaticIPChanged('${type}', ${idx}, 'mac', this.value)"></td>
+          <td><input type="text" class="table-input" value="${escapeHtml(item.mac || '')}" placeholder="例: 62 (VLAN番号)" oninput="onStaticIPChanged('${type}', ${idx}, 'mac', this.value)"></td>
           <td><input type="text" class="table-input" value="${escapeHtml(item.ip || '')}" placeholder="空欄で動的 (例: 192.168.200.1/32)" oninput="onStaticIPChanged('${type}', ${idx}, 'ip', this.value)" onblur="onStaticIPBlur('${type}', ${idx}, this)"></td>
           <td><input type="text" class="table-input ddns-input" value="${escapeHtml(item.ddns_v6 || '')}" placeholder="例: cebox1.p-ns.flets-west.jp" oninput="onStaticIPChanged('${type}', ${idx}, 'ddns_v6', this.value); validateDDNSInput(this);"></td>
           <td><input type="text" class="table-input ddns-input" value="${escapeHtml(item.ddns_v4 || '')}" placeholder="例: cebox1.v4.flets-west.jp" oninput="onStaticIPChanged('${type}', ${idx}, 'ddns_v4', this.value); validateDDNSInput(this);"></td>
@@ -1107,11 +1107,13 @@ function validateConfigData(config) {
       if (!mac && !ip && !note) return;
 
       if (!mac) {
-        errors.push(`固定IP設定: ${rowNum}行目のVLAN・MACアドレスが未入力です。`);
-      } else if (seenMacs.has(mac.toLowerCase())) {
-        errors.push(`固定IP設定: VLAN・MACアドレス「${mac}」が重複しています。`);
+        errors.push(`固定IP設定: ${rowNum}行目のVLAN番号が未入力です。`);
+      } else if (!/^\d+$/.test(mac) || parseInt(mac, 10) < 1 || parseInt(mac, 10) > 4094) {
+        errors.push(`固定IP設定: ${rowNum}行目「${mac}」は有効なVLAN番号（1〜4094の半角数字）ではありません。`);
+      } else if (seenMacs.has(String(parseInt(mac, 10)))) {
+        errors.push(`固定IP設定: VLAN番号「${mac}」が重複しています。`);
       } else {
-        seenMacs.add(mac.toLowerCase());
+        seenMacs.add(String(parseInt(mac, 10)));
       }
 
       // IPv4プレフィックスが空欄の場合は '-' に補完
