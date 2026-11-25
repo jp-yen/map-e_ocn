@@ -16,7 +16,7 @@ from urllib.parse import urlparse, parse_qs
 from constants import WORKSPACE_DIR, STATIC_DIR
 from config import ConfigManager
 from utils import (
-    run_cmd, KeaClient, calc_br_ipv6,
+    run_cmd, KeaClient, calc_br_ipv6, delete_dynamic_mape_routes,
     parse_line_datetime, detect_log_level, fetch_logs_by_type,
     get_container_statuses,
 )
@@ -560,18 +560,15 @@ diagnose test application vned 99"""
 
     def handle_get_mape_conf_vars(self, query):
         """map-e.conf から MAP-E 計算に必要な変数をJSONで返す"""
-        from config import APP_CONFIG
-        cfg = APP_CONFIG
-        raw = cfg.raw_vars if hasattr(cfg, 'raw_vars') else {}
-        # ConfigManager 経由でライブ設定を取得
         live = ConfigManager.get_live_config()
         ll = live.get("low_layer", {})
         ipoe = live.get("ipoe_common", {})
         slaac = live.get("slaac", {})
         dhcp_pd = live.get("dhcp_pd", {})
+        hgw = live.get("hgw", {})
 
         def _g(key, default=""):
-            for d in [ll, ipoe, slaac, dhcp_pd]:
+            for d in [ll, ipoe, slaac, dhcp_pd, hgw]:
                 if key in d and str(d[key]).strip():
                     return str(d[key]).strip()
             return default
@@ -581,15 +578,19 @@ diagnose test application vned 99"""
         # ${BASE_SUBNET} 参照を展開
         br_prefix = br_prefix_raw.replace("${BASE_SUBNET}", base_subnet)
         br_ipv4_addr = _g("BR_IPV4_ADDR", "100.127.255.255")
-        br_ipv4_pool = _g("BR_IPV4_POOL", "10.248.0.0/16")
+        br_ipv4_pool = _g("BR_IPV4_POOL", "10.218.0.0/16")
         slaac_br_base = _g("SLAAC_BR_BASE", "1000")
         slaac_fix_br_prefix = _g("SLAAC_FIX_BR_PREFIX", "3000")
         pd_pool = _g("PD_POOL", "2000")
         pd_fix_pool = _g("PD_FIX_POOL", "4000")
+        hgw_br_base = _g("HGW_BR_BASE", "5000")
+        hgw_fix_br_base = _g("HGW_FIX_BR_BASE", "6000")
         slaac_dyn_vlans = _g("SLAAC_DYN_VLANS", "")
         pd_dyn_vlans = _g("PD_DYN_VLANS", "")
         slaac_fix_vlans = _g("SLAAC_FIX_VLANS", "")
         pd_fix_vlans = _g("PD_FIX_VLANS", "")
+        hgw_vlans = _g("HGW_VLANS", "")
+        hgw_fix_vlans = _g("HGW_FIX_VLANS", "")
 
         # MapeCommon.pm 準拠の BR IPv6 計算
         br_ipv6 = calc_br_ipv6(br_prefix, br_ipv4_addr)
@@ -598,7 +599,7 @@ diagnose test application vned 99"""
         static_entries = []
         for try_path in [
             os.path.join(WORKSPACE_DIR, "map-e-static-ip.conf"),
-            "/etc/map-e/map-e-static-ip.conf"
+            "/etc/map-e-static-ip.conf",
         ]:
             if os.path.exists(try_path):
                 try:
@@ -628,10 +629,14 @@ diagnose test application vned 99"""
             "SLAAC_FIX_BR_PREFIX": slaac_fix_br_prefix,
             "PD_POOL": pd_pool,
             "PD_FIX_POOL": pd_fix_pool,
+            "HGW_BR_BASE": hgw_br_base,
+            "HGW_FIX_BR_BASE": hgw_fix_br_base,
             "SLAAC_DYN_VLANS": slaac_dyn_vlans,
             "PD_DYN_VLANS": pd_dyn_vlans,
             "SLAAC_FIX_VLANS": slaac_fix_vlans,
             "PD_FIX_VLANS": pd_fix_vlans,
+            "HGW_VLANS": hgw_vlans,
+            "HGW_FIX_VLANS": hgw_fix_vlans,
             "static_entries": static_entries,
         })
 
@@ -729,19 +734,7 @@ diagnose test application vned 99"""
 
         # 2. Linux カーネルトンネル経路 (mpe-common) 削除 (proto 250 事前登録ルートは維持・再同期)
         if ipv4 and ipv4 != "-":
-            clean_v4 = ipv4.split("/")[0]
-            dst = f"{clean_v4}/32"
-            ret_sh, out_sh, _ = run_cmd(["ip", "route", "show", "table", "all", dst, "dev", "mpe-common"])
-            del_count = 0
-            if ret_sh == 0 and out_sh.strip():
-                for r_line in out_sh.splitlines():
-                    if re.search(r"\bproto\s+250\b", r_line):
-                        continue
-                    m_tbl = re.search(r"\btable\s+(\d+)\b", r_line)
-                    tbl_arg = ["table", m_tbl.group(1)] if m_tbl and m_tbl.group(1) != "254" else []
-                    ret_d, _, _ = run_cmd(["ip", "route", "del", dst, "dev", "mpe-common", *tbl_arg], privileged=True)
-                    if ret_d == 0:
-                        del_count += 1
+            del_count = delete_dynamic_mape_routes(ipv4)
             results.append(f"Route del {ipv4}: deleted {del_count} dynamic entries")
 
         # 3. NDP キャッシュ削除 & 事前登録ルート整合 (CE 再接続時に Option 94 / キャッシュのみで即開通できるよう維持)
@@ -792,19 +785,7 @@ diagnose test application vned 99"""
                         del_pd_routes += 1
 
         # 3. mpe-common 上の動的トンネルルート (proto 250 以外) を削除
-        ret_rt, out_rt, _ = run_cmd(["ip", "route", "show", "table", "all", "dev", "mpe-common"])
-        if ret_rt == 0 and out_rt:
-            for r_line in out_rt.splitlines():
-                if re.search(r"\bproto\s+250\b", r_line):
-                    continue
-                m_dst = re.match(r"^(\S+)\s+encap\s+ip6\b", r_line.strip())
-                if not m_dst:
-                    continue
-                dst = m_dst.group(1)
-                m_tbl = re.search(r"\btable\s+(\d+)\b", r_line)
-                tbl_arg = ["table", m_tbl.group(1)] if m_tbl and m_tbl.group(1) != "254" else []
-                if run_cmd(["ip", "route", "del", dst, "dev", "mpe-common", *tbl_arg], privileged=True)[0] == 0:
-                    del_tun_routes += 1
+        del_tun_routes = delete_dynamic_mape_routes()
 
         # 4. MAP-E VLAN 上の PERMANENT / グローバル NDP キャッシュを一掃 (旧 MAC 残存防止)
         ret_nb, out_nb, _ = run_cmd(["ip", "-6", "neigh", "show"])

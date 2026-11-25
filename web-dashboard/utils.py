@@ -256,10 +256,10 @@ def classify_mape_mode(prefix_str, vlan_str, ce_ip6, config=None):
         except Exception:
             pass
 
-    # 第4ヘクステットが 0010 番台（HGW配下 /60 委譲）か判定
+    # 第4ヘクステット下位バイトが 10 番台以上（HGW配下 /60 委譲: 動的 XX10 / 固定 0010）か判定
     is_hgw_pd_addr = False
     try:
-        if fourth_hextet and int(fourth_hextet, 16) >= 0x0010 and int(fourth_hextet, 16) <= 0x00ff:
+        if fourth_hextet and (int(fourth_hextet, 16) & 0x00ff) >= 0x0010:
             is_hgw_pd_addr = True
     except Exception:
         pass
@@ -300,11 +300,11 @@ def classify_mape_mode(prefix_str, vlan_str, ce_ip6, config=None):
         elif seg.startswith("4"):
             return "DHCP-PD (固定IP)"
         elif seg.startswith("5"):
-            if is_pd_prefix or is_hgw_pd_addr or seg == hgw_pool_hex:
+            if is_pd_prefix or is_hgw_pd_addr:
                 return "HGW・DHCP-PD (動的)"
             return "HGW・SLAAC (動的)"
         elif seg.startswith("6"):
-            if is_pd_prefix or is_hgw_pd_addr or seg == hgw_fix_pool_hex:
+            if is_pd_prefix or is_hgw_pd_addr:
                 return "HGW・DHCP-PD (固定IP)"
             return "HGW・SLAAC (固定IP)"
 
@@ -321,6 +321,38 @@ def run_cmd(args, timeout=5, cwd=None, privileged=False):
         return res.returncode, res.stdout, res.stderr
     except Exception as e:
         return -1, "", str(e)
+
+
+def delete_dynamic_mape_routes(ipv4_or_cidr=None):
+    """
+    mpe-common 上の動的トンネル経路を削除し、削除件数を返す。
+    mape-tunnel-sync による事前登録ルート (proto 250) は常に保護する。
+    ipv4_or_cidr を省略した場合は全宛先の動的トンネル経路を対象とする。
+    """
+    show_cmd = ["ip", "route", "show", "table", "all"]
+    if ipv4_or_cidr and ipv4_or_cidr != "-":
+        clean = ipv4_or_cidr.strip()
+        dst_filter = clean if "/" in clean else f"{clean}/32"
+        show_cmd.append(dst_filter)
+    show_cmd.extend(["dev", "mpe-common"])
+
+    ret_rt, out_rt, _ = run_cmd(show_cmd)
+    if ret_rt != 0 or not out_rt.strip():
+        return 0
+
+    deleted = 0
+    for r_line in out_rt.splitlines():
+        if re.search(r"\bproto\s+250\b", r_line):
+            continue
+        m_dst = re.match(r"^(\S+)\s+encap\s+ip6\b", r_line.strip())
+        if not m_dst:
+            continue
+        dst = m_dst.group(1)
+        m_tbl = re.search(r"\btable\s+(\d+)\b", r_line)
+        tbl_arg = ["table", m_tbl.group(1)] if m_tbl and m_tbl.group(1) != "254" else []
+        if run_cmd(["ip", "route", "del", dst, "dev", "mpe-common", *tbl_arg], privileged=True)[0] == 0:
+            deleted += 1
+    return deleted
 
 
 def format_duration(seconds):
@@ -709,20 +741,10 @@ def fetch_logs_by_type(log_type, max_lines=200, level_filter="INFO"):
             source_desc = f"ファイル: {p}"
             lines = file_lines
         else:
-            ret, out, _ = run_cmd(["docker", "ps", "--format", "{{.Names}}"])
-            cnames = [n.strip() for n in out.splitlines() if n.strip().startswith("pppoe-server-")]
-            if cnames:
-                all_p_lines = []
-                for cname in cnames:
-                    ret_l, out_l, err_l = run_cmd(["docker", "logs", "--timestamps", "--tail", str(max_lines), cname])
-                    c_out = (out_l + "\n" + err_l).strip()
-                    if c_out:
-                        all_p_lines.extend(c_out.splitlines())
-                source_desc = f"コンテナ: {', '.join(cnames)}"
-                lines = all_p_lines[-max_lines:]
-            else:
-                source_desc = "pppoe-server (コンテナ未起動)"
-                lines = []
+            source_desc = "コンテナ: pppoe-server"
+            ret_l, out_l, err_l = run_cmd(["docker", "logs", "--timestamps", "--tail", str(max_lines), "pppoe-server"])
+            combined = (out_l + "\n" + err_l).strip()
+            lines = combined.splitlines() if (ret_l == 0 and combined) else []
 
     elif log_type == "mape":
         p_tun = os.path.join(_LOG_DIR, "mape-tunnel-events.log")
@@ -851,18 +873,8 @@ def get_container_statuses():
     c_kea = _resolve("kea-dhcp6")
     # 4. axosyslog
     c_syslog = _resolve("axosyslog")
-    # 5. pppoe (単一統合コンテナまたは旧複数コンテナ)
-    pppoe_items = []
-    if "pppoe-server" in raw:
-        pppoe_items.append(raw["pppoe-server"])
-    else:
-        for k in sorted(raw.keys()):
-            if k.startswith("pppoe-server-"):
-                pppoe_items.append(raw[k])
-    if not pppoe_items:
-        pppoe_items = [
-            {"name": "pppoe-server", "state": "not_found", "status": "停止 / 未検出", "level": "down"}
-        ]
+    # 5. pppoe (単一統合コンテナ)
+    pppoe_items = [_resolve("pppoe-server")]
     # 6. chrony
     c_chrony = _resolve("chrony")
     # 7. provisioning-server

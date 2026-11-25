@@ -22,7 +22,7 @@ from utils import (
     run_cmd, ping_target, format_duration, normalize_datetime,
     load_pppoe_conf_notes, load_static_ip_notes,
     load_kea_subnet_vlan_map, load_tunnel_events, classify_mape_mode,
-    KeaClient,
+    KeaClient, delete_dynamic_mape_routes,
 )
 
 
@@ -254,18 +254,8 @@ def _cleanup_stale_tunnels():
                 inactive_sec = now - _TUNNEL_LAST_SEEN[v4]
                 if inactive_sec >= 600:  # 10分以上ネイバー不達
                     print(f"[TUNNEL-AUTOCLEAN] Purging stale tunnel route {v4} -> {ce_ip6} (neighbor unseen for {int(inactive_sec)}s)", file=sys.stderr)
-                    # 1. mpe-common トンネルルート削除
-                    dst = f"{v4}/32" if "/" not in v4 else v4
-                    ret_sh, out_sh, _ = run_cmd(["ip", "route", "show", "table", "all", dst, "dev", "mpe-common"])
-                    if ret_sh == 0 and out_sh.strip():
-                        for r_line in out_sh.splitlines():
-                            m_tbl = re.search(r"\btable\s+(\d+)\b", r_line)
-                            tbl_arg = ["table", m_tbl.group(1)] if m_tbl and m_tbl.group(1) != "254" else []
-                            run_cmd(["ip", "route", "del", dst, "dev", "mpe-common", *tbl_arg], privileged=True)
-                    else:
-                        run_cmd(["ip", "route", "del", dst, "dev", "mpe-common"], privileged=True)
-                        if "/" not in v4:
-                            run_cmd(["ip", "route", "del", v4, "dev", "mpe-common"], privileged=True)
+                    # 1. mpe-common 動的トンネルルート削除 (proto 250 事前登録ルートは保護)
+                    delete_dynamic_mape_routes(v4)
 
                     # 2. 静的 (PERMANENT) ネイバーエントリの削除
                     if ce_ip6 and iface:
@@ -280,6 +270,8 @@ def _cleanup_stale_tunnels():
                         run_cmd(["ip", "-6", "route", "del", prefix], privileged=True)
 
                     _TUNNEL_LAST_SEEN.pop(v4, None)
+                    from config import run_mape_tunnel_sync  # noqa: PLC0415
+                    run_mape_tunnel_sync(WORKSPACE_DIR)
     except Exception as e:
         print(f"[TUNNEL-AUTOCLEAN] Error: {e}", file=sys.stderr)
 
@@ -792,26 +784,24 @@ class MAPECollector:
                 newest = c_list[0]
                 deduped_clients.append(newest)
 
-                # 古いエントリをパージし、カーネルの残留トンネルルートも削除
+                # 古いエントリをパージし、カーネルの残留動的ルート・旧リース・旧NDPも整理 (proto 250 事前登録ルートは保護)
                 for older in c_list[1:]:
                     old_v4 = older.get("ipv4")
                     if old_v4 and old_v4 != newest.get("ipv4"):
-                        print(f"[MAPE-PURGE] Purging stale tunnel route for duplicate MAC {hw}: {old_v4} (keeping {newest.get('ipv4')})", file=sys.stderr)
+                        print(f"[MAPE-PURGE] Purging stale dynamic state for duplicate MAC {hw}: {old_v4} (keeping {newest.get('ipv4')})", file=sys.stderr)
                         try:
-                            dst = old_v4 if "/" in old_v4 else f"{old_v4}/32"
-                            # 現在のテーブルから該当 dst のルートのみをピンポイントで削除
-                            ret_sh, out_sh, _ = run_cmd(["ip", "route", "show", "table", "all", dst, "dev", "mpe-common"])
-                            if ret_sh == 0 and out_sh.strip():
-                                for r_line in out_sh.splitlines():
-                                    m_tbl = re.search(r"\btable\s+(\d+)\b", r_line)
-                                    tbl_arg = ["table", m_tbl.group(1)] if m_tbl and m_tbl.group(1) != "254" else []
-                                    run_cmd(["ip", "route", "del", dst, "dev", "mpe-common", *tbl_arg], privileged=True)
-                            else:
-                                run_cmd(["ip", "route", "del", dst, "dev", "mpe-common"], privileged=True)
-                                if "/" not in old_v4:
-                                    run_cmd(["ip", "route", "del", old_v4, "dev", "mpe-common"], privileged=True)
+                            delete_dynamic_mape_routes(old_v4)
                         except Exception as e:
                             print(f"[MAPE-PURGE] Failed to del route {old_v4}: {e}", file=sys.stderr)
+
+                    old_pfx = older.get("prefix")
+                    if old_pfx and old_pfx != "-" and old_pfx != newest.get("prefix") and older.get("has_active_lease"):
+                        try:
+                            KeaClient.delete_pd_lease(old_pfx)
+                            run_cmd(["ip", "-6", "route", "del", old_pfx, "proto", "static"], privileged=True)
+                            print(f"[MAPE-PURGE] Released stale PD lease {old_pfx} for moved MAC {hw}", file=sys.stderr)
+                        except Exception as e:
+                            print(f"[MAPE-PURGE] Failed to release stale PD lease {old_pfx}: {e}", file=sys.stderr)
 
                     old_iface = older.get("interface")
                     if old_iface and old_iface != "-" and old_iface != newest.get("interface"):

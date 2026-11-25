@@ -159,7 +159,7 @@ def validate_staging_config(staging: Dict[str, Any]) -> List[str]:
             else:
                 seen_svcs.add(name.lower())
 
-    users = pppoe.get("users") or pppoe.get("common_users") or []
+    users = pppoe.get("users") or []
     ip_re = re.compile(r'^(\d{1,3}\.){3}\d{1,3}(/([0-9]|[12]\d|3[012]))?$')
 
     if isinstance(users, list):
@@ -494,7 +494,7 @@ def generate_ddns_conf_content(staging_data: Dict[str, Any], ddns_conf_path: str
         lines.append("# (登録なし)\n")
 
     lines.append("\n# --- PPPoE クライアント (ユーザー名指定) ---\n")
-    pppoe_users = staging_data.get("pppoe", {}).get("users") or staging_data.get("pppoe", {}).get("common_users") or []
+    pppoe_users = staging_data.get("pppoe", {}).get("users") or []
 
     seen_users = set()
     pppoe_count = 0
@@ -1118,7 +1118,7 @@ class ConfigManager:
                 f.write(new_map_e)
             logs.append("Saved: map-e.conf")
 
-            raw_pppoe_users = staging.get("pppoe", {}).get("users") or staging.get("pppoe", {}).get("common_users") or []
+            raw_pppoe_users = staging.get("pppoe", {}).get("users") or []
             common_users = raw_pppoe_users if isinstance(raw_pppoe_users, list) else []
 
             common_pppoe_path = os.path.join(WORKSPACE_DIR, "pppoe.conf")

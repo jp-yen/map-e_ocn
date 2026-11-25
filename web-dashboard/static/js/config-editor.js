@@ -419,16 +419,13 @@ function getPPPoECommonUsers() {
   if (!currentConfigStaging) currentConfigStaging = {};
   if (!currentConfigStaging.pppoe) currentConfigStaging.pppoe = {};
   if (!Array.isArray(currentConfigStaging.pppoe.users)) {
-    currentConfigStaging.pppoe.users = Array.isArray(currentConfigStaging.pppoe.common_users)
-      ? currentConfigStaging.pppoe.common_users
-      : [];
+    currentConfigStaging.pppoe.users = [];
   }
   return currentConfigStaging.pppoe.users;
 }
 
 function syncPPPoECommonUsersToStaging() {
-  const users = getPPPoECommonUsers();
-  currentConfigStaging.pppoe.users = users;
+  getPPPoECommonUsers();
 }
 
 function renderPPPoEConfigTab() {
@@ -573,9 +570,8 @@ function applyPPPoECSVToTable() {
   const textarea = document.getElementById('cfg_pppoe_users_csv_textarea');
   if (!textarea) return;
 
-  const parsedUsers = parsePPPoEUsersFromCSV(textarea.value);
-  currentConfigStaging.pppoe.common_users = parsedUsers;
-  syncPPPoECommonUsersToStaging();
+  if (!currentConfigStaging.pppoe) currentConfigStaging.pppoe = {};
+  currentConfigStaging.pppoe.users = parsePPPoEUsersFromCSV(textarea.value);
   renderPPPoEUsersTable();
   onConfigInputChanged();
 }
@@ -584,9 +580,8 @@ function onPPPoECSVInputChanged() {
   const textarea = document.getElementById('cfg_pppoe_users_csv_textarea');
   if (!textarea) return;
 
-  const parsedUsers = parsePPPoEUsersFromCSV(textarea.value);
-  currentConfigStaging.pppoe.common_users = parsedUsers;
-  syncPPPoECommonUsersToStaging();
+  if (!currentConfigStaging.pppoe) currentConfigStaging.pppoe = {};
+  currentConfigStaging.pppoe.users = parsePPPoEUsersFromCSV(textarea.value);
   onConfigInputChanged();
 }
 
