@@ -1,0 +1,260 @@
+# =============================================================================
+# NEC IX2207 設定例: OCN MAP-E (SLAAC 動的IP / VLAN4)
+#   機種: NEC IX2207 Software Version 10.8.46
+#   構成: GigaEthernet0.0 = WAN (SLAAC / MAP-E), GigaEthernet2.0 = LAN
+# =============================================================================
+
+# --- 1. 基本・ロギング設定 ---
+hostname ix-RA-dyn
+timezone +09 00
+terminal default-length 0
+terminal default-width 512
+!
+logging buffered 8388608
+logging subsystem all warn
+logging subsystem mape debug
+logging timestamp datetime
+
+# --- 2. NTP (時刻同期) 設定 ---
+ntp ip enable
+ntp ipv6 enable
+ntp server dhcpv6
+
+# --- 3. キャッシュ・デフォルトルート・DHCPv6 クライアント設定 ---
+ip ufs-cache max-entries 20000
+ip ufs-cache enable
+ip route default Tunnel0.0
+!
+ipv6 ufs-cache max-entries 10000
+ipv6 ufs-cache enable
+ipv6 dhcp enable
+!
+ipv6 dhcp client-profile dhcpv6-cl
+  information-request
+  option-request dns-servers
+  option-request domain-search-list
+  option-request ntp-servers
+
+# --- 4. WAN 設定 ---
+interface GigaEthernet0.0
+  no ip address
+  ipv6 enable
+  ipv6 address autoconfig receive-default
+  ipv6 dhcp client dhcpv6-cl
+  no shutdown
+
+# --- 5. LAN 設定 ---
+interface GigaEthernet1.0
+  description // LAN10
+  no ip address
+  shutdown
+!
+interface GigaEthernet2.0
+  description // LAN20
+  ip address 192.168.10.1/24
+  ipv6 enable
+  ipv6 nd ra enable
+  ipv6 nd ra other-config-flag
+  no shutdown
+
+# --- 6. MAP-E トンネル設定 (Tunnel0.0) ---
+interface Tunnel0.0
+  tunnel mode map-e ocn
+  ip address map-e
+  ip tcp adjust-mss auto
+  ip napt enable
+  ip napt hairpinning
+  ip napt static Tunnel0.0 1
+  no shutdown
+
+
+# =============================================================================
+# 運用メモ: 再接続手順
+# =============================================================================
+clear map-e status
+
+
+# =============================================================================
+# 動作確認コマンドと実行ログ (2026/11/26)
+# =============================================================================
+
+# [1] DHCPv6 クライアント状態確認 (DNS / NTP / Domain Search の取得)
+#   - Information request-reply の送受信が成功していること
+#   - DNS Servers / NTP Servers / Domain Search List が取得できていること
+
+ix-RA-dyn(config)# show ipv6 dhcp client
+DHCPv6 client is enabled
+  System DUID 00:03:00:01:00:60:b9:ff:e3:36
+  Statistics:
+    Information request-reply:
+      1 send, 59 seconds ago
+      1 receive, 0 drops, 59 seconds ago
+Interface GigaEthernet0.0 is active
+  Server address fe80::be24:11ff:fedb:3b5c
+  Server identifier 00:01:00:01:32:44:5b:96:bc:24:11:da:28:1e
+  Uptime 0:01:00
+  DNS Servers:
+    2400:4150:99::53
+  NTP Servers:
+    2400:4150:99::123
+  Domain Search List:
+    map.ocn.ad.jp
+  Statistics:
+    Information request-reply:
+      1 send, 59 seconds ago
+      1 receive, 0 drops, 59 seconds ago
+
+# [2] MAP-E トンネル接続状態・利用可能ポート範囲の確認
+#   - Status が active であること
+#   - CE IPv4 address (10.218.48.16/32) と CE IPv6 address (PSID=4 埋込) が表示されること
+#   - NAPT translation port に 16ポート × 63ブロック = 1,008ポート (PSID=4) が並ぶこと
+
+ix-RA-dyn(config)# show map-e status
+Tunnel interface: Tunnel0.0
+  Vendor Name: OCN
+  Status: active
+  Transport information:
+    CE IPv4 address is 10.218.48.16/32
+    CE IPv6 address is 2400:4150:1004:400:a:da30:1000:400/64
+  NAPT translation port:
+    1088-1103, 2112-2127, 3136-3151
+    4160-4175, 5184-5199, 6208-6223
+    7232-7247, 8256-8271, 9280-9295
+    10304-10319, 11328-11343, 12352-12367
+    13376-13391, 14400-14415, 15424-15439
+    16448-16463, 17472-17487, 18496-18511
+    19520-19535, 20544-20559, 21568-21583
+    22592-22607, 23616-23631, 24640-24655
+    25664-25679, 26688-26703, 27712-27727
+    28736-28751, 29760-29775, 30784-30799
+    31808-31823, 32832-32847, 33856-33871
+    34880-34895, 35904-35919, 36928-36943
+    37952-37967, 38976-38991, 40000-40015
+    41024-41039, 42048-42063, 43072-43087
+    44096-44111, 45120-45135, 46144-46159
+    47168-47183, 48192-48207, 49216-49231
+    50240-50255, 51264-51279, 52288-52303
+    53312-53327, 54336-54351, 55360-55375
+    56384-56399, 57408-57423, 58432-58447
+    59456-59471, 60480-60495, 61504-61519
+    62528-62543, 63552-63567, 64576-64591
+  Request statistics:
+    Last Request: -
+    Last Update : -
+    0 request, 0 success, 0 failure
+
+# [3] 疎通確認 (BR 宛 IPv4 ping / DNS サーバー宛 IPv6 ping6)
+#   - IPv4 (100.127.255.255): CE IPv4 (10.218.48.16) を始点として MAP-E トンネル経由で到達すること
+#   - IPv6 (2400:4150:99::53): DNS サーバーへ IPv6 で到達すること
+
+ix-RA-dyn(config)# ping 100.127.255.255
+PING 10.218.48.16 > 100.127.255.255 56 data bytes
+64 bytes from 100.127.255.255: icmp_seq=0 ttl=64 time=0.476 ms
+64 bytes from 100.127.255.255: icmp_seq=1 ttl=64 time=1.176 ms
+64 bytes from 100.127.255.255: icmp_seq=2 ttl=64 time=0.769 ms
+
+--- 100.127.255.255 ping statistics ---
+3 packets transmitted, 3 packets received, 0% packet loss
+round-trip (ms)  min/avg/max = 0.476/0.807/1.176
+
+ix-RA-dyn(config)# ping6 2400:4150:99::53
+PING 2400:4150:1004:400:260:b9ff:feff:e336 > 2400:4150:99::53 56 data bytes
+64 bytes from 2400:4150:99::53 icmp_seq=0 hlim=64 time=0.806 ms
+64 bytes from 2400:4150:99::53 icmp_seq=1 hlim=64 time=0.196 ms
+64 bytes from 2400:4150:99::53 icmp_seq=2 hlim=64 time=0.646 ms
+64 bytes from 2400:4150:99::53 icmp_seq=3 hlim=64 time=0.287 ms
+64 bytes from 2400:4150:99::53 icmp_seq=4 hlim=64 time=0.287 ms
+
+--- 2400:4150:99::53 ping statistics ---
+5 packets transmitted, 5 packets received, 0% packet loss
+round-trip (ms)  min/avg/max = 0.196/0.444/0.806
+
+# [4] ルーティングテーブル確認 (IPv4 / IPv6)
+#   - IPv4: 0.0.0.0/0 および CE IPv4 (10.218.48.16/32) が Tunnel0.0 向きであること
+#   - IPv6: ::/0 が RA 経由で BR (fe80::be24:11ff:fedb:3b5c / GigaEthernet0.0) 向きであること
+
+ix-RA-dyn(config)# show ip route
+IP Routing Table - 3 entries, 1 hidden, 2044 frees
+Entries: 1 Connected, 2 Static, 0 RIP, 0 OSPF, 0 BGP
+Codes: C - Connected, S - Static, R - RIP, O - OSPF, IA - OSPF inter area
+       N1 - OSPF NSSA external type 1, N2 - OSPF NSSA external type 2
+       E1 - OSPF external type 1, E2 - OSPF external type 2, B - BGP
+       * - Candidate default, s - Summary
+Timers: Age
+S*   0.0.0.0/0 [1/1] is directly connected, Tunnel0.0, 0:02:18
+     10.0.0.0/8 is subnetted, 1 subnets
+S      10.218.48.16/32 [1/1] is directly connected, Tunnel0.0, 0:02:18
+C    192.168.10.0/24 [0/0] is directly connected, GigaEthernet2.0, 0:02:51
+
+ix-RA-dyn(config)# show ipv6 route
+IPv6 Routing Table - 6 entries, unlimited
+Codes: C - Connected, L - Local, S - Static
+       R - RIPng, O - OSPF, IA - OSPF inter area
+       E1 - OSPF external type 1, E2 - OSPF external type 2, B - BGP
+       s - Summary
+Timers: Uptime/Age
+S      ::/0 orphan [100/1]
+         via fe80::be24:11ff:fedb:3b5c, GigaEthernet0.0, 0:02:40/0:00:00
+C      2400:4150:1004:400::/64 global [0/1]
+         via ::, GigaEthernet0.0, 0:02:40/0:00:00
+         via ::, GigaEthernet0.0, 0:02:22/0:00:00
+L      2400:4150:1004:400::/128 global [0/1]
+         via ::, GigaEthernet0.0, 0:02:41/0:00:00
+L      2400:4150:1004:400:a:da30:1000:400/128 global [0/1]
+         via ::, GigaEthernet0.0, 0:02:22/0:00:00
+L      2400:4150:1004:400:260:b9ff:feff:e336/128 global [0/1]
+         via ::, GigaEthernet0.0, 0:02:40/0:00:00
+
+# [5] WAN (GigaEthernet0.0) の IPv6 アドレス・NDP 近隣キャッシュ確認
+#   - GigaEthernet0.0 に SLAAC アドレス (::260:b9ff:feff:e336) と
+#     MAP-E 用アドレス (::a:da30:1000:400) の 2 つが付与されていること
+#   - BR のリンクローカルアドレスが router として REACHABLE になっていること
+
+ix-RA-dyn(config)# show ipv6 address
+Interface GigaEthernet0.0 is up, line protocol is up
+  Global address(es):
+    2400:4150:1004:400:a:da30:1000:400 prefixlen 64
+    2400:4150:1004:400:260:b9ff:feff:e336 prefixlen 64
+    2400:4150:1004:400:: prefixlen 64 anycast
+  Link-local address(es):
+    fe80::260:b9ff:feff:e336 prefixlen 64
+    fe80:: prefixlen 64 anycast
+  Multicast address(es):
+    ff02::1
+    ff02::2
+    ff02::1:2
+    ff02::1:ff00:0
+    ff02::1:ff00:400
+    ff02::1:ffff:e336
+#   (※ GigaEthernet1.0 / GigaEthernet2.0 / Loopback / Null は省略)
+
+ix-RA-dyn(config)# show ipv6 neighbors
+Neighbor cache - 1 dynamic, 1023 free, 0 static
+Interface GigaEthernet0.0 is up, line protocol is up
+  Neighbor fe80::be24:11ff:fedb:3b5c (router)
+    REACHABLE, linklayer bc:24:11:db:3b:5c, uptime 0:00:15, age 0:02:16
+
+# [6] WAN リンクアップ・SLAAC 取得ログ確認
+#   - GigaEthernet0.0 のリンクアップ後、stateless addrconf によりアドレスとデフォルトルーターが設定されること
+#
+# logging subsystem mape debug 設定を入れておくと、MAP-E で割り当てられた IPv4 アドレスがログに載る
+
+
+ix-RA-dyn(config)# show logging
+Buffer logging enabled, 8388608 bytes, type cyclic
+  22 messages (1-22), 1833 bytes logged, 0 messages dropped
+
+Log Buffer (1-22):
+...
+2026/11/26 05:03:07 MAPE.022: MAP-E status changed from initializing to getting rule, interface Tunnel0.0
+2026/11/26 05:03:07 MAPE.014: Request MAP-E rule information, interface Tunnel0.0
+2026/11/26 05:03:07 MAPE.015: Success get MAP-E rule information, interface Tunnel0.0
+2026/11/26 05:03:07   IP.021: Interface Tunnel0.0, up
+2026/11/26 05:03:07 MAPE.001: Started MAP-E, interface Tunnel0.0, IPv4 address 10.218.48.16
+2026/11/26 05:03:07 MAPE.003: Assigned CE IPv4 10.218.48.16, CE IPv6 2400:4150:1004:400:a:da30:1000:400 to interface Tunnel0.0
+2026/11/26 05:03:07   IP.021: Interface Tunnel0.0, link up
+2026/11/26 05:03:07   IP.021: Interface Tunnel0.0, link down
+2026/11/26 05:03:07   IP.021: Interface Tunnel0.0, link up
+2026/11/26 05:03:07   IP.021: Interface Tunnel0.0, line protocol up
+2026/11/26 05:03:07 MAPE.022: MAP-E status changed from getting rule to active, interface Tunnel0.0
+2026/11/26 05:03:07 MAPE.004: Next get MAP-E rule information after 50969 seconds, interface Tunnel0.0

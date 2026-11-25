@@ -50,7 +50,7 @@ sub generate_interfaces {
     my $br_if             = $c->{br_if};
     my $prov_if           = $c->{prov_if};
     my $base_subnet       = $c->{base_subnet};
-    my $br_gateway        = $c->{br_gateway} || $c->{slaac_br_suffix} || '::ff0a';
+    my $br_gateway        = $c->{br_gateway} || '::ff0a';
     my $slaac_br_base     = $c->{slaac_br_base};
     my $slaac_fix_br_prefix = $c->{slaac_fix_br_prefix};
     my $slaac_dyn_vlans   = $c->{slaac_dyn_vlans};

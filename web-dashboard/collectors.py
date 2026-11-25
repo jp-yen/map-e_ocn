@@ -101,6 +101,18 @@ def sync_active_ping_targets(pppoe_clients, mape_clients):
                 "status": c.get("status")
             }
 
+    # 事前登録トンネル (proto 250) も常時バックグラウンド監視対象に含め、自律接続 CE を即時検出する
+    for t in MAPECollector._get_active_tunnels():
+        cip = t.get("ce_ipv6")
+        if cip and cip not in new_targets:
+            v4_raw = t.get("ipv4")
+            new_targets[cip] = {
+                "type": "mape",
+                "ce_ipv6": cip,
+                "ipv4": v4_raw,
+                "target_v4": get_mape_ping_ipv4(v4_raw),
+            }
+
     with _PING_LOCK:
         _WATCHED_TARGETS.clear()
         _WATCHED_TARGETS.update(new_targets)
@@ -729,8 +741,12 @@ class MAPECollector:
         # 6. 同じ MAC アドレスを持つ重複エントリを検出し、古いものをパージ（不要なカーネルルートも削除）
         clients = cls._purge_duplicate_macs(clients)
 
-        # 7. 並行 Ping 実行
-        return cls._ping_enrich(clients)
+        # 7. 並行 Ping 実行 & 未接続の事前登録 (proto 250) ルートを除外
+        enriched = cls._ping_enrich(clients)
+        return [
+            c for c in enriched
+            if not c.get("preseed") or c.get("ping_ok") or c.get("ndp_ok") or c.get("has_active_lease")
+        ]
 
     @classmethod
     def _purge_duplicate_macs(cls, clients):
@@ -873,41 +889,53 @@ class MAPECollector:
     @staticmethod
     def _load_kea_leases():
         leases = {}
+        raw_text = None
         if os.path.exists(KEA_LEASE_CSV):
             try:
                 with open(KEA_LEASE_CSV, "r", encoding="utf-8", errors="ignore") as f:
-                    lines = [l.strip() for l in f.readlines() if l.strip()]
-                    if len(lines) > 1:
-                        headers = lines[0].split(",")
-                        for line in lines[1:]:
-                            cols = line.split(",")
-                            if len(cols) == len(headers):
-                                d = dict(zip(headers, cols))
-                                addr = d.get("address", "").strip()
-                                plen = d.get("prefix_len", "56").strip()
-                                if addr:
-                                    try:
-                                        net = ipaddress.IPv6Network(f"{addr}/{plen}", strict=False)
-                                        exp = int(d.get("expire", 0))
-                                        vlft = int(d.get("valid_lifetime", 7200))
-                                        st = exp - vlft if exp > 0 else 0
-                                        if net not in leases:
-                                            d["first_seen_st"] = st
-                                            leases[net] = d
-                                        else:
-                                            # 最も古い開始時刻（最初に接続した日時）を維持
-                                            cur_first = leases[net].get("first_seen_st", st)
-                                            if st > 0 and (cur_first == 0 or st < cur_first):
-                                                leases[net]["first_seen_st"] = st
-                                            # 最新の expire を持つ行でデータを更新するが、first_seen_st は引き継ぐ
-                                            if exp > int(leases[net].get("expire", 0)):
-                                                saved_first = leases[net]["first_seen_st"]
-                                                d["first_seen_st"] = saved_first
-                                                leases[net] = d
-                                    except Exception:
-                                        pass
+                    raw_text = f.read()
+            except PermissionError:
+                ret_c, out_c, _ = run_cmd(["cat", KEA_LEASE_CSV], privileged=True)
+                if ret_c == 0:
+                    raw_text = out_c
             except Exception as e:
                 print(f"[MAPE] Error reading {KEA_LEASE_CSV}: {e}", file=sys.stderr)
+
+        if raw_text:
+            try:
+                lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+                if len(lines) > 1:
+                    headers = lines[0].split(",")
+                    for line in lines[1:]:
+                        cols = line.split(",")
+                        if len(cols) == len(headers):
+                            d = dict(zip(headers, cols))
+                            # state == "0" (default/active) のみ有効リースとして扱う (expired/declined 除外)
+                            if d.get("state", "0").strip() != "0":
+                                continue
+                            addr = d.get("address", "").strip()
+                            plen = d.get("prefix_len", "56").strip()
+                            if addr:
+                                try:
+                                    net = ipaddress.IPv6Network(f"{addr}/{plen}", strict=False)
+                                    exp = int(d.get("expire", 0))
+                                    vlft = int(d.get("valid_lifetime", 7200))
+                                    st = exp - vlft if exp > 0 else 0
+                                    if net not in leases:
+                                        d["first_seen_st"] = st
+                                        leases[net] = d
+                                    else:
+                                        cur_first = leases[net].get("first_seen_st", st)
+                                        if st > 0 and (cur_first == 0 or st < cur_first):
+                                            leases[net]["first_seen_st"] = st
+                                        if exp > int(leases[net].get("expire", 0)):
+                                            saved_first = leases[net]["first_seen_st"]
+                                            d["first_seen_st"] = saved_first
+                                            leases[net] = d
+                                except Exception:
+                                    pass
+            except Exception as e:
+                print(f"[MAPE] Error parsing {KEA_LEASE_CSV}: {e}", file=sys.stderr)
         return leases
 
     @staticmethod
@@ -1159,6 +1187,8 @@ class MAPECollector:
             elif bare_v4 in static_notes_ip:
                 client_note = static_notes_ip[bare_v4]
 
+        has_active_lease = bool(matched_lease and int(matched_lease.get("expire", 0) or 0) > time.time())
+
         return {
             "prefix": prefix_str,
             "duid": duid,
@@ -1181,6 +1211,8 @@ class MAPECollector:
             "mode_display": mode_display,
             "tunnel_created": tunnel_created,
             "last_provisioned": last_provisioned,
+            "preseed": bool(tunnel.get("preseed")),
+            "has_active_lease": has_active_lease,
             "ndp_ok": ndp_ok,
             "ndp_state": ndp_state,
             "is_online": ndp_ok,

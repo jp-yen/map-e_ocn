@@ -1,0 +1,386 @@
+# =============================================================================
+# NEC IX2207 設定例: OCN MAP-E (DHCPv6-PD 動的IP / VLAN4)
+#   機種: NEC IX2207 Software Version 10.8.46
+#   構成: GigaEthernet0.0 = WAN (DHCPv6-PD / MAP-E), GigaEthernet1.0/2.0 = LAN
+# =============================================================================
+
+# --- 1. 基本・ロギング設定 ---
+hostname ix-PD-dyn
+timezone +09 00
+terminal default-length 0
+terminal default-width 512
+!
+logging buffered 8388608
+logging subsystem all warn
+logging subsystem dh6 debug
+logging subsystem mape debug
+logging timestamp datetime
+
+# --- 2. NTP (時刻同期) 設定 ---
+ntp ip enable
+ntp ipv6 enable
+ntp server dhcpv6
+
+# --- 3. キャッシュ・デフォルトルート・DHCPv6 設定 ---
+# ※ MAP-E トンネルを起動するため、ia-pd subscriber には ::/64 eui-64 の割り当てが必須
+#   (WAN 側 GigaEthernet0.0 や Loopback0.0 には割り当て不可)
+
+ip ufs-cache max-entries 20000
+ip ufs-cache enable
+ip route default Tunnel0.0
+ip dhcp enable
+!
+ipv6 ufs-cache max-entries 10000
+ipv6 ufs-cache enable
+ipv6 dhcp enable
+!
+ipv6 dhcp client-profile dhcpv6-cl
+  option-request dns-servers
+  option-request domain-search-list
+  option-request ntp-servers
+  ia-pd subscriber GigaEthernet1.0 ::/64 eui-64
+  ia-pd subscriber GigaEthernet2.0 0:0:0:ff::/64 eui-64
+!
+ipv6 dhcp server-profile dhcpv6-sv10
+  dns-server dhcp
+!
+ipv6 dhcp server-profile dhcpv6-sv20
+  dns-server dhcp
+
+# --- 4. WAN (GigaEthernet0.0) 設定 ---
+interface GigaEthernet0.0
+  no ip address
+  ipv6 enable
+  ipv6 dhcp client dhcpv6-cl
+  no shutdown
+
+# --- 5. LAN (GigaEthernet1.0 / GigaEthernet2.0) 設定 ---
+interface GigaEthernet1.0
+  description // LAN10
+  ip address 192.168.10.1/24
+  ipv6 enable
+  ipv6 dhcp server dhcpv6-sv10
+  ipv6 nd ra enable
+  ipv6 nd ra other-config-flag
+  no shutdown
+!
+interface GigaEthernet2.0
+  description // LAN20
+  ip address 192.168.20.1/24
+  ipv6 enable
+  ipv6 dhcp server dhcpv6-sv20
+  ipv6 nd ra enable
+  ipv6 nd ra other-config-flag
+  no shutdown
+
+# --- 6. MAP-E トンネル設定 (Tunnel0.0) ---
+interface Tunnel0.0
+  tunnel mode map-e ocn
+  ip address map-e
+  ip tcp adjust-mss auto
+  ip napt enable
+  ip napt hairpinning
+  ip napt static Tunnel0.0 1
+  no shutdown
+
+# --- 7. 未使用ポート・初期仮想インターフェース (参考) ---
+device GigaEthernet0
+!
+device GigaEthernet1
+!
+device GigaEthernet2
+!
+device USB0
+  shutdown
+!
+device USB1
+  shutdown
+!
+interface USB-Serial0.0
+  encapsulation ppp
+  no auto-connect
+  no ip address
+  shutdown
+!
+interface USB-Serial1.0
+  encapsulation ppp
+  no auto-connect
+  no ip address
+  shutdown
+!
+interface Loopback0.0
+  no ip address
+!
+interface Null0.0
+  no ip address
+!
+interface Null1.0
+  no ip address
+
+
+# =============================================================================
+# 運用メモ: 再接続手順
+# =============================================================================
+clear map-e status
+
+
+# =============================================================================
+# 動作確認コマンドと実行ログ (2026/11/26)
+# =============================================================================
+
+# [1] DHCPv6-PD クライアント状態確認 (プレフィックス / DNS / NTP / Domain Search)
+#   - IA Prefix に 2400:4150:2004:400::/56 が取得できていること
+#   - Subscribers で GigaEthernet1.0 (::/64 -> :400::/64) と
+#     GigaEthernet2.0 (:ff::/64 -> :4ff::/64) が up であること
+
+ix-PD-dyn(config)# show ipv6 dhcp client
+DHCPv6 client is enabled
+  System DUID 00:03:00:01:00:60:b9:ff:e3:36
+  Statistics:
+    Solicit-advertise(reply):
+      1 send, 35 seconds ago
+      1 receive, 0 drops, 36 seconds ago
+    Request-reply:
+      1 send, 35 seconds ago
+      1 receive, 0 drops, 35 seconds ago
+Interface GigaEthernet0.0 is active
+  Server address fe80::be24:11ff:fedb:3b5c
+  Server identifier 00:01:00:01:32:44:5b:96:bc:24:11:da:28:1e
+  Uptime 0:00:37
+  Prefix Delegation:
+    T1 is 900, T2 is 1440, renew 865 seconds
+  IA Prefix:
+    2400:4150:2004:400::/56 vltime 1800 pltime 1500, expire 1765 seconds
+  DNS Servers:
+    2400:4150:99::53
+  NTP Servers:
+    2400:4150:99::123
+  Domain Search List:
+    map.ocn.ad.jp
+  Subscribers:
+    GigaEthernet1.0 is up
+      2400:4150:2004:400:260:b9ff:feff:e3b6/64
+    GigaEthernet2.0 is up
+      2400:4150:2004:4ff:260:b9ff:feff:e376/64
+  Statistics:
+    Solicit-advertise(reply):
+      1 send, 36 seconds ago
+      1 receive, 0 drops, 36 seconds ago
+    Request-reply:
+      1 send, 35 seconds ago
+      1 receive, 0 drops, 35 seconds ago
+
+# [2] MAP-E トンネル接続状態・利用可能ポート範囲の確認
+#   - Status が active であること
+#   - CE IPv4 address (10.218.48.16/32) と CE IPv6 address (PSID=4 埋込) が表示されること
+#   - NAPT translation port に 16ポート × 63ブロック = 1,008ポート (PSID=4) が並ぶこと
+
+ix-PD-dyn(config)# show map-e status
+Tunnel interface: Tunnel0.0
+  Vendor Name: OCN
+  Status: active
+  Transport information:
+    CE IPv4 address is 10.218.48.16/32
+    CE IPv6 address is 2400:4150:2004:400:a:da30:1000:400/64
+  NAPT translation port:
+    1088-1103, 2112-2127, 3136-3151
+    4160-4175, 5184-5199, 6208-6223
+    7232-7247, 8256-8271, 9280-9295
+    10304-10319, 11328-11343, 12352-12367
+    13376-13391, 14400-14415, 15424-15439
+    16448-16463, 17472-17487, 18496-18511
+    19520-19535, 20544-20559, 21568-21583
+    22592-22607, 23616-23631, 24640-24655
+    25664-25679, 26688-26703, 27712-27727
+    28736-28751, 29760-29775, 30784-30799
+    31808-31823, 32832-32847, 33856-33871
+    34880-34895, 35904-35919, 36928-36943
+    37952-37967, 38976-38991, 40000-40015
+    41024-41039, 42048-42063, 43072-43087
+    44096-44111, 45120-45135, 46144-46159
+    47168-47183, 48192-48207, 49216-49231
+    50240-50255, 51264-51279, 52288-52303
+    53312-53327, 54336-54351, 55360-55375
+    56384-56399, 57408-57423, 58432-58447
+    59456-59471, 60480-60495, 61504-61519
+    62528-62543, 63552-63567, 64576-64591
+  Request statistics:
+    Last Request: -
+    Last Update : -
+    0 request, 0 success, 0 failure
+
+# [3] 疎通確認 (BR 宛 IPv4 ping / DNS サーバー宛 IPv6 ping6)
+#   - IPv4 (100.127.255.255): CE IPv4 (10.218.48.16) を始点として MAP-E トンネル経由で到達すること
+#   - IPv6 (2400:4150:99::53): DNS サーバーへ IPv6 で到達すること
+
+ix-PD-dyn(config)# ping 100.127.255.255
+PING 10.218.48.16 > 100.127.255.255 56 data bytes
+64 bytes from 100.127.255.255: icmp_seq=0 ttl=64 time=0.550 ms
+64 bytes from 100.127.255.255: icmp_seq=1 ttl=64 time=0.473 ms
+64 bytes from 100.127.255.255: icmp_seq=2 ttl=64 time=0.377 ms
+
+--- 100.127.255.255 ping statistics ---
+3 packets transmitted, 3 packets received, 0% packet loss
+round-trip (ms)  min/avg/max = 0.377/0.466/0.550
+
+ix-PD-dyn(config)# ping6 2400:4150:99::53
+PING 2400:4150:2004:400:260:b9ff:feff:e3b6 > 2400:4150:99::53 56 data bytes
+64 bytes from 2400:4150:99::53 icmp_seq=0 hlim=64 time=0.368 ms
+64 bytes from 2400:4150:99::53 icmp_seq=1 hlim=64 time=0.295 ms
+64 bytes from 2400:4150:99::53 icmp_seq=2 hlim=64 time=0.265 ms
+
+--- 2400:4150:99::53 ping statistics ---
+3 packets transmitted, 3 packets received, 0% packet loss
+round-trip (ms)  min/avg/max = 0.265/0.309/0.368
+
+# [4] ルーティングテーブル確認 (IPv4 / IPv6)
+#   - IPv4: 0.0.0.0/0 および CE IPv4 (10.218.48.16/32) が Tunnel0.0 向きであること
+#   - IPv6: ::/0 が BR (fe80::be24:11ff:fedb:3b5c / GigaEthernet0.0) 向きであること
+#   - IPv6: PD 全体の /56 が Null0.0 向き、切り出した各 /64 が GigaEthernet1.0 / 2.0 向きであること
+
+ix-PD-dyn(config)# show ip route
+IP Routing Table - 4 entries, 1 hidden, 2043 frees
+Entries: 2 Connected, 2 Static, 0 RIP, 0 OSPF, 0 BGP
+Codes: C - Connected, S - Static, R - RIP, O - OSPF, IA - OSPF inter area
+       N1 - OSPF NSSA external type 1, N2 - OSPF NSSA external type 2
+       E1 - OSPF external type 1, E2 - OSPF external type 2, B - BGP
+       * - Candidate default, s - Summary
+Timers: Age
+S*   0.0.0.0/0 [1/1] is directly connected, Tunnel0.0, 0:02:19
+     10.0.0.0/8 is subnetted, 1 subnets
+S      10.218.48.16/32 [1/1] is directly connected, Tunnel0.0, 0:02:19
+C    192.168.10.0/24 [0/0] is directly connected, GigaEthernet1.0, 0:02:52
+C    192.168.20.0/24 [0/0] is directly connected, GigaEthernet2.0, 0:02:52
+
+ix-PD-dyn(config)# show ipv6 route
+IPv6 Routing Table - 11 entries, unlimited
+Codes: C - Connected, L - Local, S - Static
+       R - RIPng, O - OSPF, IA - OSPF inter area
+       E1 - OSPF external type 1, E2 - OSPF external type 2, B - BGP
+       s - Summary
+Timers: Uptime/Age
+S      ::/0 orphan [255/1]
+         via fe80::be24:11ff:fedb:3b5c, GigaEthernet0.0, 0:02:31/0:00:00
+S      2400:4150:2004:400::/56 global [255/1]
+         via ::, Null0.0, 0:02:32/0:00:00
+C      2400:4150:2004:400::/64 global [0/1]
+         via ::, GigaEthernet1.0, 0:02:31/0:00:00
+         via ::, GigaEthernet1.0, 0:02:14/0:00:00
+L      2400:4150:2004:400::/128 global [0/1]
+         via ::, GigaEthernet1.0, 0:02:32/0:00:00
+         via ::, GigaEthernet0.0, 0:02:32/0:00:00
+L      2400:4150:2004:400:a:da30:1000:400/128 global [0/1]
+         via ::, GigaEthernet1.0, 0:02:14/0:00:00
+L      2400:4150:2004:400:260:b9ff:feff:e3b6/128 global [0/1]
+         via ::, GigaEthernet1.0, 0:02:31/0:00:00
+C      2400:4150:2004:4ff::/64 global [0/1]
+         via ::, GigaEthernet2.0, 0:02:31/0:00:00
+L      2400:4150:2004:4ff::/128 global [0/1]
+         via ::, GigaEthernet2.0, 0:02:32/0:00:00
+L      2400:4150:2004:4ff:260:b9ff:feff:e376/128 global [0/1]
+         via ::, GigaEthernet2.0, 0:02:31/0:00:00
+
+# [5] 各インターフェースの IPv4 / IPv6 アドレス・NDP 近隣キャッシュ確認
+#   - GigaEthernet1.0 に PD 由来アドレス (::260:b9ff:feff:e3b6) と
+#     MAP-E 用アドレス (::a:da30:1000:400) が付与されていること
+#   - GigaEthernet2.0 に PD 由来アドレス (:4ff:260:b9ff:feff:e376) が付与されていること
+#   - Tunnel0.0 に MAP-E の IPv4 アドレス (10.218.48.16/32) が付与されていること
+
+ix-PD-dyn(config)# show ipv6 address
+Interface GigaEthernet0.0 is up, line protocol is up
+  Global address(es):
+    2400:4150:2004:400:: prefixlen 56 anycast
+  Link-local address(es):
+    fe80::260:b9ff:feff:e336 prefixlen 64
+    fe80:: prefixlen 64 anycast
+  Multicast address(es):
+    ff02::1
+    ff02::2
+    ff02::1:2
+    ff02::1:ff00:0
+    ff02::1:ffff:e336
+Interface GigaEthernet1.0 is up, line protocol is up
+  Global address(es):
+    2400:4150:2004:400:a:da30:1000:400 prefixlen 64
+    2400:4150:2004:400:260:b9ff:feff:e3b6 prefixlen 64
+      Valid lifetime 1715, preferred lifetime 1415
+    2400:4150:2004:400:: prefixlen 64 anycast
+  Link-local address(es):
+    fe80::260:b9ff:feff:e3b6 prefixlen 64
+    fe80:: prefixlen 64 anycast
+  Multicast address(es):
+    ff02::1
+    ff02::2
+    ff02::1:2
+    ff02::1:ff00:0
+    ff02::1:ff00:400
+    ff02::1:ffff:e3b6
+Interface GigaEthernet2.0 is up, line protocol is up
+  Global address(es):
+    2400:4150:2004:4ff:260:b9ff:feff:e376 prefixlen 64
+      Valid lifetime 1714, preferred lifetime 1414
+    2400:4150:2004:4ff:: prefixlen 64 anycast
+  Link-local address(es):
+    fe80::260:b9ff:feff:e376 prefixlen 64
+    fe80:: prefixlen 64 anycast
+  Multicast address(es):
+    ff02::1
+    ff02::2
+    ff02::1:2
+    ff02::1:ff00:0
+    ff02::1:ffff:e376
+#   (※ Loopback / Null は省略)
+
+ix-PD-dyn(config)# show ip address
+Interface GigaEthernet1.0 is up, line protocol is up
+  Internet address is 192.168.10.1/24
+  Broadcast address is 255.255.255.255
+  Address determined by config
+Interface GigaEthernet2.0 is up, line protocol is up
+  Internet address is 192.168.20.1/24
+  Broadcast address is 255.255.255.255
+  Address determined by config
+Interface Null0.0 is up, line protocol is up
+  Interface is unnumbered.
+Interface Tunnel0.0 is up, line protocol is up
+  Internet address is 10.218.48.16/32
+  Broadcast address is 255.255.255.255
+  Address determined by MAP-E
+
+ix-PD-dyn(config)# show ipv6 neighbors
+Neighbor cache - 1 dynamic, 1023 free, 0 static
+Interface GigaEthernet0.0 is up, line protocol is up
+  Neighbor fe80::be24:11ff:fedb:3b5c (router)
+    REACHABLE, linklayer bc:24:11:db:3b:5c, uptime 0:00:01, age 0:01:48
+
+# [6] WAN リンクアップ・DHCPv6-PD 取得ログ確認
+#   - GigaEthernet0.0 のリンクアップ後、Solicit/Advertise/Request/Reply を経て
+#     GigaEthernet1.0 / 2.0 へアドレスとデフォルトルートが設定されること
+
+ix-PD-dyn(config)# show logging
+...
+2026/11/26 05:48:31  DH6.103: Create interface entry, GigaEthernet0.0
+2026/11/26 05:48:31  DH6.105: Create client entry, GigaEthernet0.0
+2026/11/26 05:48:31  DH6.101: Add All_DHCP_Relay_Agents_and_Servers, GigaEthernet0.0
+2026/11/26 05:48:32  DH6.052: Send Solicit fe80::260:b9ff:feff:e336 > ff02::1:2, id 0xb9994e, GigaEthernet0.0
+2026/11/26 05:48:32  DH6.051: Receive Advertise fe80::be24:11ff:fedb:3b5c > fe80::260:b9ff:feff:e336, id 0xb9994e, GigaEthernet0.0
+2026/11/26 05:48:33  DH6.052: Send Request fe80::260:b9ff:feff:e336 > ff02::1:2, id 0x577bd6, GigaEthernet0.0
+2026/11/26 05:48:33  DH6.051: Receive Reply fe80::be24:11ff:fedb:3b5c > fe80::260:b9ff:feff:e336, id 0x577bd6, GigaEthernet0.0
+2026/11/26 05:48:33  DH6.062: Add subnet router anycast address 2400:4150:2004:400::/56, GigaEthernet0.0
+2026/11/26 05:48:33  DH6.055: Add null route 2400:4150:2004:400::/56
+2026/11/26 05:48:33  DH6.059: Add address 2400:4150:2004:400:260:b9ff:feff:e3b6/64 vltime 1799 pltime 1499, GigaEthernet1.0
+2026/11/26 05:48:33  DH6.059: Add address 2400:4150:2004:4ff:260:b9ff:feff:e376/64 vltime 1799 pltime 1499, GigaEthernet2.0
+2026/11/26 05:48:33  DH6.053: Add default route fe80::be24:11ff:fedb:3b5c, GigaEthernet0.0
+2026/11/26 05:48:33  DH6.107: Change client neighbor fe80::be24:11ff:fedb:3b5c, GigaEthernet0.0
+2026/11/26 05:48:50 MAPE.022: MAP-E status changed from waiting to loading rule, interface Tunnel0.0
+2026/11/26 05:48:50 MAPE.023: Load MAP-E rule information, interface Tunnel0.0
+2026/11/26 05:48:50 MAPE.024: Success load MAP-E rule information, interface Tunnel0.0
+2026/11/26 05:48:50   IP.021: Interface Tunnel0.0, up
+2026/11/26 05:48:50 MAPE.001: Started MAP-E, interface Tunnel0.0, IPv4 address 10.218.48.16
+2026/11/26 05:48:50 MAPE.003: Assigned CE IPv4 10.218.48.16, CE IPv6 2400:4150:2004:400:a:da30:1000:400 to interface Tunnel0.0
+2026/11/26 05:48:50 MAPE.022: MAP-E status changed from loading rule to active, interface Tunnel0.0
+2026/11/26 05:48:50 MAPE.004: Next get MAP-E rule information after 375 seconds, interface Tunnel0.0
+2026/11/26 05:48:50   IP.021: Interface Tunnel0.0, link up
+2026/11/26 05:48:50   IP.021: Interface Tunnel0.0, link down
+2026/11/26 05:48:50   IP.021: Interface Tunnel0.0, link up
+2026/11/26 05:48:50   IP.021: Interface Tunnel0.0, line protocol up

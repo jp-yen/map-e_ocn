@@ -16,7 +16,7 @@ from urllib.parse import urlparse, parse_qs
 from constants import WORKSPACE_DIR, STATIC_DIR
 from config import ConfigManager
 from utils import (
-    run_cmd, KeaClient,
+    run_cmd, KeaClient, calc_br_ipv6,
     parse_line_datetime, detect_log_level, fetch_logs_by_type,
     get_container_statuses,
 )
@@ -591,16 +591,8 @@ diagnose test application vned 99"""
         slaac_fix_vlans = _g("SLAAC_FIX_VLANS", "")
         pd_fix_vlans = _g("PD_FIX_VLANS", "")
 
-        # MapeCommon.pm 準拠の BR IPv6 計算 (BR_PREFIX::ipv4_to_hex_hextets)
-        br_ipv6 = ""
-        try:
-            octets = [int(x) for x in br_ipv4_addr.strip().split(".")]
-            if len(octets) == 4:
-                hex_hextets = f"{octets[0]:02x}{octets[1]:02x}:{octets[2]:02x}{octets[3]:02x}"
-                clean_pfx = br_prefix.strip().rstrip(":")
-                br_ipv6 = f"{clean_pfx}::{hex_hextets}"
-        except Exception:
-            br_ipv6 = ""
+        # MapeCommon.pm 準拠の BR IPv6 計算
+        br_ipv6 = calc_br_ipv6(br_prefix, br_ipv4_addr)
 
         # map-e-static-ip.conf から登録済みエントリを読み込む
         static_entries = []
@@ -729,12 +721,13 @@ diagnose test application vned 99"""
 
         results = []
 
-        # 1. Kea DHCPv6 リース削除
+        # 1. Kea DHCPv6 リース削除 & PD 静的ルート削除
         if prefix and prefix != "-":
             pd_res = KeaClient.delete_pd_lease(prefix)
             results.extend(pd_res)
+            run_cmd(["ip", "-6", "route", "del", prefix, "proto", "static"], privileged=True)
 
-        # 2. Linux カーネルトンネル経路 (mpe-common) 削除 (PBR テーブル 301..363 および main)
+        # 2. Linux カーネルトンネル経路 (mpe-common) 削除 (proto 250 事前登録ルートは維持・再同期)
         if ipv4 and ipv4 != "-":
             clean_v4 = ipv4.split("/")[0]
             dst = f"{clean_v4}/32"
@@ -742,41 +735,21 @@ diagnose test application vned 99"""
             del_count = 0
             if ret_sh == 0 and out_sh.strip():
                 for r_line in out_sh.splitlines():
+                    if re.search(r"\bproto\s+250\b", r_line):
+                        continue
                     m_tbl = re.search(r"\btable\s+(\d+)\b", r_line)
                     tbl_arg = ["table", m_tbl.group(1)] if m_tbl and m_tbl.group(1) != "254" else []
                     ret_d, _, _ = run_cmd(["ip", "route", "del", dst, "dev", "mpe-common", *tbl_arg], privileged=True)
                     if ret_d == 0:
                         del_count += 1
-            if del_count == 0:
-                ret, _, err = run_cmd(["ip", "route", "del", dst, "dev", "mpe-common"], privileged=True)
-                if ret != 0:
-                    ret, _, err = run_cmd(["ip", "route", "del", clean_v4, "dev", "mpe-common"], privileged=True)
-            results.append(f"Route del {ipv4}: deleted {del_count} entries")
-        else:
-            ret, out, _ = run_cmd(["ip", "route", "show", "table", "all", "dev", "mpe-common"])
-            if ret == 0:
-                for line in out.splitlines():
-                    match = False
-                    if ce_ipv6 and ce_ipv6 != "-" and ce_ipv6 in line:
-                        match = True
-                    clean_pfx = prefix.split("/")[0].rstrip(":")
-                    if clean_pfx and clean_pfx in line:
-                        match = True
-                    if match:
-                        m_v4 = re.match(r"^([\d\.]+)(?:/32)?", line.strip())
-                        m_tbl = re.search(r"\btable\s+(\d+)\b", line)
-                        tbl_arg = ["table", m_tbl.group(1)] if m_tbl and m_tbl.group(1) != "254" else []
-                        if m_v4:
-                            del_v4 = m_v4.group(1)
-                            ret_d, _, _ = run_cmd(["ip", "route", "del", f"{del_v4}/32", "dev", "mpe-common", *tbl_arg], privileged=True)
-                            if ret_d != 0:
-                                ret_d, _, _ = run_cmd(["ip", "route", "del", del_v4, "dev", "mpe-common", *tbl_arg], privileged=True)
-                            results.append(f"Route del {del_v4} (table {m_tbl.group(1) if m_tbl else 'main'}): code {ret_d}")
+            results.append(f"Route del {ipv4}: deleted {del_count} dynamic entries")
 
-        # 3. NDP キャッシュ削除
+        # 3. NDP キャッシュ削除 & 事前登録ルート整合 (CE 再接続時に Option 94 / キャッシュのみで即開通できるよう維持)
         if ce_ipv6 and ce_ipv6 != "-":
             ret, _, _ = run_cmd(["ip", "-6", "neigh", "flush", "to", ce_ipv6], privileged=True)
             results.append(f"NDP flush {ce_ipv6}: code {ret}")
+        from config import run_mape_tunnel_sync  # noqa: PLC0415
+        run_mape_tunnel_sync(WORKSPACE_DIR)
 
         self.send_json({
             "success": True,

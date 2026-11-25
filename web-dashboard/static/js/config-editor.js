@@ -17,36 +17,8 @@ let isConfigDirty = false;
 let configDebounceTimer = null;
 let activeConfigPanel = 1;
 
-function escapeHtml(str) {
-  if (str === null || str === undefined) return '';
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-async function openConfigModal() {
-  const modal = document.getElementById('configModal');
-  if (modal) {
-    modal.style.display = 'flex';
-    await loadConfigData();
-    switchConfigTab(1);
-  } else if (typeof openWindow === 'function') {
-    openWindow('/config', 'ConfigEditor', 1100, 800);
-  } else {
-    window.location.href = '/config';
-  }
-}
-
 function closeConfigModal() {
-  const modal = document.getElementById('configModal');
-  if (modal) {
-    modal.style.display = 'none';
-  } else {
-    window.close();
-  }
+  window.close();
 }
 
 function notifyReloadData() {
@@ -278,13 +250,13 @@ function bindConfigToForm(cfg) {
     const el = document.getElementById(`cfg_${k}`);
     if (el) {
       if (k === 'BR_GATEWAY') {
-        el.value = ipoe[k] ?? cfg?.slaac?.SLAAC_BR_SUFFIX ?? '::ff0a';
+        el.value = ipoe[k] ?? '::ff0a';
       } else {
         el.value = ipoe[k] ?? '';
       }
     }
   });
-  const staticList = ipoe.static_ips || cfg?.slaac?.static_ips || [];
+  const staticList = ipoe.static_ips || [];
   renderStaticIPTable('ipoe', staticList);
 
   // 4. SLAAC
@@ -367,7 +339,7 @@ function sortStagedList(list, sortState) {
     if (col === 'ip' || col === 'server_ip') {
       va = ipToNumber(a.item[col]);
       vb = ipToNumber(b.item[col]);
-    } else if (col === 'mac') {
+    } else if (col === 'vlan') {
       va = parseInt(va, 10) || 0;
       vb = parseInt(vb, 10) || 0;
     } else {
@@ -405,7 +377,7 @@ function updateConfigSortIndicators() {
   const fields = {
     pppoeSrv: ['name'],
     pppoeUsr: ['username', 'password', 'ip', 'service_name', 'ddns_v4', 'note'],
-    ipoeStatic: ['mac', 'ip', 'ddns_v6', 'ddns_v4', 'note'],
+    ipoeStatic: ['vlan', 'ip', 'ddns_v6', 'ddns_v4', 'note'],
   };
   Object.keys(fields).forEach(tk => {
     const st = configSortState[tk];
@@ -421,38 +393,10 @@ function updateConfigSortIndicators() {
 function getPPPoEServerInstances() {
   if (!currentConfigStaging) currentConfigStaging = {};
   if (!currentConfigStaging.pppoe) currentConfigStaging.pppoe = {};
-  
-  if (Array.isArray(currentConfigStaging.pppoe.server_instances)) {
-    return currentConfigStaging.pppoe.server_instances;
+  if (!Array.isArray(currentConfigStaging.pppoe.server_instances)) {
+    currentConfigStaging.pppoe.server_instances = [];
   }
-
-  // 既存の services { [vlan]: [...] } から集約
-  const instances = [];
-  const srvMap = new Map();
-  const servicesByVlan = currentConfigStaging.pppoe.services || {};
-
-  Object.entries(servicesByVlan).forEach(([vlan, srvList]) => {
-    if (Array.isArray(srvList)) {
-      srvList.forEach(s => {
-        const name = (s.name || s.ac_name || '').trim();
-        if (!name) return;
-        if (!srvMap.has(name)) {
-          const newInst = {
-            name: name,
-            vrf_enabled: !!s.vrf_enabled
-          };
-          srvMap.set(name, newInst);
-          instances.push(newInst);
-        } else {
-          const inst = srvMap.get(name);
-          if (s.vrf_enabled) inst.vrf_enabled = true;
-        }
-      });
-    }
-  });
-
-  currentConfigStaging.pppoe.server_instances = instances;
-  return instances;
+  return currentConfigStaging.pppoe.server_instances;
 }
 
 function syncPPPoEServicesToStaging() {
@@ -474,31 +418,16 @@ function getPPPoEDefinedServices() {
 function getPPPoECommonUsers() {
   if (!currentConfigStaging) currentConfigStaging = {};
   if (!currentConfigStaging.pppoe) currentConfigStaging.pppoe = {};
-
-  if (Array.isArray(currentConfigStaging.pppoe.common_users)) {
-    return currentConfigStaging.pppoe.common_users;
+  if (!Array.isArray(currentConfigStaging.pppoe.users)) {
+    currentConfigStaging.pppoe.users = Array.isArray(currentConfigStaging.pppoe.common_users)
+      ? currentConfigStaging.pppoe.common_users
+      : [];
   }
-  if (Array.isArray(currentConfigStaging.pppoe.users)) {
-    currentConfigStaging.pppoe.common_users = currentConfigStaging.pppoe.users;
-    return currentConfigStaging.pppoe.common_users;
-  }
-  if (currentConfigStaging.pppoe.users && typeof currentConfigStaging.pppoe.users === 'object') {
-    for (const [v, ulist] of Object.entries(currentConfigStaging.pppoe.users)) {
-      if (Array.isArray(ulist) && ulist.length > 0) {
-        currentConfigStaging.pppoe.common_users = JSON.parse(JSON.stringify(ulist));
-        return currentConfigStaging.pppoe.common_users;
-      }
-    }
-  }
-  currentConfigStaging.pppoe.common_users = [];
-  return currentConfigStaging.pppoe.common_users;
+  return currentConfigStaging.pppoe.users;
 }
 
 function syncPPPoECommonUsersToStaging() {
   const users = getPPPoECommonUsers();
-  if (!currentConfigStaging) currentConfigStaging = {};
-  if (!currentConfigStaging.pppoe) currentConfigStaging.pppoe = {};
-  currentConfigStaging.pppoe.common_users = users;
   currentConfigStaging.pppoe.users = users;
 }
 
@@ -840,7 +769,7 @@ function updateStaticIPVlanSelects() {
   selects.forEach(selectEl => {
     const idx = parseInt(selectEl.getAttribute('data-static-idx'), 10);
     const item = list[idx] || {};
-    const currentVlan = String(item.mac || selectEl.value || '').trim();
+    const currentVlan = String(item.vlan || selectEl.value || '').trim();
     const optionsHtml = buildStaticIPVlanOptionsHtml(currentVlan, configuredVlans);
     if (selectEl.innerHTML !== optionsHtml) {
       selectEl.innerHTML = optionsHtml;
@@ -940,12 +869,12 @@ function renderStaticIPTable(type, list) {
   } else {
     const configuredVlans = getConfiguredStaticIPVlans();
     tbody.innerHTML = sortStagedList(list, configSortState.ipoeStatic).map(({ item, idx }) => {
-      const currentVlan = String(item.mac || '').trim();
+      const currentVlan = String(item.vlan || '').trim();
       const optionsHtml = buildStaticIPVlanOptionsHtml(currentVlan, configuredVlans);
       return `
         <tr>
           <td>
-            <select class="table-input ipoe-static-vlan-select" data-static-idx="${idx}" onchange="onStaticIPChanged('${type}', ${idx}, 'mac', this.value)">
+            <select class="table-input ipoe-static-vlan-select" data-static-idx="${idx}" onchange="onStaticIPChanged('${type}', ${idx}, 'vlan', this.value)">
               ${optionsHtml}
             </select>
           </td>
@@ -1001,10 +930,10 @@ function addStaticIPRow(type) {
   const targetObj = (type === 'ipoe')
     ? (currentConfigStaging.ipoe_common = currentConfigStaging.ipoe_common || {})
     : (currentConfigStaging[type] = currentConfigStaging[type] || {});
-  if (!targetObj.static_ips) {
-    targetObj.static_ips = (currentConfigStaging?.slaac?.static_ips || currentConfigStaging?.dhcp_pd?.static_ips || []);
+  if (!Array.isArray(targetObj.static_ips)) {
+    targetObj.static_ips = [];
   }
-  targetObj.static_ips.unshift({ mac: '', ip: '', ddns_v6: '', ddns_v4: '', note: '' });
+  targetObj.static_ips.unshift({ vlan: '', ip: '', ddns_v6: '', ddns_v4: '', note: '' });
   renderStaticIPTable(type, targetObj.static_ips);
   onConfigInputChanged();
 }
@@ -1092,7 +1021,6 @@ function readFormValuesToStaging() {
     if (textarea) {
       const parsedUsers = parsePPPoEUsersFromCSV(textarea.value);
       if (!currentConfigStaging.pppoe) currentConfigStaging.pppoe = {};
-      currentConfigStaging.pppoe.common_users = parsedUsers;
       currentConfigStaging.pppoe.users = parsedUsers;
     }
   }
@@ -1210,70 +1138,62 @@ function validateConfigData(config) {
   });
 
   // ユーザー設定
-  const usersByVlan = pppoe.users || {};
-  for (const [vlan, users] of Object.entries(usersByVlan)) {
-    if (!Array.isArray(users)) continue;
-    const seenUnames = new Set();
-    users.forEach((u, idx) => {
-      const uname = (u.username || '').trim();
-      const pwd = (u.password || '').trim();
-      const ip = (u.ip || '').trim();
-      let srv = (u.service_name || u.ac_name || '*').trim().replace(/\s+/g, '_');
-      u.service_name = srv;
-      u.ac_name = srv;
-      const note = (u.note || '').trim();
-      const ddns = (u.ddns_v4 || '').trim();
-      const rowNum = idx + 1;
+  const users = Array.isArray(pppoe.users) ? pppoe.users : [];
+  const seenUnames = new Set();
+  users.forEach((u, idx) => {
+    const uname = (u.username || '').trim();
+    const pwd = (u.password || '').trim();
+    const ip = (u.ip || '').trim();
+    let srv = (u.service_name || u.ac_name || '*').trim().replace(/\s+/g, '_');
+    u.service_name = srv;
+    u.ac_name = srv;
+    const note = (u.note || '').trim();
+    const ddns = (u.ddns_v4 || '').trim();
+    const rowNum = idx + 1;
 
-      // すべて空欄の行は入力意図がないため読み飛ばす
-      if (!uname && !pwd && !ip && !note && !ddns) return;
+    // すべて空欄の行は入力意図がないため読み飛ばす
+    if (!uname && !pwd && !ip && !note && !ddns) return;
 
-      // IP 欄が '*' または空欄の場合はプール払い出し指定 -> バリデーションスキップ
-      const isPoolUser = (ip === '*' || ip === '');
+    // IP 欄が '*' または空欄の場合はプール払い出し指定 -> バリデーションスキップ
+    const isPoolUser = (ip === '*' || ip === '');
 
-      const missing = [];
-      if (!uname) missing.push('ユーザー名');
-      if (!pwd) missing.push('パスワード');
-      if (!ip && !isPoolUser) missing.push('クライアントIP');
+    const missing = [];
+    if (!uname) missing.push('ユーザー名');
+    if (!pwd) missing.push('パスワード');
+    if (!ip && !isPoolUser) missing.push('クライアントIP');
 
-      if (missing.length > 0) {
-        const target = uname ? `ユーザー「${uname}」` : `${rowNum}行目`;
-        errors.push(`PPPoE (VLAN ${vlan}): ${target} の必須項目（${missing.join(', ')}）が未入力です。`);
-      } else if (uname) {
-        if (seenUnames.has(uname)) {
-          errors.push(`PPPoE (VLAN ${vlan}): ユーザー名「${uname}」が重複しています。`);
-        }
-        seenUnames.add(uname);
+    if (missing.length > 0) {
+      const target = uname ? `ユーザー「${uname}」` : `${rowNum}行目`;
+      errors.push(`PPPoE 認証情報: ${target} の必須項目（${missing.join(', ')}）が未入力です。`);
+    } else if (uname) {
+      if (seenUnames.has(uname)) {
+        errors.push(`PPPoE 認証情報: ユーザー名「${uname}」が重複しています。`);
       }
-    });
-  }
+      seenUnames.add(uname);
+    }
+  });
 
   // 2. 固定IP設定
-  let staticIps = config.ipoe_common ? config.ipoe_common.static_ips : null;
-  if (!staticIps) {
-    const slaacStatic = (config.slaac && config.slaac.static_ips) || [];
-    const pdStatic = (config.dhcp_pd && config.dhcp_pd.static_ips) || [];
-    staticIps = [...slaacStatic, ...pdStatic];
-  }
+  const staticIps = config.ipoe_common?.static_ips;
   if (Array.isArray(staticIps)) {
-    const seenMacs = new Set();
+    const seenVlans = new Set();
     staticIps.forEach((entry, idx) => {
-      const mac = (entry.mac || '').trim();
+      const vlan = (entry.vlan || '').trim();
       const ip = (entry.ip || '').trim();
       const note = (entry.note || '').trim();
       const rowNum = idx + 1;
 
       // すべて空欄の行は入力意図がないため読み飛ばす
-      if (!mac && !ip && !note) return;
+      if (!vlan && !ip && !note) return;
 
-      if (!mac) {
+      if (!vlan) {
         errors.push(`固定IP設定: ${rowNum}行目のVLAN番号が未入力です。`);
-      } else if (!/^\d+$/.test(mac) || parseInt(mac, 10) < 1 || parseInt(mac, 10) > 4094) {
-        errors.push(`固定IP設定: ${rowNum}行目「${mac}」は有効なVLAN番号（1〜4094の半角数字）ではありません。`);
-      } else if (seenMacs.has(String(parseInt(mac, 10)))) {
-        errors.push(`固定IP設定: VLAN番号「${mac}」が重複しています。`);
+      } else if (!/^\d+$/.test(vlan) || parseInt(vlan, 10) < 1 || parseInt(vlan, 10) > 4094) {
+        errors.push(`固定IP設定: ${rowNum}行目「${vlan}」は有効なVLAN番号（1〜4094の半角数字）ではありません。`);
+      } else if (seenVlans.has(String(parseInt(vlan, 10)))) {
+        errors.push(`固定IP設定: VLAN番号「${vlan}」が重複しています。`);
       } else {
-        seenMacs.add(String(parseInt(mac, 10)));
+        seenVlans.add(String(parseInt(vlan, 10)));
       }
 
       // IPv4プレフィックスが空欄の場合は '-' に補完

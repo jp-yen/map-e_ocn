@@ -299,16 +299,6 @@ window.addEventListener('keydown', (e) => {
       closeClientDetailModal();
       return;
     }
-    const configModal = document.getElementById('configModal');
-    if (configModal && configModal.style.display !== 'none') {
-      closeConfigModal();
-      return;
-    }
-    const restartModal = document.getElementById("restartConfirmModal");
-    if (restartModal && restartModal.style.display !== "none") {
-      closeRestartConfirmModal();
-      return;
-    }
     const discModal = document.getElementById("disconnectModal");
     if (discModal && discModal.style.display !== "none") {
       closeModal();

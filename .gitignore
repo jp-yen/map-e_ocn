@@ -26,7 +26,6 @@ pppoe/srv-*/
 !.gitignore
 !Makefile
 !*.md
-!verify_calc.py
 
 # --- 設定ファイルおよびテンプレート (ルート直下) ---
 !ddns.conf.tmpl

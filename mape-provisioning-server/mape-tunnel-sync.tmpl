@@ -177,8 +177,20 @@ def sync_vlan_addresses(active_vifs, interfaces_file):
             apply(["ip", "-6", "addr", "add", str(a), "dev", vif],
                   f"[ADDR-ADD] added address {a} to {vif}")
         for a in sorted(expected, key=str):
-            apply(["ip", "-6", "route", "replace", str(a.network), "dev", vif],
-                  f"[ROUTE-ENSURE] ensured subnet route {a.network} on {vif}")
+            rc_r, out_r = run(["ip", "-6", "route", "show", str(a.network), "dev", vif])
+            lines_r = [ln.strip() for ln in out_r.splitlines() if ln.strip()] if rc_r == 0 else []
+            has_kernel_route = any("proto kernel" in ln for ln in lines_r)
+            if not has_kernel_route:
+                apply(["ip", "-6", "addr", "replace", str(a), "dev", vif],
+                      f"[ROUTE-ENSURE] restored kernel subnet route {a.network} on {vif}")
+                rc_r, out_r = run(["ip", "-6", "route", "show", str(a.network), "dev", vif])
+                lines_r = [ln.strip() for ln in out_r.splitlines() if ln.strip()] if rc_r == 0 else []
+            for ln in lines_r:
+                if "proto kernel" not in ln and "via " not in ln:
+                    m_met = re.search(r"\bmetric\s+(\d+)\b", ln)
+                    met_args = ["metric", m_met.group(1)] if m_met else []
+                    apply(["ip", "-6", "route", "del", str(a.network), "dev", vif, *met_args],
+                          f"[ROUTE-CLEANUP] removed duplicate subnet route {a.network} on {vif}")
 
 
 # -----------------------------------------------------------------------------

@@ -31,6 +31,19 @@ def _get_app_config():
     return APP_CONFIG
 
 
+def calc_br_ipv6(br_prefix: str, br_ipv4_addr: str) -> str:
+    """MapeCommon.pm 準拠で BR_PREFIX (96bit) と BR_IPV4_ADDR から BR_IPV6 を合成する"""
+    clean_pfx = (br_prefix or "").strip().rstrip(":")
+    clean_v4 = (br_ipv4_addr or "").strip()
+    if not clean_pfx or not clean_v4:
+        return ""
+    try:
+        packed = ipaddress.IPv4Address(clean_v4).packed.hex()
+        return f"{clean_pfx}::{packed[:4]}:{packed[4:]}"
+    except ValueError:
+        return ""
+
+
 
 def load_pppoe_conf_notes():
     """

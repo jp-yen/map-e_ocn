@@ -18,7 +18,7 @@ import traceback
 from typing import Any, Dict, List, Optional
 
 from constants import WORKSPACE_DIR, get_host_workspace_dir
-from utils import run_cmd
+from utils import run_cmd, calc_br_ipv6
 
 
 # ===========================================================================
@@ -79,7 +79,7 @@ def parse_static_ips(static_ip_conf_path: str) -> List[Dict[str, str]]:
             if len(parts) >= 2:
                 raw_ip = parts[1]
                 entries.append({
-                    "mac": parts[0],
+                    "vlan": parts[0],
                     "ip": "" if raw_ip == "-" else raw_ip,
                     "note": parts[2] if len(parts) >= 3 else "",
                 })
@@ -159,13 +159,10 @@ def validate_staging_config(staging: Dict[str, Any]) -> List[str]:
             else:
                 seen_svcs.add(name.lower())
 
-    users_raw = pppoe.get("users", [])
-    users_by_vlan = {"common": users_raw} if isinstance(users_raw, list) else (users_raw if isinstance(users_raw, dict) else {})
+    users = pppoe.get("users") or pppoe.get("common_users") or []
     ip_re = re.compile(r'^(\d{1,3}\.){3}\d{1,3}(/([0-9]|[12]\d|3[012]))?$')
 
-    for vlan, users in users_by_vlan.items():
-        if not isinstance(users, list):
-            continue
+    if isinstance(users, list):
         seen_unames = set()
         for idx, u in enumerate(users):
             uname = u.get("username", "").strip()
@@ -190,7 +187,7 @@ def validate_staging_config(staging: Dict[str, Any]) -> List[str]:
             if not ip and not is_pool_user:
                 missing.append("クライアントIP")
 
-            prefix = f"PPPoE (VLAN {vlan})" if vlan != "common" else "PPPoE 認証情報"
+            prefix = "PPPoE 認証情報"
             if missing:
                 target = f"ユーザー「{uname}」" if uname else f"{row_num}行目"
                 errors.append(f"{prefix}: {target} の必須項目（{', '.join(missing)}）が未入力です。")
@@ -227,13 +224,10 @@ def validate_staging_config(staging: Dict[str, Any]) -> List[str]:
 
     # 2. 固定IP設定 (map-e-static-ip.conf)
     static_ips = staging.get("ipoe_common", {}).get("static_ips")
-    if static_ips is None:
-        static_ips = (staging.get("slaac", {}).get("static_ips") or []) + (staging.get("dhcp_pd", {}).get("static_ips") or [])
-
     if isinstance(static_ips, list):
         seen_vlans_static = set()
         for idx, entry in enumerate(static_ips):
-            vlan_key = entry.get("mac", "").strip()
+            vlan_key = entry.get("vlan", "").strip()
             ip = entry.get("ip", "").strip()
             note = entry.get("note", "").strip()
             row_num = idx + 1
@@ -429,7 +423,7 @@ def generate_static_ip_content(static_ips: List[Dict[str, str]]) -> str:
     lines = ["# VLAN番号, 固定IPv4プレフィックス, 備考\n"]
     seen = set()
     for idx, entry in enumerate(static_ips):
-        vlan_key = entry.get("mac", "").strip()
+        vlan_key = entry.get("vlan", "").strip()
         ip = entry.get("ip", "").strip()
         note = entry.get("note", "").strip()
         row_num = idx + 1
@@ -474,14 +468,12 @@ def generate_ddns_conf_content(staging_data: Dict[str, Any], ddns_conf_path: str
         "# --- IPoE (MAP-E) クライアント (VLAN ID 指定) ---\n",
     ]
 
-    static_ips = staging_data.get("ipoe_common", {}).get("static_ips")
-    if static_ips is None:
-        static_ips = (staging_data.get("slaac", {}).get("static_ips") or []) + (staging_data.get("dhcp_pd", {}).get("static_ips") or [])
+    static_ips = staging_data.get("ipoe_common", {}).get("static_ips") or []
 
     seen_vlans = set()
     vlan_entries = []
-    for entry in (static_ips or []):
-        raw_key = entry.get("mac", "").strip()
+    for entry in static_ips:
+        raw_key = entry.get("vlan", "").strip()
         if not raw_key or not raw_key.isdigit():
             continue
         raw_v6 = entry.get("ddns_v6", "").strip()
@@ -502,18 +494,12 @@ def generate_ddns_conf_content(staging_data: Dict[str, Any], ddns_conf_path: str
         lines.append("# (登録なし)\n")
 
     lines.append("\n# --- PPPoE クライアント (ユーザー名指定) ---\n")
-    pppoe_users = staging_data.get("pppoe", {}).get("common_users") or staging_data.get("pppoe", {}).get("users", {})
-    pppoe_users_iter = (
-        [("common", pppoe_users)] if isinstance(pppoe_users, list)
-        else (pppoe_users.items() if isinstance(pppoe_users, dict) else [])
-    )
+    pppoe_users = staging_data.get("pppoe", {}).get("users") or staging_data.get("pppoe", {}).get("common_users") or []
 
     seen_users = set()
     pppoe_count = 0
-    for _, ulist in pppoe_users_iter:
-        if not isinstance(ulist, list):
-            continue
-        for u in ulist:
+    if isinstance(pppoe_users, list):
+        for u in pppoe_users:
             uname = u.get("username", "").strip()
             if not uname or uname.lower() in seen_users:
                 continue
@@ -532,115 +518,193 @@ def generate_ddns_conf_content(staging_data: Dict[str, Any], ddns_conf_path: str
 # 4. ホストネットワーク同期ヘルパー
 # ===========================================================================
 
+def parse_system_interfaces(interfaces_path: str) -> Dict[str, Any]:
+    """gen_system_mod.pl が生成した system/interfaces から VLAN / dummy 定義を抽出する"""
+    vlans: Dict[str, Dict[str, Any]] = {}
+    dummies: Dict[str, Dict[str, Any]] = {}
+    stanza_v6_addrs: Dict[str, List[str]] = {}
+    if not os.path.isfile(interfaces_path):
+        return {"vlans": vlans, "dummies": dummies}
+
+    cur_iface: Optional[str] = None
+    with open(interfaces_path, "r", encoding="utf-8", errors="ignore") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            m_iface = re.match(r"^iface\s+(\S+)\s+\S+\s+\S+", line)
+            if m_iface:
+                cur_iface = m_iface.group(1)
+                continue
+
+            if cur_iface:
+                m_addr = re.match(r"^address\s+(\S+)", line)
+                if m_addr and ":" in m_addr.group(1):
+                    addr = m_addr.group(1)
+                    addrs = stanza_v6_addrs.setdefault(cur_iface, [])
+                    if addr not in addrs:
+                        addrs.append(addr)
+                    continue
+
+            m_vlan = re.match(r"^pre-up\s+ip\s+link\s+add\s+link\s+(\S+)\s+name\s+(\S+)\s+type\s+vlan\s+id\s+(\d+)", line)
+            if m_vlan:
+                parent, vif, vid = m_vlan.group(1), m_vlan.group(2), int(m_vlan.group(3))
+                vlans.setdefault(vif, {"parent": parent, "vid": vid, "ipv6_addrs": []})
+                continue
+
+            m_dummy = re.match(r"^pre-up\s+ip\s+link\s+add\s+(\S+)\s+type\s+dummy", line)
+            if m_dummy:
+                dname = m_dummy.group(1)
+                dummies.setdefault(dname, {"ipv4_addrs": [], "ipv6_addrs": [], "sysctls": []})
+                continue
+
+            m_v6_add = re.match(r"^post-up\s+ip\s+-6\s+addr\s+add\s+(\S+)\s+dev\s+(\S+)", line)
+            if m_v6_add:
+                addr, dname = m_v6_add.group(1), m_v6_add.group(2)
+                entry = dummies.setdefault(dname, {"ipv4_addrs": [], "ipv6_addrs": [], "sysctls": []})
+                if addr not in entry["ipv6_addrs"]:
+                    entry["ipv6_addrs"].append(addr)
+                continue
+
+            m_v4_add = re.match(r"^post-up\s+ip(?:\s+-4)?\s+addr\s+add\s+(\S+)\s+dev\s+(\S+)", line)
+            if m_v4_add:
+                addr, dname = m_v4_add.group(1), m_v4_add.group(2)
+                entry = dummies.setdefault(dname, {"ipv4_addrs": [], "ipv6_addrs": [], "sysctls": []})
+                if addr not in entry["ipv4_addrs"]:
+                    entry["ipv4_addrs"].append(addr)
+                continue
+
+            m_sysctl = re.match(r"^post-up\s+sysctl\s+-w\s+(\S+)", line)
+            if m_sysctl and cur_iface in dummies:
+                kv = m_sysctl.group(1)
+                if kv not in dummies[cur_iface]["sysctls"]:
+                    dummies[cur_iface]["sysctls"].append(kv)
+
+    for vif, info in vlans.items():
+        info["ipv6_addrs"] = stanza_v6_addrs.get(vif, [])
+
+    return {"vlans": vlans, "dummies": dummies}
+
+
 def sync_host_vlan_interfaces(staging: Dict[str, Any], logs: List[str]) -> None:
-    """map-e.conf で指定された MAPE_IF と各 VLAN サブインターフェース・dummy デバイスをホスト上に同期する"""
-    lowlayer = staging.get("low_layer", staging.get("lowlayer", {}))
+    """生成済みの system/interfaces を正としてホスト上の VLAN サブIF・dummy デバイスを同期する"""
+    lowlayer = staging.get("low_layer", {})
     mape_if = lowlayer.get("MAPE_IF", "eth1").strip() or "eth1"
-    common = staging.get("ipoe_common", {})
-    slaac = staging.get("slaac", {})
-    hgw = staging.get("hgw", {})
+    interfaces_path = os.path.join(WORKSPACE_DIR, "system", "interfaces")
+    parsed = parse_system_interfaces(interfaces_path)
+    vlans = parsed["vlans"]
+    dummies = parsed["dummies"]
 
     ret, _, _ = run_cmd(["ip", "link", "show", mape_if], privileged=True)
-    if ret != 0:
-        logs.append(f"[WARN] 親インターフェース '{mape_if}' が見つかりません。ホストVLAN同期をスキップします。")
-        return
+    if ret == 0:
+        run_cmd(["ip", "link", "set", "dev", mape_if, "up"], privileged=True)
+        active_vlan_set = {info["vid"] for info in vlans.values() if info["parent"] == mape_if}
 
-    run_cmd(["ip", "link", "set", "dev", mape_if, "up"], privileged=True)
+        # 1. 不要な既存 VLAN インターフェースの自動削除
+        ret_links, out_links, _ = run_cmd(["ip", "-o", "link", "show"], privileged=True)
+        if ret_links == 0:
+            pattern = re.compile(r"^[0-9]+:\s+(" + re.escape(mape_if) + r"\.(\d+))(@\S+)?:")
+            for line in out_links.splitlines():
+                m = pattern.match(line.strip())
+                if m and int(m.group(2)) not in active_vlan_set:
+                    dev_name = m.group(1)
+                    del_ret, _, del_err = run_cmd(["ip", "link", "del", "dev", dev_name], privileged=True)
+                    if del_ret == 0:
+                        logs.append(f"不要なホストVLANを削除しました: {dev_name}")
+                    else:
+                        logs.append(f"[WARN] 不要VLAN {dev_name} 削除失敗: {del_err.strip()}")
 
-    vlan_types: Dict[int, set] = {}
-    active_vlan_set = set()
-    for key in ["SLAAC_DYN_VLANS", "PD_DYN_VLANS", "SLAAC_FIX_VLANS", "PD_FIX_VLANS", "PPPOE_VLANS", "HGW_VLANS", "HGW_FIX_VLANS"]:
-        for v in str(lowlayer.get(key, "")).split():
-            v = v.strip()
-            if v.isdigit():
-                vid = int(v)
-                vlan_types.setdefault(vid, set()).add(key)
-                active_vlan_set.add(vid)
-
-    # 1. 不要な既存 VLAN インターフェースの自動削除
-    ret_links, out_links, _ = run_cmd(["ip", "-o", "link", "show"], privileged=True)
-    if ret_links == 0:
-        pattern = re.compile(r"^[0-9]+:\s+(" + re.escape(mape_if) + r"\.(\d+))(@\S+)?:")
-        for line in out_links.splitlines():
-            m = pattern.match(line.strip())
-            if m and int(m.group(2)) not in active_vlan_set:
-                dev_name = m.group(1)
-                del_ret, _, del_err = run_cmd(["ip", "link", "del", "dev", dev_name], privileged=True)
-                if del_ret == 0:
-                    logs.append(f"不要なホストVLANを削除しました: {dev_name}")
+        # 2. system/interfaces に定義された VLAN インターフェースの作成・設定
+        for vif, info in sorted(vlans.items(), key=lambda kv: kv[1]["vid"]):
+            vid = info["vid"]
+            if run_cmd(["ip", "link", "show", vif], privileged=True)[0] != 0:
+                ret_add, _, err_add = run_cmd(
+                    ["ip", "link", "add", "link", info["parent"], "name", vif, "type", "vlan", "id", str(vid)],
+                    privileged=True,
+                )
+                if ret_add == 0:
+                    logs.append(f"ホストVLAN作成: {vif} (VLAN ID: {vid})")
                 else:
-                    logs.append(f"[WARN] 不要VLAN {dev_name} 削除失敗: {del_err.strip()}")
+                    logs.append(f"[WARN] {vif} 作成失敗: {err_add.strip()}")
 
-    # 2. 必要な VLAN インターフェースの作成・UP・IPv6有効化・アドレス設定
-    for vlan in sorted(active_vlan_set):
-        types = vlan_types[vlan]
-        vif = f"{mape_if}.{vlan}"
-        ret_chk, _, _ = run_cmd(["ip", "link", "show", vif], privileged=True)
-        if ret_chk != 0:
-            ret_add, _, err_add = run_cmd(
-                ["ip", "link", "add", "link", mape_if, "name", vif, "type", "vlan", "id", str(vlan)],
-                privileged=True
-            )
-            if ret_add == 0:
-                logs.append(f"ホストVLAN作成: {vif} (VLAN ID: {vlan})")
+            run_cmd(["ip", "link", "set", "dev", vif, "up"], privileged=True)
+            sysctl_vif = vif.replace(".", "/")
+            run_cmd(["sysctl", "-w", f"net.ipv6.conf.{sysctl_vif}.disable_ipv6=0"], privileged=True)
+            run_cmd(["sysctl", "-w", f"net.ipv6.conf.{sysctl_vif}.accept_ra=0"], privileged=True)
+            run_cmd(["sysctl", "-w", f"net.ipv6.conf.{sysctl_vif}.autoconf=0"], privileged=True)
+
+            target_v6 = info["ipv6_addrs"]
+            if target_v6:
+                for addr in target_v6:
+                    run_cmd(["ip", "-6", "addr", "replace", addr, "dev", vif], privileged=True)
             else:
-                logs.append(f"[WARN] {vif} 作成失敗: {err_add.strip()}")
+                run_cmd(["ip", "-6", "addr", "flush", "dev", vif, "scope", "global"], privileged=True)
+    else:
+        logs.append(f"[WARN] 親インターフェース '{mape_if}' が見つかりません。ホストVLAN同期をスキップします。")
 
-        run_cmd(["ip", "link", "set", "dev", vif, "up"], privileged=True)
+    # 3. dummy デバイス (dummy0 / dummy1 等) の同期 (addr flush による src 付きトンネル経路の巻き添え削除を防止)
+    for dname, dinfo in dummies.items():
+        if run_cmd(["ip", "link", "show", dname], privileged=True)[0] != 0:
+            run_cmd(["ip", "link", "add", dname, "type", "dummy"], privileged=True)
+        run_cmd(["ip", "link", "set", "dev", dname, "up"], privileged=True)
+        for kv in dinfo["sysctls"]:
+            run_cmd(["sysctl", "-w", kv], privileged=True)
 
-        sysctl_vif = vif.replace(".", "/")
-        run_cmd(["sysctl", "-w", f"net.ipv6.conf.{sysctl_vif}.disable_ipv6=0"], privileged=True)
-        run_cmd(["sysctl", "-w", f"net.ipv6.conf.{sysctl_vif}.accept_ra=0"], privileged=True)
-        run_cmd(["sysctl", "-w", f"net.ipv6.conf.{sysctl_vif}.autoconf=0"], privileged=True)
+        expected_v4 = {ipaddress.IPv4Interface(a) for a in dinfo["ipv4_addrs"]}
+        ret4, out4, _ = run_cmd(["ip", "-4", "-o", "addr", "show", "dev", dname, "scope", "global"], privileged=True)
+        current_v4 = set()
+        if ret4 == 0:
+            for ln in out4.splitlines():
+                m4 = re.search(r"\binet\s+(\S+)", ln)
+                if m4:
+                    try:
+                        current_v4.add(ipaddress.IPv4Interface(m4.group(1)))
+                    except ValueError:
+                        pass
+        for stale4 in current_v4 - expected_v4:
+            run_cmd(["ip", "-4", "addr", "del", str(stale4), "dev", dname], privileged=True)
+        for addr4 in expected_v4 - current_v4:
+            run_cmd(["ip", "-4", "addr", "replace", str(addr4), "dev", dname], privileged=True)
 
-        if types & {"SLAAC_DYN_VLANS", "SLAAC_FIX_VLANS", "HGW_VLANS", "HGW_FIX_VLANS"}:
-            base = common.get("BASE_SUBNET", "").strip()
-            suffix = common.get("BR_GATEWAY", "::ff0a") or "::ff0a"
-            is_dyn = False
-            if "SLAAC_FIX_VLANS" in types:
-                base_value = slaac.get("SLAAC_FIX_BR_PREFIX", "3000")
-            elif "HGW_VLANS" in types:
-                base_value = hgw.get("HGW_BR_BASE", "5000")
-                is_dyn = True
-            elif "HGW_FIX_VLANS" in types:
-                base_value = hgw.get("HGW_FIX_BR_BASE", "6000")
-            else:
-                base_value = slaac.get("SLAAC_BR_BASE", "1000")
-                is_dyn = True
-            try:
-                hextet4 = f":{((vlan - 1) % 63) + 1:02x}00" if is_dyn else ""
-                address = f"{base}:{int(base_value) + vlan}{hextet4}::{suffix.lstrip(':')}/64"
-                run_cmd(["ip", "-6", "addr", "replace", address, "dev", vif], privileged=True)
-            except (TypeError, ValueError):
-                logs.append(f"[WARN] SLAAC/HGW アドレスを計算できません: {vif}")
+        expected_v6 = {ipaddress.IPv6Interface(a) for a in dinfo["ipv6_addrs"]}
+        ret6, out6, _ = run_cmd(["ip", "-6", "-o", "addr", "show", "dev", dname, "scope", "global"], privileged=True)
+        current_v6 = set()
+        if ret6 == 0:
+            for ln in out6.splitlines():
+                m6 = re.search(r"\binet6\s+(\S+)", ln)
+                if m6:
+                    try:
+                        current_v6.add(ipaddress.IPv6Interface(m6.group(1)))
+                    except ValueError:
+                        pass
+        for stale6 in current_v6 - expected_v6:
+            run_cmd(["ip", "-6", "addr", "del", str(stale6), "dev", dname], privileged=True)
+        for addr6 in expected_v6 - current_v6:
+            run_cmd(["ip", "-6", "addr", "replace", str(addr6), "dev", dname], privileged=True)
 
-    def ensure_dummy(name: str) -> None:
-        if run_cmd(["ip", "link", "show", name], privileged=True)[0] != 0:
-            run_cmd(["ip", "link", "add", name, "type", "dummy"], privileged=True)
-        run_cmd(["ip", "link", "set", "dev", name, "up"], privileged=True)
 
-    try:
-        base = common.get("BASE_SUBNET", "2400:4150").strip() or "2400:4150"
-        br_prefix = common.get("BR_PREFIX", f"{base}:3620").replace("${BASE_SUBNET}", base)
-        br_ipv4 = common.get("BR_IPV4_ADDR", "100.127.255.255")
-        ipv4 = ipaddress.IPv4Address(br_ipv4)
-        br_ipv6 = f"{br_prefix.rstrip(':')}::{ipv4.packed.hex()[:4]}:{ipv4.packed.hex()[4:]}"
-        ensure_dummy("dummy0")
-        run_cmd(["ip", "-4", "addr", "replace", f"{br_ipv4}/32", "dev", "dummy0"], privileged=True)
-        run_cmd(["ip", "-6", "addr", "flush", "dev", "dummy0", "scope", "global"], privileged=True)
-        run_cmd(["ip", "-6", "addr", "replace", f"{br_ipv6}/128", "dev", "dummy0"], privileged=True)
-
-        prov_prefix = common.get("MAPE_PROV_PREFIX", f"{base}:99").replace("${BASE_SUBNET}", base).rstrip(":")
-        ensure_dummy("dummy1")
-        run_cmd(["ip", "-6", "addr", "flush", "dev", "dummy1", "scope", "global"], privileged=True)
-        for suffix in ("53", "ff", "123"):
-            run_cmd(["ip", "-6", "addr", "replace", f"{prov_prefix}::{suffix}/128", "dev", "dummy1"], privileged=True)
-    except (TypeError, ValueError) as exc:
-        logs.append(f"[WARN] BR 内部アドレスの同期に失敗しました: {exc}")
+def run_mape_tunnel_sync(workspace_dir: str, logs: Optional[List[str]] = None) -> bool:
+    """生成済みの mape_calc / mape-tunnel-sync を用いて MAP-E 事前登録トンネル経路 (proto 250) を同期する"""
+    mape_calc_src = os.path.join(workspace_dir, "mape-provisioning-server", "mape_calc")
+    tunnel_sync_src = os.path.join(workspace_dir, "system", "mape-tunnel-sync")
+    if not (os.path.isfile(mape_calc_src) and os.path.isfile(tunnel_sync_src)):
+        return False
+    ret_t, out_t, err_t = run_cmd(
+        ["env", f"MAPE_CALC={mape_calc_src}", "python3", tunnel_sync_src],
+        timeout=20,
+        privileged=True,
+    )
+    if logs is not None:
+        if ret_t == 0:
+            logs.append("✔ MAP-E トンネル経路を同期しました (mape-tunnel-sync)")
+        else:
+            logs.append(f"[WARN] mape-tunnel-sync の実行に失敗しました: {(err_t or out_t).strip()}")
+    return ret_t == 0
 
 
 def install_system_configs(workspace_dir: str, logs: List[str]) -> bool:
-    """生成された system/* 設定ファイルをホストの /etc へ反映し、sysctl / VRF / トンネル同期を実行する"""
+    """生成された system/* 設定ファイルをホストの /etc へ反映し、sysctl / VRF 同期を実行する"""
     for source, target in (
         (os.path.join(workspace_dir, "system", "interfaces"), "/etc/network/interfaces"),
         (os.path.join(workspace_dir, "system", "99-network-routing.conf"), "/etc/sysctl.d/99-network-routing.conf"),
@@ -739,18 +803,8 @@ class AppConfig:
         if not br_prefix:
             base_subnet = self.get("BASE_SUBNET", "")
             if base_subnet:
-                br_prefix = f"{base_subnet}:3220"
-
-        hex_suffix = ""
-        if br_ipv4:
-            try:
-                octets = [int(x) for x in br_ipv4.split(".")]
-                hex_suffix = f"{octets[0]:02x}{octets[1]:02x}:{octets[2]:02x}{octets[3]:02x}"
-            except Exception:
-                pass
-
-        br_ipv6 = f"{br_prefix.rstrip(':')}::{hex_suffix}" if br_prefix and hex_suffix else ""
-        return {"br_ipv6": br_ipv6, "br_ipv4": br_ipv4}
+                br_prefix = f"{base_subnet}:3620"
+        return {"br_ipv6": calc_br_ipv6(br_prefix, br_ipv4), "br_ipv4": br_ipv4}
 
     @property
     def pppoe_vlans(self) -> List[str]:
@@ -892,7 +946,7 @@ class ConfigManager:
 
         matched_ddns_keys = set()
         for s in all_static:
-            vlan_raw = s.get("mac", "").strip()
+            vlan_raw = s.get("vlan", "").strip()
             vlan_key = str(int(vlan_raw)) if vlan_raw.isdigit() else vlan_raw.lower()
             ddns_info = ddns_map.get(vlan_key) or ddns_map.get(vlan_raw.lower()) or {}
             if vlan_key in ddns_map:
@@ -907,7 +961,7 @@ class ConfigManager:
             if k in matched_ddns_keys or k in seen_pppoe_users or not k.isdigit():
                 continue
             all_static.append({
-                "mac": k,
+                "vlan": k,
                 "ip": "",
                 "note": f"VLAN {k} DDNS",
                 "ddns_v6": v.get("v6", ""),
@@ -919,14 +973,13 @@ class ConfigManager:
             "pppoe": {
                 "server_instances": server_instances,
                 "users": common_users,
-                "common_users": common_users,
             },
             "ipoe_common": {
                 "BR_IPV4_POOL": raw.get("BR_IPV4_POOL", "10.218.0.0/16"),
                 "BASE_SUBNET": raw.get("BASE_SUBNET", "2400:4150"),
                 "BR_PREFIX": raw.get("BR_PREFIX", "${BASE_SUBNET}:3620"),
                 "BR_IPV4_ADDR": raw.get("BR_IPV4_ADDR", "100.127.255.255"),
-                "BR_GATEWAY": raw.get("BR_GATEWAY", raw.get("SLAAC_BR_SUFFIX", "::ff0a")),
+                "BR_GATEWAY": raw.get("BR_GATEWAY", "::ff0a"),
                 "BR_IF": raw.get("BR_IF", "dummy0"),
                 "PROV_IF": raw.get("PROV_IF", "dummy1"),
                 "MAPE_PROV_PREFIX": raw.get("MAPE_PROV_PREFIX", "${BASE_SUBNET}:99"),
@@ -939,12 +992,10 @@ class ConfigManager:
             "slaac": {
                 "SLAAC_BR_BASE": raw.get("SLAAC_BR_BASE", "1000"),
                 "SLAAC_FIX_BR_PREFIX": raw.get("SLAAC_FIX_BR_PREFIX", "3000"),
-                "static_ips": all_static,
             },
             "dhcp_pd": {
                 "PD_POOL": raw.get("PD_POOL", "2000"),
                 "PD_FIX_POOL": raw.get("PD_FIX_POOL", "4000"),
-                "static_ips": all_static,
             },
             "hgw": {
                 "HGW_BR_BASE": raw.get("HGW_BR_BASE", "5000"),
@@ -1067,13 +1118,8 @@ class ConfigManager:
                 f.write(new_map_e)
             logs.append("Saved: map-e.conf")
 
-            raw_pppoe_users = staging.get("pppoe", {}).get("common_users") or staging.get("pppoe", {}).get("users", [])
-            if isinstance(raw_pppoe_users, list):
-                common_users = raw_pppoe_users
-            elif isinstance(raw_pppoe_users, dict):
-                common_users = next((u for u in raw_pppoe_users.values() if isinstance(u, list) and u), [])
-            else:
-                common_users = []
+            raw_pppoe_users = staging.get("pppoe", {}).get("users") or staging.get("pppoe", {}).get("common_users") or []
+            common_users = raw_pppoe_users if isinstance(raw_pppoe_users, list) else []
 
             common_pppoe_path = os.path.join(WORKSPACE_DIR, "pppoe.conf")
             bak_common = cls._create_backup(common_pppoe_path, max_keep=1)
@@ -1083,13 +1129,11 @@ class ConfigManager:
                 f.write(generate_pppoe_conf_content(common_users))
             logs.append(f"Saved: pppoe.conf ({len(common_users)} users)")
 
-            static_ips = staging.get("ipoe_common", {}).get("static_ips")
-            if static_ips is None:
-                static_ips = (staging.get("slaac", {}).get("static_ips") or []) + (staging.get("dhcp_pd", {}).get("static_ips") or [])
+            static_ips = staging.get("ipoe_common", {}).get("static_ips") or []
 
             with open(cls.STATIC_IP_CONF_PATH, "w", encoding="utf-8") as f:
-                f.write(generate_static_ip_content(static_ips or []))
-            logs.append(f"Saved: map-e-static-ip.conf ({len(static_ips or [])} entries)")
+                f.write(generate_static_ip_content(static_ips))
+            logs.append(f"Saved: map-e-static-ip.conf ({len(static_ips)} entries)")
 
             with open(cls.DDNS_CONF_PATH, "w", encoding="utf-8") as f:
                 f.write(generate_ddns_conf_content(staging, cls.DDNS_CONF_PATH))
@@ -1112,6 +1156,7 @@ class ConfigManager:
 
             install_system_configs(WORKSPACE_DIR, logs)
             sync_host_vlan_interfaces(staging, logs)
+            run_mape_tunnel_sync(WORKSPACE_DIR, logs)
 
             host_dir = get_host_workspace_dir()
             compose_file = os.path.join(WORKSPACE_DIR, "docker-compose.yml")
@@ -1122,9 +1167,9 @@ class ConfigManager:
                 run_cmd(["docker", "exec", "axosyslog", "syslog-ng-ctl", "reload"], timeout=10)
                 run_cmd(["docker", "exec", "bind9", "rndc", "reload"], timeout=10)
                 run_cmd(["docker", "exec", "chrony", "chronyc", "reload", "sources"], timeout=10)
-                ret_r, _, _ = run_cmd(base_compose + ["restart", "kea-dhcp6", "radvd"], timeout=20)
+                ret_r, _, _ = run_cmd(base_compose + ["restart", "kea-dhcp6", "radvd", "mape-provisioning-server"], timeout=30)
                 if ret_r == 0:
-                    logs.append("✔ DHCPv6 (Kea) / RA (radvd) を再起動してインターフェースをバインドしました")
+                    logs.append("✔ DHCPv6 (Kea) / RA (radvd) / Provisioning Server を再起動して設定を反映しました")
 
             ret_ps, out_ps, _ = run_cmd(base_compose + ["ps", "--format", "table {{.Service}}\t{{.Status}}"], timeout=10, cwd=WORKSPACE_DIR)
             if ret_ps == 0 and out_ps:
@@ -1159,6 +1204,7 @@ class ConfigManager:
 
         install_system_configs(WORKSPACE_DIR, logs)
         sync_host_vlan_interfaces(cls.get_live_config(), logs)
+        run_mape_tunnel_sync(WORKSPACE_DIR, logs)
 
         host_dir = get_host_workspace_dir()
         compose_file = os.path.join(WORKSPACE_DIR, "docker-compose.yml")
