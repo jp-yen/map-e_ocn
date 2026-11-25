@@ -222,7 +222,10 @@
           <span>🔗 MAP-E (DHCPv6-PD / SLAAC) クライアント</span>
           <span class="badge-count" id="badge-mape">0</span>
         </div>
-        <div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button class="btn-tool" style="padding: 6px 12px; font-size: 12px; border-color: rgba(244, 63, 94, 0.45); color: var(--accent-rose);" onclick="confirmResetMAPE()" title="機器入れ替え時などに全 MAP-E リース・動的経路・NDP キャッシュを強制初期化">
+            <span>🧹</span> MAP-E 状態リセット
+          </button>
           <button class="btn-tool btn-accent" style="padding: 6px 12px; font-size: 12px;" onclick="openCertModal()">
             <span>🔐</span> FortiGate オレオレ証明書
           </button>

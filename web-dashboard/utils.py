@@ -458,28 +458,63 @@ class KeaClient:
     @staticmethod
     def send_cmd(cmd_dict, timeout=3.0):
         sock_path = KEA_CTRL_SOCK
-        if not os.path.exists(sock_path):
-            return {"result": -1, "text": f"Socket not found: {sock_path}"}
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                s.settimeout(timeout)
-                s.connect(sock_path)
-                s.sendall(json.dumps(cmd_dict).encode("utf-8"))
-                resp_bytes = b""
-                while True:
-                    chunk = s.recv(4096)
-                    if not chunk:
-                        break
-                    resp_bytes += chunk
-                    try:
-                        return json.loads(resp_bytes.decode("utf-8"))
-                    except Exception:
-                        continue
-                if resp_bytes:
+        payload = json.dumps(cmd_dict)
+
+        def _recv_all(s):
+            s.settimeout(timeout)
+            s.connect(sock_path)
+            s.sendall(payload.encode("utf-8"))
+            resp_bytes = b""
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                resp_bytes += chunk
+                try:
                     return json.loads(resp_bytes.decode("utf-8"))
+                except Exception:
+                    continue
+            if resp_bytes:
+                return json.loads(resp_bytes.decode("utf-8"))
+            return {"result": -1, "text": "No response"}
+
+        if os.path.exists(sock_path):
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                    return _recv_all(s)
+            except PermissionError:
+                pass
+            except Exception as e:
+                return {"result": -1, "text": str(e)}
+
+        # /run/kea が root:root 750 のため、非 root 時は sudo 経由でソケット通信する
+        py_helper = (
+            "import socket,sys;"
+            "s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);"
+            f"s.settimeout({float(timeout)});"
+            f"s.connect({sock_path!r});"
+            "s.sendall(sys.stdin.buffer.read());"
+            "buf=b'';\n"
+            "while True:\n"
+            " c=s.recv(4096)\n"
+            " if not c: break\n"
+            " buf+=c\n"
+            " if buf.rstrip().endswith(b'}'): break\n"
+            "sys.stdout.buffer.write(buf)"
+        )
+        try:
+            proc = subprocess.run(
+                ["sudo", "python3", "-c", py_helper],
+                input=payload.encode("utf-8"),
+                capture_output=True,
+                timeout=timeout + 1.0,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                return json.loads(proc.stdout.decode("utf-8"))
+            err_msg = proc.stderr.decode("utf-8", errors="replace").strip()
+            return {"result": -1, "text": err_msg or f"Socket not found: {sock_path}"}
         except Exception as e:
             return {"result": -1, "text": str(e)}
-        return {"result": -1, "text": "No response"}
 
     @classmethod
     def delete_pd_lease(cls, prefix_addr):

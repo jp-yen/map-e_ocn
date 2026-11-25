@@ -22,6 +22,7 @@ from utils import (
     run_cmd, ping_target, format_duration, normalize_datetime,
     load_pppoe_conf_notes, load_static_ip_notes,
     load_kea_subnet_vlan_map, load_tunnel_events, classify_mape_mode,
+    KeaClient,
 )
 
 
@@ -889,19 +890,23 @@ class MAPECollector:
     @staticmethod
     def _load_kea_leases():
         leases = {}
-        raw_text = None
-        if os.path.exists(KEA_LEASE_CSV):
+        # 1. CSV (.2 ローテーション含む) から履歴・初回接続時刻を読み込む
+        for csv_path in (f"{KEA_LEASE_CSV}.2", KEA_LEASE_CSV):
+            if not os.path.exists(csv_path):
+                continue
+            raw_text = None
             try:
-                with open(KEA_LEASE_CSV, "r", encoding="utf-8", errors="ignore") as f:
+                with open(csv_path, "r", encoding="utf-8", errors="ignore") as f:
                     raw_text = f.read()
             except PermissionError:
-                ret_c, out_c, _ = run_cmd(["cat", KEA_LEASE_CSV], privileged=True)
+                ret_c, out_c, _ = run_cmd(["cat", csv_path], privileged=True)
                 if ret_c == 0:
                     raw_text = out_c
             except Exception as e:
-                print(f"[MAPE] Error reading {KEA_LEASE_CSV}: {e}", file=sys.stderr)
+                print(f"[MAPE] Error reading {csv_path}: {e}", file=sys.stderr)
 
-        if raw_text:
+            if not raw_text:
+                continue
             try:
                 lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
                 if len(lines) > 1:
@@ -910,7 +915,6 @@ class MAPECollector:
                         cols = line.split(",")
                         if len(cols) == len(headers):
                             d = dict(zip(headers, cols))
-                            # state == "0" (default/active) のみ有効リースとして扱う (expired/declined 除外)
                             if d.get("state", "0").strip() != "0":
                                 continue
                             addr = d.get("address", "").strip()
@@ -935,7 +939,48 @@ class MAPECollector:
                                 except Exception:
                                     pass
             except Exception as e:
-                print(f"[MAPE] Error parsing {KEA_LEASE_CSV}: {e}", file=sys.stderr)
+                print(f"[MAPE] Error parsing {csv_path}: {e}", file=sys.stderr)
+
+        # 2. Kea 制御ソケット (lease6-get-all) でメモリ上のリアルタイムリースを正として同期
+        #    (LFC で CSV が一時的に空になった場合でも正確なリース状態を取得でき、切断済みリースも即座に除外できる)
+        resp = KeaClient.send_cmd({"command": "lease6-get-all"})
+        if resp.get("result") == 0:
+            live_leases = {}
+            for row in resp.get("arguments", {}).get("leases", []):
+                if int(row.get("state", 0)) != 0:
+                    continue
+                addr = (row.get("ip-address") or "").strip()
+                plen = str(row.get("prefix-len", 56))
+                if not addr:
+                    continue
+                try:
+                    net = ipaddress.IPv6Network(f"{addr}/{plen}", strict=False)
+                    cltt = int(row.get("cltt", 0))
+                    vlft = int(row.get("valid-lft", 1800))
+                    exp = cltt + vlft if cltt > 0 else 0
+                    prev = leases.get(net, {})
+                    first_st = prev.get("first_seen_st", 0)
+                    if cltt > 0 and (first_st == 0 or cltt < first_st):
+                        first_st = cltt
+                    live_leases[net] = {
+                        "address": addr,
+                        "duid": row.get("duid", ""),
+                        "valid_lifetime": str(vlft),
+                        "expire": str(exp),
+                        "subnet_id": str(row.get("subnet-id", "")),
+                        "pref_lifetime": str(row.get("preferred-lft", 0)),
+                        "lease_type": row.get("type", "IA_PD"),
+                        "iaid": str(row.get("iaid", 0)),
+                        "prefix_len": plen,
+                        "hostname": row.get("hostname", ""),
+                        "hwaddr": row.get("hw-address", ""),
+                        "state": str(row.get("state", 0)),
+                        "first_seen_st": first_st,
+                    }
+                except Exception:
+                    pass
+            return live_leases
+
         return leases
 
     @staticmethod

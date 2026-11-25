@@ -49,7 +49,7 @@ IPv6 アドレスの範囲をチェックする機器があります。
 ## 1. 前提条件と動作環境
 
 ### 動作OS・前提条件
-- **OS**: Debian 13 (Trixie) / Debian 12 (Bookworm) で動作確認済み
+- **OS**: Debian 13 (Trixie) で動作確認済み
 - **必須ツール**:
   - **Docker Engine & Docker Compose プラグイン**（`docker compose` コマンドが利用可能であること）
   - **`make`**, **`perl`**, **`sudo`**（Debian 標準搭載または `apt install -y make perl sudo`）

@@ -598,6 +598,7 @@ EOF
       - /etc/network:/etc/network:rw
       - /etc/sysctl.d:/etc/sysctl.d:rw
       - /var/log:/var/log:ro
+      - /run/kea:/run/kea:rw
       - kea_leases:/var/lib/kea:ro
 
   # 9. Central NAT Service (Outbound NAT for MAP-E and PPPoE)

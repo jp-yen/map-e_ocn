@@ -756,6 +756,84 @@ diagnose test application vned 99"""
             "message": f"MAP-E client disconnected: {', '.join(results)}"
         })
 
+    def handle_post_reset_mape(self, body):
+        """機器入れ替え等のトラブル復旧用: 全 Kea リース・PD静的ルート・動的トンネルルート・NDPキャッシュを一括リセットする"""
+        del_leases = 0
+        del_pd_routes = 0
+        del_tun_routes = 0
+        del_neigh = 0
+
+        # 1. Kea DHCPv6 の全アクティブリースを削除
+        resp = KeaClient.send_cmd({"command": "lease6-get-all"})
+        if resp.get("result") == 0:
+            for row in resp.get("arguments", {}).get("leases", []):
+                addr = (row.get("ip-address") or "").strip()
+                ltype = row.get("type", "IA_PD")
+                if not addr:
+                    continue
+                d_resp = KeaClient.send_cmd({
+                    "command": "lease6-del",
+                    "arguments": {"ip-address": addr, "type": ltype}
+                })
+                if d_resp.get("result") == 0:
+                    del_leases += 1
+
+        # 2. MAP-E VLAN 上の DHCPv6-PD 動的静的ルートを削除
+        ret_r6, out_r6, _ = run_cmd(["ip", "-6", "route", "show", "proto", "static"])
+        if ret_r6 == 0 and out_r6:
+            for line in out_r6.splitlines():
+                parts = line.split()
+                if not parts or "dev" not in parts:
+                    continue
+                pfx = parts[0]
+                dev = parts[parts.index("dev") + 1]
+                if "." in dev and not pfx.startswith("fe80"):
+                    if run_cmd(["ip", "-6", "route", "del", pfx, "dev", dev, "proto", "static"], privileged=True)[0] == 0:
+                        del_pd_routes += 1
+
+        # 3. mpe-common 上の動的トンネルルート (proto 250 以外) を削除
+        ret_rt, out_rt, _ = run_cmd(["ip", "route", "show", "table", "all", "dev", "mpe-common"])
+        if ret_rt == 0 and out_rt:
+            for r_line in out_rt.splitlines():
+                if re.search(r"\bproto\s+250\b", r_line):
+                    continue
+                m_dst = re.match(r"^(\S+)\s+encap\s+ip6\b", r_line.strip())
+                if not m_dst:
+                    continue
+                dst = m_dst.group(1)
+                m_tbl = re.search(r"\btable\s+(\d+)\b", r_line)
+                tbl_arg = ["table", m_tbl.group(1)] if m_tbl and m_tbl.group(1) != "254" else []
+                if run_cmd(["ip", "route", "del", dst, "dev", "mpe-common", *tbl_arg], privileged=True)[0] == 0:
+                    del_tun_routes += 1
+
+        # 4. MAP-E VLAN 上の PERMANENT / グローバル NDP キャッシュを一掃 (旧 MAC 残存防止)
+        ret_nb, out_nb, _ = run_cmd(["ip", "-6", "neigh", "show"])
+        if ret_nb == 0 and out_nb:
+            for line in out_nb.splitlines():
+                parts = line.split()
+                if len(parts) < 3 or "dev" not in parts:
+                    continue
+                addr = parts[0]
+                dev = parts[parts.index("dev") + 1]
+                if "." not in dev:
+                    continue
+                if "PERMANENT" in parts or not addr.lower().startswith("fe80"):
+                    if run_cmd(["ip", "-6", "neigh", "del", addr, "dev", dev], privileged=True)[0] == 0:
+                        del_neigh += 1
+
+        # 5. 事前登録ルート (proto 250) を再同期
+        from config import run_mape_tunnel_sync  # noqa: PLC0415
+        run_mape_tunnel_sync(WORKSPACE_DIR)
+
+        self.send_json({
+            "success": True,
+            "message": (
+                f"MAP-E 状態をリセットしました "
+                f"(リース削除: {del_leases}, PD経路: {del_pd_routes}, "
+                f"動的トンネル: {del_tun_routes}, NDP: {del_neigh})"
+            ),
+        })
+
     def handle_post_config_stage(self, body):
         success = ConfigManager.save_staging(body)
         errors = ConfigManager.validate_staging_config(body)
@@ -797,6 +875,7 @@ diagnose test application vned 99"""
         post_routes = {
             "/api/disconnect/pppoe": self.handle_post_disconnect_pppoe,
             "/api/disconnect/mape": self.handle_post_disconnect_mape,
+            "/api/reset/mape": self.handle_post_reset_mape,
             "/api/config/stage": self.handle_post_config_stage,
             "/api/config/discard": self.handle_post_config_discard,
             "/api/config/apply": self.handle_post_config_apply,

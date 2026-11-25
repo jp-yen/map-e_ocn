@@ -377,6 +377,42 @@ function confirmDisconnectMAPE(prefix, ipv4, ce_ipv6) {
   modal.style.display = 'flex';
 }
 
+function confirmResetMAPE() {
+  modalMessage.innerHTML = `
+        MAP-E の接続状態をすべてリセットしますか？<br><br>
+        <span style="color:var(--text-muted); font-size:12.5px;">
+          切断操作をせずに CE 機器を入れ替えた場合などに実行してください。<br>
+          以下を一括でクリアし、事前登録ルートを再同期します：
+        </span>
+        <ul style="margin: 8px 0 10px 18px; font-size: 12.5px; color: var(--text-soft);">
+          <li>Kea DHCPv6 の全リース情報（IA_PD / IA_NA）</li>
+          <li>DHCPv6-PD 動的 IPv6 経路および動的トンネル経路</li>
+          <li>旧 MAC アドレスの PERMANENT / グローバル NDP キャッシュ</li>
+        </ul>
+        <span style="color:var(--accent-rose); font-size:12px;">※接続中の CE は一時的に通信が切れるため、CE 側で再接続（またはケーブル挿抜）を行ってください。</span>
+      `;
+  modalConfirmBtn.onclick = async () => {
+    closeModal();
+    try {
+      const res = await fetch('/api/reset/mape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const json = await res.json();
+      if (json.success) {
+        showToast(json.message || 'MAP-E 状態をリセットしました。', true);
+        setTimeout(() => loadData(true), 800);
+      } else {
+        showToast(`リセットに失敗しました: ${json.error || '不明なエラー'}`, false);
+      }
+    } catch (e) {
+      showToast(`エラーが発生しました: ${e.message}`, false);
+    }
+  };
+  modal.style.display = 'flex';
+}
+
 // FortiGate Certificate Modal Handlers
 async function openCertModal() {
   const modal = document.getElementById('certModal');
