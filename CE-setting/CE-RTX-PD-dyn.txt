@@ -1,0 +1,154 @@
+=============================================================================
+RTX1210 設定例: OCN MAP-E (DHCPv6-PD 動的IP / VLAN5)
+  機種: RTX1210 Rev.14.01.42
+  構成: LAN3 = WAN (DHCPv6-PD / MAP-E), LAN1/LAN2 = LAN (IPv4 のみ)
+=============================================================================
+
+--- 1. 基本・管理設定 ---
+login user yama_yama haha_haha
+console columns 4096
+console lines infinity
+console prompt PD-dyn
+
+--- 2. LAN / DHCP サーバー設定 ---
+ip lan1 address 192.168.10.1/24
+
+dhcp service server
+dhcp server rfc2131 compliant except remain-silent
+dhcp scope 1 192.168.10.100-192.168.10.200/24
+
+--- 3. WAN (LAN3) IPv6 (DHCPv6-PD) / NGN 設定 ---
+ipv6 prefix 1 dhcp-prefix@lan3::/64
+ipv6 source address selection rule lifetime
+ipv6 lan3 address dhcp
+ipv6 lan3 dhcp service client
+ngn type lan3 ntt
+
+--- 4. MAP-E トンネル・ルーティング設定 ---
+ip route default gateway tunnel 1
+tunnel select 1
+ tunnel encapsulation map-e
+ tunnel map-e type ocn
+ ip tunnel mtu 1460
+ ip tunnel nat descriptor 1
+ tunnel enable 1
+tunnel select none
+
+--- 5. NAT 設定 (MAP-E ポート制限対応) ---
+nat descriptor type 1 masquerade
+nat descriptor address outer 1 map-e
+
+
+=============================================================================
+運用メモ: 再接続手順
+=============================================================================
+disconnect tunnel 1
+connect tunnel 1
+show status tunnel 1
+
+
+=============================================================================
+動作確認コマンドと実行ログ (2026/11/26)
+=============================================================================
+
+[1] DHCPv6-PD クライアント状態確認 (プレフィックス / DNS / SNTP の取得)
+  - state が established であること
+  - 委譲プレフィックスおよび DNS / Domain name / SNTP が取得できていること
+
+PD-dyn# show status ipv6 dhcp
+
+DHCPv6 status
+
+  LAN3 [client]
+    state: established
+    server:
+      address: ::
+      preference: 0
+      prefix: 2400:4150:2005:500::/56
+      duration: 1800
+      T1: 900
+      T2: 1440
+      preferred lifetime: 1500
+      valid lifetime: 1800
+      DNS server[1]: 2400:4150:99::53
+      Domain name[1]: map.ocn.ad.jp
+      SNTP server[1]: 2400:4150:99::123
+
+[2] MAP-E トンネル接続状態確認
+  - インタフェースの種類が MAP-E、「接続されています」であること
+  - CE の MAP-E 用 IPv6 アドレス (IPv4=10.218.64.20, PSID=5 を埋込) が表示されること
+
+PD-dyn# show status tunnel 1
+TUNNEL[1]:
+説明:
+  インタフェースの種類: MAP-E
+  IPv6: 2400:4150:2005:500:a:da40:1400:500
+  トンネルインタフェースは接続されています
+  開始: 2026/11/26 03:10:12
+  通信時間: 13秒
+  最大パケット長(MTU):
+         IPv4: 1460 オクテット
+         IPv6: 1280 オクテット
+  受信: (IPv4) 0 パケット [0 オクテット]
+        (IPv6) 0 パケット [0 オクテット]
+  送信: (IPv4) 0 パケット [0 オクテット]
+        (IPv6) 0 パケット [0 オクテット]
+
+[3] 疎通確認 (BR 宛 IPv4 ping / IPv6 ping6)
+  - IPv4 (100.127.255.255): MAP-E トンネル経由で BR へ到達すること
+  - IPv6 (2400:4150:3620::647f:ffff): BR トンネル終端 (dummy0) へ IPv6 で到達すること
+
+PD-dyn# ping 100.127.255.255
+100.127.255.255から受信: シーケンス番号=0 ttl=63 時間=0.869ミリ秒
+100.127.255.255から受信: シーケンス番号=1 ttl=63 時間=0.694ミリ秒
+100.127.255.255から受信: シーケンス番号=2 ttl=63 時間=0.824ミリ秒
+
+3個のパケットを送信し、3個のパケットを受信しました。0.0%パケットロス
+往復遅延 最低/平均/最大 = 0.694/0.795/0.869 ミリ秒
+
+PD-dyn# ping6 2400:4150:3620::647f:ffff
+2400:4150:3620::647f:ffffから受信, シーケンス番号=0 hlim=64 時間=0.605ミリ秒
+2400:4150:3620::647f:ffffから受信, シーケンス番号=1 hlim=64 時間=0.388ミリ秒
+2400:4150:3620::647f:ffffから受信, シーケンス番号=2 hlim=64 時間=0.840ミリ秒
+
+3個のパケットを送信し、3個のパケットを受信しました。0.0%パケットロス
+往復遅延 最低/平均/最大 = 0.388/0.611/0.840 ミリ秒
+
+[4] ルーティングテーブル確認 (IPv4 / IPv6)
+  - IPv4: default が TUNNEL[1] 向きであること
+  - IPv6: default が BR (fe80::be24:11ff:fedb:3b5c / LAN3) 向き、PD プレフィックス (/56) が LAN3 にあること
+
+PD-dyn# show ip route
+宛先ネットワーク    ゲートウェイ     インタフェース  種別  付加情報
+default             -                 TUNNEL[1]    static
+192.168.10.0/24     192.168.10.1           LAN1  implicit
+192.168.20.0/24     192.168.20.1           LAN2  implicit
+
+PD-dyn# show ipv6 route
+Destination              Gateway                  Interface  Type
+default                  fe80::be24:11ff:fedb:3b5c
+                                                  LAN3       temporary
+2400:4150:2005:500::/56  -                        LAN3       implicit
+
+[5] LAN3 の IPv6 アドレス確認
+  - LAN3 に DHCPv6-PD 由来アドレス (::2a0:deff:fec7:7450/56) と
+    MAP-E 用アドレス (::a:da40:1400:500/56, INFINITY) の 2 つが付与されていること
+
+PD-dyn# show ipv6 address
+LAN3 scope-id 3 [up]
+ Received:    80 packets 9809 octets
+ Transmitted: 57 packets 7170 octets
+
+ グローバル     2400:4150:2005:500:a:da40:1400:500/56 (lifetime: INFINITY)
+ グローバル     2400:4150:2005:500:2a0:deff:fec7:7450/56 (lifetime: 1387/1687)
+ リンクローカル fe80::2a0:deff:fec7:7450/64
+ (※ LAN1 / LAN2 / TUNNEL 等は省略)
+
+[6] MAP-E 接続ログ
+  - ホスト名・割り当て IPv4 (10.218.64.20)・ポート範囲 (PSID=5)・トンネル UP を確認
+
+PD-dyn# show log
+...
+2026/11/26 03:10:12: [OCN MAP-E] hostname=ce-10.218.64.20.map.ocn.ad.jp
+2026/11/26 03:10:12: [MAP-E] tunnel 1 up v4=10.218.64.20 1104-1119 2128-2143 3152-3167 4176-4191 5200-5215 6224-6239 7248-7263 8272-8287 9296-9311 10320-10335 11344-11359 12368-12383 13392-13407 14416-14431 15440-15455 16464-16479 17488-17503 18512-185
+2026/11/26 03:10:12: IP Tunnel[1] Up

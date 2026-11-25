@@ -50,10 +50,9 @@ sub generate_interfaces {
     my $br_if             = $c->{br_if};
     my $prov_if           = $c->{prov_if};
     my $base_subnet       = $c->{base_subnet};
+    my $br_gateway        = $c->{br_gateway} || $c->{slaac_br_suffix} || '::ff0a';
     my $slaac_br_base     = $c->{slaac_br_base};
-    my $slaac_br_suffix   = $c->{slaac_br_suffix};
     my $slaac_fix_br_prefix = $c->{slaac_fix_br_prefix};
-    my $slaac_fix_br_suffix = $c->{slaac_fix_br_suffix};
     my $slaac_dyn_vlans   = $c->{slaac_dyn_vlans};
     my $pd_dyn_vlans      = $c->{pd_dyn_vlans};
     my $slaac_fix_vlans   = $c->{slaac_fix_vlans};
@@ -61,10 +60,8 @@ sub generate_interfaces {
     my $pppoe_vlans       = $c->{pppoe_vlans};
     my $hgw_vlans         = $c->{hgw_vlans};
     my $hgw_br_base       = $c->{hgw_br_base};
-    my $hgw_br_suffix     = $c->{hgw_br_suffix};
     my $hgw_fix_vlans     = $c->{hgw_fix_vlans};
     my $hgw_fix_br_base   = $c->{hgw_fix_br_base};
-    my $hgw_fix_br_suffix = $c->{hgw_fix_br_suffix};
     my $mgt_ip            = $c->{mgt_ip};
     my $mgt_mask          = $c->{mgt_mask};
     my $mgt_gw            = $c->{mgt_gw};
@@ -102,12 +99,12 @@ sub generate_interfaces {
         my $vif = "$mape_if.$vlan";
 
         if ($seg->{t} eq 'slaac') {
-            _iface_slaac($vif, $mape_if, $vlan, $base_subnet, $seg->{b},
-                         $slaac_br_suffix, $slaac_fix_br_prefix, $slaac_fix_br_suffix);
+            my $is_fix = (defined $slaac_fix_br_prefix && $seg->{b} eq $slaac_fix_br_prefix) ? 1 : 0;
+            _iface_slaac($vif, $mape_if, $vlan, $base_subnet, $seg->{b}, $br_gateway, $is_fix);
         } elsif ($seg->{t} eq 'hgw') {
-            _iface_hgw($vif, $mape_if, $vlan, $base_subnet, $seg->{b}, $hgw_br_suffix, 0);
+            _iface_hgw($vif, $mape_if, $vlan, $base_subnet, $seg->{b}, $br_gateway, 0);
         } elsif ($seg->{t} eq 'hgw_fix') {
-            _iface_hgw($vif, $mape_if, $vlan, $base_subnet, $seg->{b}, $hgw_fix_br_suffix, 1);
+            _iface_hgw($vif, $mape_if, $vlan, $base_subnet, $seg->{b}, $br_gateway, 1);
         } elsif ($seg->{t} eq 'pppoe') {
             _iface_pppoe($vif, $mape_if, $vlan);
         } else {
@@ -135,13 +132,9 @@ sub generate_interfaces {
 # _iface_slaac: SLAAC セグメント用 VLAN インターフェース stanza を出力
 # ---------------------------------------------------------------------------
 sub _iface_slaac {
-    my ($vif, $mape_if, $vlan, $base_subnet, $base,
-        $slaac_br_suffix, $slaac_fix_br_prefix, $slaac_fix_br_suffix) = @_;
+    my ($vif, $mape_if, $vlan, $base_subnet, $base, $br_gateway, $is_fix) = @_;
     my $prefix = calc_vlan_prefix($base_subnet, $base, $vlan);
-    my $is_fix = (defined $slaac_fix_br_prefix && $base eq $slaac_fix_br_prefix);
-    my $suffix = ($is_fix && defined $slaac_fix_br_suffix && $slaac_fix_br_suffix ne '')
-        ? $slaac_fix_br_suffix
-        : $slaac_br_suffix;
+    my $suffix = $br_gateway // '::ff0a';
     $suffix =~ s/^:+//;
     my $hextet4 = '';
     if (!$is_fix) {
@@ -163,12 +156,12 @@ sub _iface_slaac {
 
 # ---------------------------------------------------------------------------
 # _iface_hgw: HGW配下模擬セグメント用 VLAN インターフェース stanza を出力
-#   RA /64 広報と同時に BR アドレス（動的: ::ff0c / 固定: ::ff0d）を静的付与
+#   RA /64 広報と同時に BR用ゲートウェイアドレス（BR_GATEWAY）を静的付与
 # ---------------------------------------------------------------------------
 sub _iface_hgw {
-    my ($vif, $mape_if, $vlan, $base_subnet, $base, $hgw_br_suffix, $is_fix) = @_;
+    my ($vif, $mape_if, $vlan, $base_subnet, $base, $br_gateway, $is_fix) = @_;
     my $prefix = calc_vlan_prefix($base_subnet, $base, $vlan);
-    my $suffix = $hgw_br_suffix // ($is_fix ? '::ff0d' : '::ff0c');
+    my $suffix = $br_gateway // '::ff0a';
     $suffix =~ s/^:+//;
     my $hextet4 = '';
     if (!$is_fix) {
@@ -233,7 +226,7 @@ sub _iface_br {
     print "    post-down ip link del $br_if || true\n\n";
     print "iface $br_if inet6 manual\n";
     print "    pre-up ip link add $br_if type dummy || true\n";
-    print "    post-up ip -6 addr add $br_ipv6/64 dev $br_if || true\n" if $br_ipv6;
+    print "    post-up ip -6 addr add $br_ipv6/128 dev $br_if || true\n" if $br_ipv6;
     print "    post-up sysctl -w net.ipv4.conf.$br_if.rp_filter=0 || true\n";
     print "    post-down ip link del $br_if || true\n\n";
 }
@@ -246,9 +239,9 @@ sub _iface_prov {
     print "auto $prov_if\n";
     print "iface $prov_if inet6 manual\n";
     print "    pre-up ip link add $prov_if type dummy || true\n";
-    print "    post-up ip -6 addr add $mape_dns_ip/64 dev $prov_if || true\n"  if $mape_dns_ip;
-    print "    post-up ip -6 addr add $mape_prov_ip/64 dev $prov_if || true\n" if $mape_prov_ip;
-    print "    post-up ip -6 addr add $mape_ntp_ip/64 dev $prov_if || true\n"  if $mape_ntp_ip;
+    print "    post-up ip -6 addr add $mape_dns_ip/128 dev $prov_if || true\n"  if $mape_dns_ip;
+    print "    post-up ip -6 addr add $mape_prov_ip/128 dev $prov_if || true\n" if $mape_prov_ip;
+    print "    post-up ip -6 addr add $mape_ntp_ip/128 dev $prov_if || true\n"  if $mape_ntp_ip;
     print "    post-down ip link del $prov_if || true\n";
 }
 

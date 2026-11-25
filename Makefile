@@ -354,6 +354,8 @@ install: check-root check_config
 	    fi; \
 	fi; \
 	install -o root -g root -m 644 system/99-network-routing.conf /etc/sysctl.d/99-network-routing.conf; \
+	install -o root -g root -m 644 system/kea-tmpfiles.conf /etc/tmpfiles.d/kea.conf; \
+	mkdir -p /run/kea && chmod 750 /run/kea; \
 	sysctl -p /etc/sysctl.d/99-network-routing.conf || true; \
 	if [ -x system/vrf-setup.sh ]; then \
 	    echo "Applying VRF configuration (system/vrf-setup.sh)..."; \

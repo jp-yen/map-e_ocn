@@ -52,6 +52,7 @@ our @REQUIRED_CONFIG_VARS = qw(
     BASE_SUBNET
     BR_PREFIX
     BR_IPV4_ADDR
+    BR_GATEWAY
     BR_IPV4_POOL
     MAPE_PROV_PREFIX
     MAPE_DNS_IP
@@ -59,10 +60,8 @@ our @REQUIRED_CONFIG_VARS = qw(
     MAPE_PROV_IP
     MAPE_DOMAIN_SEARCH
     SLAAC_BR_BASE
-    SLAAC_BR_SUFFIX
     PD_POOL
     SLAAC_FIX_BR_PREFIX
-    SLAAC_FIX_BR_SUFFIX
     PD_FIX_POOL
 );
 
@@ -440,6 +439,9 @@ sub _derive_provisioning_vars {
     } else {
         $ENV{'BR_IPV4_MASK'} ||= 16;
     }
+
+    # BR_GATEWAY の補完 (旧 SLAAC_BR_SUFFIX からの移行互換含む)
+    $ENV{'BR_GATEWAY'} ||= $ENV{'SLAAC_BR_SUFFIX'} || '::ff0a';
 
     # BR_IPV6 が未算出ならここでも算出しておく (calc_br_ipv6 は
     # br_prefix/br_ipv4_addr が揃わない場合 undef を返すのでその場合は何もしない)

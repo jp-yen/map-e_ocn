@@ -150,11 +150,11 @@ class MAPEProvisioningHandler(BaseHTTPRequestHandler):
             else:
                 rule_v6_len = "38"
                 if segment == 'pd_dyn':
-                    base_v6 = f"${{BASE_SUBNET}}:${{PD_POOL}}::"
+                    base_v6 = "${BASE_SUBNET}:${PD_POOL}::"
                 elif segment == 'hgw_dyn':
-                    base_v6 = f"${{BASE_SUBNET}}:${{HGW_BR_BASE}}::"
+                    base_v6 = "${BASE_SUBNET}:${HGW_BR_BASE}::"
                 else:
-                    base_v6 = f"${{BASE_SUBNET}}:${{SLAAC_BR_BASE}}::"
+                    base_v6 = "${BASE_SUBNET}:${SLAAC_BR_BASE}::"
 
                 r6_net = ipaddress.IPv6Network(f"{base_v6}/38", strict=False)
                 rule_v6_prefix = str(r6_net.network_address)

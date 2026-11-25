@@ -57,6 +57,9 @@ pppoe/srv-*/
 # --- kea-dhcp6 (DHCPv6) ---
 !kea-dhcp6/*.tmpl
 
+# --- system ---
+!system/kea-tmpfiles.conf
+
 # --- mape-provisioning-server ---
 !mape-provisioning-server/Dockerfile
 !mape-provisioning-server/*.tmpl

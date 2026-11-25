@@ -67,7 +67,7 @@ function openPPPoEDetail(idx) {
             <div class="detail-value mono nowrap" style="color:var(--text-strong); font-size:14px;">${c.mac || '-'}</div>
           </div>
           <div class="detail-card">
-            <div class="detail-label">サービス名 (Service Name)</div>
+            <div class="detail-label">Service-Name</div>
             <div class="detail-value nowrap" style="display:flex; align-items:center;">
               ${(srvDisplay && srvDisplay !== '*')
       ? `<span class="server-ac-badge${vrfClass}" style="${getServiceBadgeStyle(srvDisplay)}">${srvDisplay}${vrfIcon}</span>`

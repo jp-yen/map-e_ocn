@@ -1,0 +1,276 @@
+=============================================================================
+RTX1210 設定例: OCN MAP-E (SLAAC 動的IP / VLAN4)
+  機種: RTX1210 Rev.14.01.42
+=============================================================================
+
+--- 1. 基本・管理設定 ---
+login user yama_yama haha_haha
+console columns 4096
+console lines infinity
+console prompt RA-dyn
+
+--- 2. LAN / DHCP サーバー設定 ---
+ip lan1 address 192.168.10.1/24
+ip lan2 address 192.168.20.1/24
+
+dhcp service server
+dhcp server rfc2131 compliant except remain-silent
+dhcp scope 1 192.168.10.100-192.168.10.200/24
+
+--- 3. WAN (LAN3) IPv6 / NGN / DNS 設定 ---
+ipv6 routing on
+ipv6 prefix 1 ra-prefix@lan3::/64
+ipv6 source address selection rule lifetime
+ipv6 lan3 address auto
+ipv6 lan3 dhcp service client ir=on
+ngn type lan3 ntt
+dns server dhcp lan3
+
+--- 4. MAP-E トンネル・ルーティング設定 ---
+ip route default gateway tunnel 1
+tunnel select 1
+ tunnel encapsulation map-e
+ tunnel map-e type ocn
+ ip tunnel mtu 1460
+ ip tunnel tcp mss limit auto
+ ip tunnel nat descriptor 1
+ tunnel enable 1
+tunnel select none
+
+--- 5. NAT 設定 (MAP-E ポート制限対応) ---
+nat descriptor type 1 masquerade
+nat descriptor address outer 1 map-e
+
+--- 6. 時刻同期 (SNTP クライアント) 設定 ---
+schedule at 1 startup * ntpdate 2400:4150:99::123
+schedule at 2 */* 04:00 * ntpdate 2400:4150:99::123
+
+即時で時刻合わせする場合:
+RA-dyn# ntpdate 2400:4150:99::123
+2026/11/26 02:01:23  -1second
+
+参考: 商用フレッツ網の NTP (SNTP) サーバー例
+  NTT東日本: 2404:1a8:1102::a / 2404:1a8:1102::b
+  NTT西日本: 2001:a7ff:102::a / 2001:a7ff:102::b / 2001:a7ff:102::c
+
+
+=============================================================================
+運用メモ: 再接続手順
+=============================================================================
+tunnel select 1
+ no tunnel enable 1
+ tunnel enable 1
+tunnel select none
+show status tunnel 1
+
+
+=============================================================================
+動作確認コマンドと実行ログ (2026/11/26)
+=============================================================================
+
+[1] DHCPv6 クライアント状態確認 (DNS / Domain Search / SNTP の取得)
+  - state が established であること
+  - DNS, Domain name, SNTP が取得できていること
+
+RA-dyn# show status ipv6 dhcp
+
+DHCPv6 status
+
+  LAN3 [client]
+    state: established
+    server:
+      DNS server[1]: 2400:4150:99::53
+      Domain name[1]: map.ocn.ad.jp
+      SNTP server[1]: 2400:4150:99::123
+
+[2] MAP-E トンネル接続状態確認
+  - インタフェースの種類が MAP-E、「接続されています」であること
+  - CE の MAP-E 用 IPv6 アドレス (IPv4=10.218.48.16, PSID=4 を埋込) が表示されること
+
+RA-dyn# show status tunnel 1
+TUNNEL[1]:
+説明:
+  インタフェースの種類: MAP-E
+  IPv6: 2400:4150:1004:400:a:da30:1000:400
+  トンネルインタフェースは接続されています
+  開始: 2026/11/26 01:51:11
+  通信時間: 13分27秒
+  最大パケット長(MTU):
+         IPv4: 1460 オクテット
+         IPv6: 1280 オクテット
+  受信: (IPv4) 0 パケット [0 オクテット]
+        (IPv6) 0 パケット [0 オクテット]
+  送信: (IPv4) 0 パケット [0 オクテット]
+        (IPv6) 0 パケット [0 オクテット]
+
+[3] MAP-E の外側 IPv4 アドレスと利用可能ポート範囲の確認
+  - 外側アドレス: map-e/10.218.48.16
+  - ポート範囲: 16ポート × 63ブロック = 1,008ポート (PSID=4)
+
+RA-dyn# show nat descriptor address 1
+NAT/IPマスカレード 動作タイプ : 2
+参照NATディスクリプタ : 1, 適用インタフェース : TUNNEL[1](1)
+Masqueradeテーブル
+    外側アドレス: map-e/10.218.48.16
+    ポート範囲: 1088-1103, 2112-2127, 3136-3151, 4160-4175, 5184-5199, 6208-6223, 7232-7247, 8256-8271, 9280-9295, 10304-10319, 11328-11343, 12352-12367, 13376-13391, 14400-14415, 15424-15439, 16448-16463, 17472-17487, 18496-18511, 19520-19535, 20544-20559, 21568-21583, 22592-22607, 23616-23631, 24640-24655, 25664-25679, 26688-26703, 27712-27727, 28736-28751, 29760-29775, 30784-30799, 31808-31823, 32832-32847, 33856-33871, 34880-34895, 35904-35919, 36928-36943, 37952-37967, 38976-38991, 40000-40015, 41024-41039, 42048-42063, 43072-43087, 44096-44111, 45120-45135, 46144-46159, 47168-47183, 48192-48207, 49216-49231, 50240-50255, 51264-51279, 52288-52303, 53312-53327, 54336-54351, 55360-55375, 56384-56399, 57408-57423, 58432-58447, 59456-59471, 60480-60495, 61504-61519, 62528-62543, 63552-63567, 64576-64591
+
+[4] 疎通確認 (BR 宛 ping) と NAT マスカレードセッション確認
+  - 始点に LAN1 (-sa 192.168.10.1) を指定すると NAT 経由の動作も同時に確認できる
+  - ping 実行後に Current/Peak が 0 -> 3 に増加していれば NAT 変換が動作している
+  ※ NAT 動作タイプ 2 では show nat descriptor masquerade port summary は非対応
+
+RA-dyn# ping -sa 192.168.10.1 100.127.255.255
+100.127.255.255から受信: シーケンス番号=0 ttl=63 時間=0.818ミリ秒
+100.127.255.255から受信: シーケンス番号=1 ttl=63 時間=0.803ミリ秒
+100.127.255.255から受信: シーケンス番号=2 ttl=63 時間=0.792ミリ秒
+
+3個のパケットを送信し、3個のパケットを受信しました。0.0%パケットロス
+往復遅延 最低/平均/最大 = 0.792/0.804/0.818 ミリ秒
+
+RA-dyn# show nat descriptor masquerade session summary
+NAT/IPマスカレード 動作タイプ : 2
+Interface            Desc Num    Outer Address                Current/Max  Peak
+-------------------  ----------  ---------------------------  ----------- -----
+TUNNEL[1](1)                  1  map-e/10.218.48.16               3/65534     3
+-------------------  ----------  ---------------------------  ----------- -----
+
+[5] ルーティングテーブル確認 (IPv4 / IPv6)
+  - IPv4: default が TUNNEL[1] 向きであること
+  - IPv6: default が RA 経由で BR (fe80::be24:11ff:fedb:3b5c / LAN3) 向きであること
+
+RA-dyn# show ip route
+宛先ネットワーク    ゲートウェイ     インタフェース  種別  付加情報
+default             -                 TUNNEL[1]    static
+192.168.10.0/24     192.168.10.1           LAN1  implicit
+192.168.20.0/24     192.168.20.1           LAN2  implicit
+
+RA-dyn# show ipv6 route
+Destination              Gateway                  Interface  Type
+default                  fe80::be24:11ff:fedb:3b5c
+                                                  LAN3       RA
+2400:4150:1004:400::/64  -                        LAN3       implicit
+
+[6] LAN3 の IPv6 アドレス・NDP 近隣キャッシュ確認
+  - LAN3 に SLAAC アドレス (::2a0:deff:fec7:7450) と
+    MAP-E 用アドレス (::a:da30:1000:400, INFINITY) の 2 つが付与されていること
+  - BR のリンクローカルアドレスが NDP キャッシュに載っていること
+
+RA-dyn# show ipv6 address
+LAN3 scope-id 3 [up]
+ Received:    854 packets 78931 octets
+ Transmitted: 325 packets 40863 octets
+
+ グローバル     2400:4150:1004:400:a:da30:1000:400/64 (lifetime: INFINITY)
+ グローバル     2400:4150:1004:400:2a0:deff:fec7:7450/64 (lifetime: 14397/86397)
+ リンクローカル fe80::2a0:deff:fec7:7450/64
+ (※ LAN1 / LAN2 / TUNNEL / NULL / LOOPBACK / BRIDGE は省略)
+
+RA-dyn# show ipv6 neighbor cache
+Entry : 1
+F Neighbor                                Linklayer Address Iface State
+R fe80::be24:11ff:fedb:3b5c               bc:24:11:db:3b:5c LAN3  DELAY
+
+[7] MAP-E 関連ログの抽出
+  - ホスト名・割り当て IPv4・ポート範囲・トンネル UP の履歴を確認
+
+RA-dyn# show log | grep MAP-E
+Searching ...
+2026/11/26 01:51:11: [OCN MAP-E] hostname=ce-10.218.48.16.map.ocn.ad.jp
+2026/11/26 01:51:11: [MAP-E] tunnel 1 up v4=10.218.48.16 1088-1103 2112-2127 3136-3151 4160-4175 5184-5199 6208-6223 7232-7247 8256-8271 9280-9295 10304-10319 11328-11343 12352-12367 13376-13391 14400-14415 15424-15439 16448-16463 17472-17487 18496-185
+
+
+=============================================================================
+オプション: IPoE (MAP-E) と PPPoE の併用設定
+=============================================================================
+
+--- 1. PPPoE インターフェース設定 (pp 1) ---
+※ DNS は IPoE 側 (dns server dhcp lan3) を使うため ppp ipcp msext on は外す
+   (有効にすると IPCP 経由の DNS 100.127.255.255/32 が PP[01] 向きの一時経路になり
+    MAP-E 側の BR 宛て ping 等が PPPoE 側へ吸われるため)
+pp select 1
+ pp always-on on
+ pp keepalive use lcp-echo
+ pppoe use lan3
+ pppoe auto disconnect off
+ pp auth accept chap pap
+ pp auth myname user-ocn@one.ocn.ne.jp ocn
+ ppp lcp mru on 1454
+ ppp ipcp ipaddress on
+ ppp ccp type none
+ ip pp mtu 1454
+ ip pp tcp mss limit auto
+ ip pp nat descriptor 2
+ pp enable 1
+pp select none
+
+※ PPPoE の Service-Name を指定する場合は pp select 1 内に以下のように記載:
+pppoe service-name OCN
+
+--- 2. PPPoE 用 NAT 設定 (ディスクリプター 2) ---
+nat descriptor type 2 masquerade
+nat descriptor address outer 2 ipcp
+
+--- 3. 経路振り分け例 (デフォルトは MAP-E、特定宛先のみ PPPoE) ---
+ip route default gateway tunnel 1
+ip route 203.0.113.0/24 gateway pp 1
+
+※ 将来 PPPoE 側の DNS (dns server pp 1) を併用する場合のみ以下を追加:
+dns private address spoof on
+
+
+=============================================================================
+PPPoE 併用時の動作確認ログ (2026/11/26)
+=============================================================================
+
+[1] PPPoE セッション状態確認
+  - 「PPPoEセッションは接続されています」であること
+  - PP IP Address Local に固定割当 IP (192.0.2.65) が取得できていること
+
+RA-dyn# show status pp 1
+PP[01]:
+説明:
+PPPoEセッションは接続されています
+接続相手: ocn-mape
+通信時間: 5秒
+最大パケット長(MTU):
+  IPv4: 1454 オクテット
+  IPv6: 1500 オクテット
+受信: 16 パケット [1199 オクテット]  負荷: 0.0%
+送信: 12 パケット [504 オクテット]  負荷: 0.0%
+累積時間: 5秒
+PPPオプション
+    LCP Local: Magic-Number MRU, Remote: CHAP Magic-Number MRU
+    IPCP Local: IP-Address, Remote: IP-Address
+    PP IP Address Local: 192.0.2.65, Remote: 100.116.0.1
+    IPV6CP Local: Interface-ID, Remote: Interface-ID
+    PP Interface-ID Local: 02a0defffec7744e, Remote: c485bcd6334264c4
+    CCP: None
+
+[2] MAP-E との同時接続・経路確認
+  - default が TUNNEL[1] (MAP-E)、特定宛先 (203.0.113.0/24) が PP[01] (PPPoE) であること
+  - 100.116.0.1/32 は PPPoE 対向 (Remote) の自動経路
+  ※ ppp ipcp msext on を外すと 100.127.255.255/32 の PP[01] 一時経路は出なくなる
+
+RA-dyn# show status tunnel 1
+TUNNEL[1]:
+説明:
+  インタフェースの種類: MAP-E
+  IPv6: 2400:4150:1004:400:a:da30:1000:400
+  トンネルインタフェースは接続されています
+  開始: 2026/11/26 02:16:37
+  通信時間: 4分31秒
+  最大パケット長(MTU):
+         IPv4: 1460 オクテット
+         IPv6: 1280 オクテット
+  受信: (IPv4) 3 パケット [276 オクテット]
+        (IPv6) 0 パケット [0 オクテット]
+  送信: (IPv4) 3 パケット [276 オクテット]
+        (IPv6) 0 パケット [0 オクテット]
+
+RA-dyn# show ip route
+宛先ネットワーク    ゲートウェイ     インタフェース  種別  付加情報
+default             -                 TUNNEL[1]    static
+100.116.0.1/32      -                    PP[01] temporary
+192.168.10.0/24     192.168.10.1           LAN1  implicit
+192.168.20.0/24     192.168.20.1           LAN2  implicit
+203.0.113.0/24      -                    PP[01]    static

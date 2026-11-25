@@ -143,19 +143,19 @@ def validate_staging_config(staging: Dict[str, Any]) -> List[str]:
             s["name"] = name
             row_num = idx + 1
             if not name:
-                errors.append(f"PPPoE サービス定義: {row_num}行目のサービス名が未入力です。")
+                errors.append(f"PPPoE サービス定義: {row_num}行目の Service-Name が未入力です。")
             elif len(name) > 11:
                 errors.append(
-                    f"PPPoE サービス定義: サービス名「{name}」が {len(name)} 文字です。"
-                    f"最大 11 文字以下にしてください（Linux VRF デバイス名 'vrf-<サービス名>' の 15 文字制限のため）。"
+                    f"PPPoE サービス定義: Service-Name「{name}」が {len(name)} 文字です。"
+                    f"最大 11 文字以下にしてください（Linux VRF デバイス名 'vrf-<Service-Name>' の 15 文字制限のため）。"
                 )
             elif not re.match(r"^[a-zA-Z0-9_-]+$", name):
                 errors.append(
-                    f"PPPoE サービス定義: サービス名「{name}」に使用できない不正な文字が含まれています。"
+                    f"PPPoE サービス定義: Service-Name「{name}」に使用できない不正な文字が含まれています。"
                     f"半角英数字、アンダースコア（_）、ハイフン（-）を使用してください（例: VPN_Group1）。"
                 )
             elif name.lower() in seen_svcs:
-                errors.append(f"PPPoE サービス定義: サービス名「{name}」が重複しています。")
+                errors.append(f"PPPoE サービス定義: Service-Name「{name}」が重複しています。")
             else:
                 seen_svcs.add(name.lower())
 
@@ -221,7 +221,7 @@ def validate_staging_config(staging: Dict[str, Any]) -> List[str]:
                         )
                 if norm_srv and norm_srv != "*" and len(norm_srv) > 11:
                     errors.append(
-                        f"{prefix}: ユーザー「{uname}」のサービス名「{norm_srv}」が {len(norm_srv)} 文字です。"
+                        f"{prefix}: ユーザー「{uname}」の Service-Name「{norm_srv}」が {len(norm_srv)} 文字です。"
                         f"最大 11 文字以下にしてください（Linux VRF デバイス名制限のため）。"
                     )
 
@@ -351,32 +351,29 @@ def generate_map_e_conf_content(staging_data: Dict[str, Any], original_content: 
         "# =============================================================================\n",
         f'BR_PREFIX="{g("BR_PREFIX", "${BASE_SUBNET}:3620")}"\n',
         f'BR_IPV4_ADDR="{g("BR_IPV4_ADDR", "100.127.255.255")}"\n',
-        "# BR_IPV6 : 自動生成\n\n",
+        "# BR_IPV6 : 自動生成\n",
+        f'BR_GATEWAY="{g("BR_GATEWAY", "::ff0a")}"\n\n',
         "# 動的 IPv4 クライアント(CE)へ払い出すIPv4プールセグメント\n",
-        f'BR_IPV4_POOL="{g("BR_IPV4_POOL", "10.248.0.0/16")}"\n\n',
+        f'BR_IPV4_POOL="{g("BR_IPV4_POOL", "10.218.0.0/16")}"\n\n',
         "# プロビジョニング用ネットワーク (DNS, NTP, provisioning server)\n",
-        f'MAPE_PROV_PREFIX="{g("MAPE_PROV_PREFIX", "${BASE_SUBNET}:9999")}"\n',
+        f'MAPE_PROV_PREFIX="{g("MAPE_PROV_PREFIX", "${BASE_SUBNET}:99")}"\n',
         f'MAPE_DNS_IP="{g("MAPE_DNS_IP", "${MAPE_PROV_PREFIX}::53")}"\n',
         f'MAPE_NTP_IP="{g("MAPE_NTP_IP", "${MAPE_PROV_PREFIX}::123")}"\n',
         f'MAPE_PROV_IP="{g("MAPE_PROV_IP", "${MAPE_PROV_PREFIX}::ff")}"\n',
         f'MAPE_DOMAIN_SEARCH="{g("MAPE_DOMAIN_SEARCH", "map.ocn.ad.jp")}"\n\n',
         "# --- 1. ひかり電話無し動的 IPv4 SLAAC WAN ---\n",
-        f'SLAAC_BR_BASE="{g("SLAAC_BR_BASE", "1000")}"\n',
-        f'SLAAC_BR_SUFFIX="{g("SLAAC_BR_SUFFIX", "::ff0a")}"\n\n',
+        f'SLAAC_BR_BASE="{g("SLAAC_BR_BASE", "1000")}"\n\n',
         "# --- 2. ひかり電話あり動的 IPv4 DHCPv6-PD ---\n",
         f'PD_POOL="{g("PD_POOL", "2000")}"\n\n',
         "# --- 3. ひかり電話なし固定IP SLAAC ---\n",
-        f'SLAAC_FIX_BR_PREFIX="{g("SLAAC_FIX_BR_PREFIX", "3000")}"\n',
-        f'SLAAC_FIX_BR_SUFFIX="{g("SLAAC_FIX_BR_SUFFIX", "::ff0b")}"\n\n',
+        f'SLAAC_FIX_BR_PREFIX="{g("SLAAC_FIX_BR_PREFIX", "3000")}"\n\n',
         "# --- 4. ひかり電話あり・固定 IPv4 (DHCPv6-PD固定) ---\n",
         f'PD_FIX_POOL="{g("PD_FIX_POOL", "4000")}"\n\n',
         "# --- 5. HGW配下模擬 動的 (RA /64 + DHCPv6-PD /60 併用) ---\n",
         f'HGW_BR_BASE="{g("HGW_BR_BASE", "5000")}"\n',
-        f'HGW_BR_SUFFIX="{g("HGW_BR_SUFFIX", "::ff0c")}"\n',
         f'HGW_PD_DELEGATED_LEN="{g("HGW_PD_DELEGATED_LEN", "60")}"\n\n',
         "# --- 6. HGW配下模擬 固定IPv4 (RA /64 + DHCPv6-PD /60 + 固定IPv4) ---\n",
-        f'HGW_FIX_BR_BASE="{g("HGW_FIX_BR_BASE", "6000")}"\n',
-        f'HGW_FIX_BR_SUFFIX="{g("HGW_FIX_BR_SUFFIX", "::ff0d")}"\n\n',
+        f'HGW_FIX_BR_BASE="{g("HGW_FIX_BR_BASE", "6000")}"\n\n',
         "# =============================================================================\n",
         "# PPPoE Multi-Service Configuration\n",
         "# =============================================================================\n",
@@ -598,20 +595,17 @@ def sync_host_vlan_interfaces(staging: Dict[str, Any], logs: List[str]) -> None:
 
         if types & {"SLAAC_DYN_VLANS", "SLAAC_FIX_VLANS", "HGW_VLANS", "HGW_FIX_VLANS"}:
             base = common.get("BASE_SUBNET", "").strip()
+            suffix = common.get("BR_GATEWAY", "::ff0a") or "::ff0a"
             is_dyn = False
             if "SLAAC_FIX_VLANS" in types:
                 base_value = slaac.get("SLAAC_FIX_BR_PREFIX", "3000")
-                suffix = slaac.get("SLAAC_FIX_BR_SUFFIX", "::ff0b")
             elif "HGW_VLANS" in types:
                 base_value = hgw.get("HGW_BR_BASE", "5000")
-                suffix = hgw.get("HGW_BR_SUFFIX", "::ff0c")
                 is_dyn = True
             elif "HGW_FIX_VLANS" in types:
                 base_value = hgw.get("HGW_FIX_BR_BASE", "6000")
-                suffix = hgw.get("HGW_FIX_BR_SUFFIX", "::ff0d")
             else:
                 base_value = slaac.get("SLAAC_BR_BASE", "1000")
-                suffix = slaac.get("SLAAC_BR_SUFFIX", "::ff0a")
                 is_dyn = True
             try:
                 hextet4 = f":{((vlan - 1) % 63) + 1:02x}00" if is_dyn else ""
@@ -626,21 +620,21 @@ def sync_host_vlan_interfaces(staging: Dict[str, Any], logs: List[str]) -> None:
         run_cmd(["ip", "link", "set", "dev", name, "up"], privileged=True)
 
     try:
-        base = common.get("BASE_SUBNET", "5f00:3aa").strip() or "5f00:3aa"
-        br_prefix = common.get("BR_PREFIX", f"{base}:aaaa").replace("${BASE_SUBNET}", base)
-        br_ipv4 = common.get("BR_IPV4_ADDR", "192.0.2.1")
+        base = common.get("BASE_SUBNET", "2400:4150").strip() or "2400:4150"
+        br_prefix = common.get("BR_PREFIX", f"{base}:3620").replace("${BASE_SUBNET}", base)
+        br_ipv4 = common.get("BR_IPV4_ADDR", "100.127.255.255")
         ipv4 = ipaddress.IPv4Address(br_ipv4)
         br_ipv6 = f"{br_prefix.rstrip(':')}::{ipv4.packed.hex()[:4]}:{ipv4.packed.hex()[4:]}"
         ensure_dummy("dummy0")
         run_cmd(["ip", "-4", "addr", "replace", f"{br_ipv4}/32", "dev", "dummy0"], privileged=True)
         run_cmd(["ip", "-6", "addr", "flush", "dev", "dummy0", "scope", "global"], privileged=True)
-        run_cmd(["ip", "-6", "addr", "replace", f"{br_ipv6}/64", "dev", "dummy0"], privileged=True)
+        run_cmd(["ip", "-6", "addr", "replace", f"{br_ipv6}/128", "dev", "dummy0"], privileged=True)
 
-        prov_prefix = common.get("MAPE_PROV_PREFIX", f"{base}:9999").replace("${BASE_SUBNET}", base).rstrip(":")
+        prov_prefix = common.get("MAPE_PROV_PREFIX", f"{base}:99").replace("${BASE_SUBNET}", base).rstrip(":")
         ensure_dummy("dummy1")
         run_cmd(["ip", "-6", "addr", "flush", "dev", "dummy1", "scope", "global"], privileged=True)
         for suffix in ("53", "ff", "123"):
-            run_cmd(["ip", "-6", "addr", "replace", f"{prov_prefix}::{suffix}/64", "dev", "dummy1"], privileged=True)
+            run_cmd(["ip", "-6", "addr", "replace", f"{prov_prefix}::{suffix}/128", "dev", "dummy1"], privileged=True)
     except (TypeError, ValueError) as exc:
         logs.append(f"[WARN] BR 内部アドレスの同期に失敗しました: {exc}")
 
@@ -650,6 +644,7 @@ def install_system_configs(workspace_dir: str, logs: List[str]) -> bool:
     for source, target in (
         (os.path.join(workspace_dir, "system", "interfaces"), "/etc/network/interfaces"),
         (os.path.join(workspace_dir, "system", "99-network-routing.conf"), "/etc/sysctl.d/99-network-routing.conf"),
+        (os.path.join(workspace_dir, "system", "kea-tmpfiles.conf"), "/etc/tmpfiles.d/kea.conf"),
     ):
         ret_i, _, err_i = run_cmd(
             ["install", "-o", "root", "-g", "root", "-m", "644", source, target],
@@ -662,6 +657,8 @@ def install_system_configs(workspace_dir: str, logs: List[str]) -> bool:
             return False
 
     run_cmd(["sysctl", "-p", "/etc/sysctl.d/99-network-routing.conf"], privileged=True)
+    run_cmd(["mkdir", "-p", "/run/kea"], privileged=True)
+    run_cmd(["chmod", "750", "/run/kea"], privileged=True)
 
     vrf_script = os.path.join(workspace_dir, "system", "vrf-setup.sh")
     if os.path.isfile(vrf_script):
@@ -925,24 +922,23 @@ class ConfigManager:
                 "common_users": common_users,
             },
             "ipoe_common": {
-                "BR_IPV4_POOL": raw.get("BR_IPV4_POOL", "198.51.0.0/16"),
-                "BASE_SUBNET": raw.get("BASE_SUBNET", "5f00:3aa"),
-                "BR_PREFIX": raw.get("BR_PREFIX", "${BASE_SUBNET}:aaaa"),
-                "BR_IPV4_ADDR": raw.get("BR_IPV4_ADDR", "192.0.2.1"),
+                "BR_IPV4_POOL": raw.get("BR_IPV4_POOL", "10.218.0.0/16"),
+                "BASE_SUBNET": raw.get("BASE_SUBNET", "2400:4150"),
+                "BR_PREFIX": raw.get("BR_PREFIX", "${BASE_SUBNET}:3620"),
+                "BR_IPV4_ADDR": raw.get("BR_IPV4_ADDR", "100.127.255.255"),
+                "BR_GATEWAY": raw.get("BR_GATEWAY", raw.get("SLAAC_BR_SUFFIX", "::ff0a")),
                 "BR_IF": raw.get("BR_IF", "dummy0"),
                 "PROV_IF": raw.get("PROV_IF", "dummy1"),
-                "MAPE_PROV_PREFIX": raw.get("MAPE_PROV_PREFIX", "${BASE_SUBNET}:9999"),
+                "MAPE_PROV_PREFIX": raw.get("MAPE_PROV_PREFIX", "${BASE_SUBNET}:99"),
                 "MAPE_DNS_IP": raw.get("MAPE_DNS_IP", "${MAPE_PROV_PREFIX}::53"),
                 "MAPE_NTP_IP": raw.get("MAPE_NTP_IP", "${MAPE_PROV_PREFIX}::123"),
                 "MAPE_PROV_IP": raw.get("MAPE_PROV_IP", "${MAPE_PROV_PREFIX}::ff"),
-                "MAPE_DOMAIN_SEARCH": raw.get("MAPE_DOMAIN_SEARCH", "map.example.ad.jp"),
+                "MAPE_DOMAIN_SEARCH": raw.get("MAPE_DOMAIN_SEARCH", "map.ocn.ad.jp"),
                 "static_ips": all_static,
             },
             "slaac": {
                 "SLAAC_BR_BASE": raw.get("SLAAC_BR_BASE", "1000"),
-                "SLAAC_BR_SUFFIX": raw.get("SLAAC_BR_SUFFIX", "::ff0a"),
                 "SLAAC_FIX_BR_PREFIX": raw.get("SLAAC_FIX_BR_PREFIX", "3000"),
-                "SLAAC_FIX_BR_SUFFIX": raw.get("SLAAC_FIX_BR_SUFFIX", "::ff0b"),
                 "static_ips": all_static,
             },
             "dhcp_pd": {
@@ -952,9 +948,8 @@ class ConfigManager:
             },
             "hgw": {
                 "HGW_BR_BASE": raw.get("HGW_BR_BASE", "5000"),
-                "HGW_BR_SUFFIX": raw.get("HGW_BR_SUFFIX", "::ff0c"),
                 "HGW_FIX_BR_BASE": raw.get("HGW_FIX_BR_BASE", "6000"),
-                "HGW_FIX_BR_SUFFIX": raw.get("HGW_FIX_BR_SUFFIX", "::ff0d"),
+                "HGW_PD_DELEGATED_LEN": raw.get("HGW_PD_DELEGATED_LEN", "60"),
             },
         }
 

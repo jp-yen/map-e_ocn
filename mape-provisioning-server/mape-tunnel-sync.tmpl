@@ -223,7 +223,7 @@ def desired_tunnels(mc):
         try:
             vif = f"{MAPE_IF}.{vlan}"
             v4, plen, is_slaac = mc._compute_target_v4("00:00:00:00:00:00", prefix, seg, dev=vif)[:3]
-            ce6 = mc.convert_to_data_ipv6(prefix, str(v4), target_psid=0, is_slaac=is_slaac)
+            ce6 = mc.convert_to_data_ipv6(prefix, str(v4), target_psid=cur_psid, is_slaac=is_slaac)
         except Exception as e:
             log(f"calc failed for VLAN {vlan} ({prefix}): {e}", syslog.LOG_WARNING)
             continue

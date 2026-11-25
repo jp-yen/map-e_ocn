@@ -80,6 +80,8 @@ function switchConfigTab(panelIndex) {
 
   if (panelIndex === 2) {
     renderPPPoEConfigTab();
+  } else if (panelIndex === 3) {
+    renderStaticIPTable('ipoe', currentConfigStaging?.ipoe_common?.static_ips || []);
   }
 }
 
@@ -202,13 +204,40 @@ function getAllConfiguredVlans() {
     }
   };
 
+  parseAndAdd('SLAAC_DYN_VLANS', 'SLAAC動的');
+  parseAndAdd('PD_DYN_VLANS', 'DHCP-PD動的');
+  parseAndAdd('SLAAC_FIX_VLANS', 'SLAAC固定');
+  parseAndAdd('PD_FIX_VLANS', 'DHCP-PD固定');
+  parseAndAdd('HGW_VLANS', 'HGW動的');
+  parseAndAdd('HGW_FIX_VLANS', 'HGW固定');
   parseAndAdd('PPPOE_VLANS', 'PPPoE');
-  parseAndAdd('SLAAC_DYN_VLANS', 'SLAAC動');
-  parseAndAdd('PD_DYN_VLANS', 'PD動');
-  parseAndAdd('SLAAC_FIX_VLANS', 'SLAAC固');
-  parseAndAdd('PD_FIX_VLANS', 'PD固');
-  parseAndAdd('HGW_VLANS', 'HGW動');
-  parseAndAdd('HGW_FIX_VLANS', 'HGW固');
+
+  return Array.from(vlanMap.entries())
+    .map(([vlan, type]) => ({ vlan, type, num: parseInt(vlan, 10) }))
+    .sort((a, b) => a.num - b.num);
+}
+
+function getConfiguredStaticIPVlans() {
+  const ll = currentConfigStaging?.low_layer || {};
+  const vlanMap = new Map();
+
+  const parseAndAdd = (key, label) => {
+    const val = (ll[key] || '').trim();
+    if (val) {
+      val.split(/[\s,]+/).forEach(v => {
+        const cleanV = v.trim();
+        if (cleanV && /^\d+$/.test(cleanV)) {
+          if (!vlanMap.has(cleanV)) {
+            vlanMap.set(cleanV, label);
+          }
+        }
+      });
+    }
+  };
+
+  parseAndAdd('SLAAC_FIX_VLANS', 'SLAAC固定');
+  parseAndAdd('PD_FIX_VLANS', 'DHCP-PD固定');
+  parseAndAdd('HGW_FIX_VLANS', 'HGW固定');
 
   return Array.from(vlanMap.entries())
     .map(([vlan, type]) => ({ vlan, type, num: parseInt(vlan, 10) }))
@@ -243,11 +272,17 @@ function bindConfigToForm(cfg) {
   // 3. IPoE Common
   const ipoe = cfg.ipoe_common || {};
   [
-    'BR_IPV4_POOL', 'BASE_SUBNET', 'BR_PREFIX', 'BR_IPV4_ADDR',
+    'BR_IPV4_POOL', 'BASE_SUBNET', 'BR_PREFIX', 'BR_IPV4_ADDR', 'BR_GATEWAY',
     'BR_IF', 'PROV_IF', 'MAPE_DOMAIN_SEARCH', 'MAPE_PROV_PREFIX'
   ].forEach(k => {
     const el = document.getElementById(`cfg_${k}`);
-    if (el) el.value = ipoe[k] ?? '';
+    if (el) {
+      if (k === 'BR_GATEWAY') {
+        el.value = ipoe[k] ?? cfg?.slaac?.SLAAC_BR_SUFFIX ?? '::ff0a';
+      } else {
+        el.value = ipoe[k] ?? '';
+      }
+    }
   });
   const staticList = ipoe.static_ips || cfg?.slaac?.static_ips || [];
   renderStaticIPTable('ipoe', staticList);
@@ -255,7 +290,7 @@ function bindConfigToForm(cfg) {
   // 4. SLAAC
   const slaac = cfg.slaac || {};
   [
-    'SLAAC_BR_BASE', 'SLAAC_BR_SUFFIX', 'SLAAC_FIX_BR_PREFIX', 'SLAAC_FIX_BR_SUFFIX'
+    'SLAAC_BR_BASE', 'SLAAC_FIX_BR_PREFIX'
   ].forEach(k => {
     const el = document.getElementById(`cfg_${k}`);
     if (el) el.value = slaac[k] ?? '';
@@ -273,14 +308,14 @@ function bindConfigToForm(cfg) {
   // 6. HGW
   const hgw = cfg.hgw || {};
   [
-    'HGW_BR_BASE', 'HGW_BR_SUFFIX',
-    'HGW_FIX_BR_BASE', 'HGW_FIX_BR_SUFFIX'
+    'HGW_BR_BASE', 'HGW_FIX_BR_BASE'
   ].forEach(k => {
     const el = document.getElementById(`cfg_${k}`);
     if (el) el.value = hgw[k] ?? '';
   });
 
   renderIPoEVlanBanner(cfg);
+  updateConfigCurrentValueDisplays();
 }
 
 function renderIPoEVlanBanner(cfg) {
@@ -332,6 +367,9 @@ function sortStagedList(list, sortState) {
     if (col === 'ip' || col === 'server_ip') {
       va = ipToNumber(a.item[col]);
       vb = ipToNumber(b.item[col]);
+    } else if (col === 'mac') {
+      va = parseInt(va, 10) || 0;
+      vb = parseInt(vb, 10) || 0;
     } else {
       va = String(va).toLowerCase();
       vb = String(vb).toLowerCase();
@@ -500,7 +538,7 @@ let pppoeEditMode = 'table'; // 'table' or 'csv'
 function formatPPPoEUsersToCSV(users) {
   if (!Array.isArray(users)) return '';
   const lines = [
-    '# ユーザー名, パスワード, 割当IP, サービス名, DDNSホスト名, 備考'
+    '# ユーザー名, パスワード, 割当IP, Service-Name, DDNSホスト名, 備考'
   ];
   users.forEach(u => {
     const uname = (u.username || '').trim();
@@ -782,22 +820,143 @@ function onPPPoEUserChanged(idx, key, val) {
   }
 }
 
+function buildStaticIPVlanOptionsHtml(currentVlan, configuredVlans) {
+  const configuredSet = new Set(configuredVlans.map(v => v.vlan));
+  let optionsHtml = `<option value=""${!currentVlan ? ' selected' : ''}>-- 固定IP VLANを選択 --</option>`;
+  configuredVlans.forEach(({ vlan, type: vType }) => {
+    const isSel = (vlan === currentVlan);
+    optionsHtml += `<option value="${escapeHtml(vlan)}"${isSel ? ' selected' : ''}>${escapeHtml(vlan)} (${escapeHtml(vType)})</option>`;
+  });
+  if (currentVlan && !configuredSet.has(currentVlan)) {
+    optionsHtml += `<option value="${escapeHtml(currentVlan)}" selected>${escapeHtml(currentVlan)} (固定IP未定義)</option>`;
+  }
+  return optionsHtml;
+}
+
+function updateStaticIPVlanSelects() {
+  const list = currentConfigStaging?.ipoe_common?.static_ips || [];
+  const configuredVlans = getConfiguredStaticIPVlans();
+  const selects = document.querySelectorAll('.ipoe-static-vlan-select');
+  selects.forEach(selectEl => {
+    const idx = parseInt(selectEl.getAttribute('data-static-idx'), 10);
+    const item = list[idx] || {};
+    const currentVlan = String(item.mac || selectEl.value || '').trim();
+    const optionsHtml = buildStaticIPVlanOptionsHtml(currentVlan, configuredVlans);
+    if (selectEl.innerHTML !== optionsHtml) {
+      selectEl.innerHTML = optionsHtml;
+      selectEl.value = currentVlan;
+    }
+  });
+}
+
+function formatCombinedPrefix(baseSubnet, val, defaultLen = '64') {
+  if (!val) return `${baseSubnet}::/${defaultLen}`;
+  let clean = val.replace(/\$\{BASE_SUBNET\}/g, baseSubnet).trim();
+  clean = clean.replace(/\/.*$/, '').replace(/:+$/, '');
+  if (!clean.includes(':')) {
+    clean = `${baseSubnet}:${clean}`;
+  }
+  return `${clean}::/${defaultLen}`;
+}
+
+function formatCombinedSuffix(baseSubnet, baseVal, suffixVal, fallbackSuffix = '1') {
+  let cleanBase = (baseVal || '').replace(/\$\{BASE_SUBNET\}/g, baseSubnet).trim();
+  cleanBase = cleanBase.replace(/\/.*$/, '').replace(/:+$/, '');
+  if (!cleanBase.includes(':')) {
+    cleanBase = `${baseSubnet}:${cleanBase}`;
+  }
+  const cleanSuffix = (suffixVal || fallbackSuffix).replace(/^:+/, '');
+  return `${cleanBase}::${cleanSuffix}`;
+}
+
+function updateConfigCurrentValueDisplays() {
+  try {
+    const getVal = (id, fallback = '') => {
+      const el = document.getElementById(id);
+      return el ? (el.value.trim() || fallback) : fallback;
+    };
+
+    const mgtIpRaw = getVal('cfg_MGT_IP', '192.168.0.107/24') || '192.168.0.107';
+    const mgtIp = mgtIpRaw.split('/')[0].trim();
+    const dashPort = getVal('cfg_WEB_DASHBOARD_PORT', '1600') || '1600';
+
+    const baseSubnet = (getVal('cfg_BASE_SUBNET', '2400:4150') || '2400:4150').replace(/:+$/, '');
+    const brPrefixRaw = getVal('cfg_BR_PREFIX', '${BASE_SUBNET}:3620') || '${BASE_SUBNET}:3620';
+    const provPrefixRaw = getVal('cfg_MAPE_PROV_PREFIX', '${BASE_SUBNET}:99') || '${BASE_SUBNET}:99';
+    const brGateway = getVal('cfg_BR_GATEWAY', '::ff0a') || '::ff0a';
+
+    // Tab 4 values (also used in BR_GATEWAY preview)
+    const slaacBase = getVal('cfg_SLAAC_BR_BASE', '1000') || '1000';
+    const slaacFixPrefix = getVal('cfg_SLAAC_FIX_BR_PREFIX', '3000') || '3000';
+    const pdPool = getVal('cfg_PD_POOL', '2000') || '2000';
+    const pdFixPool = getVal('cfg_PD_FIX_POOL', '4000') || '4000';
+    const hgwBase = getVal('cfg_HGW_BR_BASE', '5000') || '5000';
+    const hgwFixBase = getVal('cfg_HGW_FIX_BR_BASE', '6000') || '6000';
+
+    const setDisplay = (id, text) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = text;
+    };
+
+    // Tab 1: VLAN & 基盤ネットワーク設定
+    setDisplay('cur_WEB_DASHBOARD_PORT', `${mgtIp}:${dashPort}`);
+
+    // Tab 3: IPoE 共通
+    setDisplay('cur_BASE_SUBNET', `${baseSubnet}::/32`);
+    setDisplay('cur_BR_PREFIX', formatCombinedPrefix(baseSubnet, brPrefixRaw, '48'));
+    setDisplay('cur_MAPE_PROV_PREFIX', formatCombinedPrefix(baseSubnet, provPrefixRaw, '48'));
+
+    const gwEl = document.getElementById('cur_BR_GATEWAY');
+    if (gwEl) {
+      const gwSlaacDyn = formatCombinedSuffix(baseSubnet, slaacBase, brGateway, 'ff0a');
+      const gwSlaacFix = formatCombinedSuffix(baseSubnet, slaacFixPrefix, brGateway, 'ff0a');
+      const gwHgwDyn = formatCombinedSuffix(baseSubnet, hgwBase, brGateway, 'ff0a');
+      const gwHgwFix = formatCombinedSuffix(baseSubnet, hgwFixBase, brGateway, 'ff0a');
+      gwEl.innerHTML = `
+        <span style="color:var(--text-muted); font-weight:500;">SLAAC動的:</span><span>${escapeHtml(gwSlaacDyn)}</span>
+        <span style="color:var(--text-muted); font-weight:500;">SLAAC固定:</span><span>${escapeHtml(gwSlaacFix)}</span>
+        <span style="color:var(--text-muted); font-weight:500;">HGW動的:</span><span>${escapeHtml(gwHgwDyn)}</span>
+        <span style="color:var(--text-muted); font-weight:500;">HGW固定:</span><span>${escapeHtml(gwHgwFix)}</span>
+      `;
+    }
+
+    // Tab 4: MAP-E 方式設定
+    setDisplay('cur_SLAAC_BR_BASE', formatCombinedPrefix(baseSubnet, slaacBase, '64'));
+    setDisplay('cur_SLAAC_FIX_BR_PREFIX', formatCombinedPrefix(baseSubnet, slaacFixPrefix, '64'));
+    setDisplay('cur_PD_POOL', formatCombinedPrefix(baseSubnet, pdPool, '56'));
+    setDisplay('cur_PD_FIX_POOL', formatCombinedPrefix(baseSubnet, pdFixPool, '56'));
+    setDisplay('cur_HGW_BR_BASE', formatCombinedPrefix(baseSubnet, hgwBase, '64'));
+    setDisplay('cur_HGW_FIX_BR_BASE', formatCombinedPrefix(baseSubnet, hgwFixBase, '64'));
+  } catch (err) {
+    console.error('Failed to update current value displays:', err);
+  }
+}
+
 function renderStaticIPTable(type, list) {
   const tbody = document.getElementById(`cfg_${type}_static_tbody`);
   if (!tbody) return;
   if (!list || list.length === 0) {
     tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--text-faint); padding:12px;">固定 IP / 回線備考の登録はありません。「＋ 回線追加」から登録できます。</td></tr>`;
   } else {
-    tbody.innerHTML = sortStagedList(list, configSortState.ipoeStatic).map(({ item, idx }) => `
+    const configuredVlans = getConfiguredStaticIPVlans();
+    tbody.innerHTML = sortStagedList(list, configSortState.ipoeStatic).map(({ item, idx }) => {
+      const currentVlan = String(item.mac || '').trim();
+      const optionsHtml = buildStaticIPVlanOptionsHtml(currentVlan, configuredVlans);
+      return `
         <tr>
-          <td><input type="text" class="table-input" value="${escapeHtml(item.mac || '')}" placeholder="例: 62 (VLAN番号)" oninput="onStaticIPChanged('${type}', ${idx}, 'mac', this.value)"></td>
+          <td>
+            <select class="table-input ipoe-static-vlan-select" data-static-idx="${idx}" onchange="onStaticIPChanged('${type}', ${idx}, 'mac', this.value)">
+              ${optionsHtml}
+            </select>
+          </td>
           <td><input type="text" class="table-input" value="${escapeHtml(item.ip || '')}" placeholder="空欄で動的 (例: 192.168.200.1/32)" oninput="onStaticIPChanged('${type}', ${idx}, 'ip', this.value)" onblur="onStaticIPBlur('${type}', ${idx}, this)"></td>
           <td><input type="text" class="table-input ddns-input" value="${escapeHtml(item.ddns_v6 || '')}" placeholder="例: cebox1.p-ns.flets-west.jp" oninput="onStaticIPChanged('${type}', ${idx}, 'ddns_v6', this.value); validateDDNSInput(this);"></td>
           <td><input type="text" class="table-input ddns-input" value="${escapeHtml(item.ddns_v4 || '')}" placeholder="例: cebox1.v4.flets-west.jp" oninput="onStaticIPChanged('${type}', ${idx}, 'ddns_v4', this.value); validateDDNSInput(this);"></td>
           <td><input type="text" class="table-input" value="${escapeHtml(item.note || '')}" placeholder="例: 動的検証機 (NEC Aterm)" oninput="onStaticIPChanged('${type}', ${idx}, 'note', this.value)"></td>
           <td style="text-align:center;"><button class="btn-del-row" onclick="deleteStaticIPRow('${type}', ${idx})">削除</button></td>
         </tr>
-      `).join('');
+      `;
+    }).join('');
     tbody.querySelectorAll('.ddns-input').forEach(validateDDNSInput);
   }
 }
@@ -895,7 +1054,7 @@ function readFormValuesToStaging() {
 
   // 3. IPoE Common
   [
-    'BR_IPV4_POOL', 'BASE_SUBNET', 'BR_PREFIX', 'BR_IPV4_ADDR',
+    'BR_IPV4_POOL', 'BASE_SUBNET', 'BR_PREFIX', 'BR_IPV4_ADDR', 'BR_GATEWAY',
     'BR_IF', 'PROV_IF', 'MAPE_DOMAIN_SEARCH', 'MAPE_PROV_PREFIX'
   ].forEach(k => {
     const el = document.getElementById(`cfg_${k}`);
@@ -904,7 +1063,7 @@ function readFormValuesToStaging() {
 
   // 4. SLAAC
   [
-    'SLAAC_BR_BASE', 'SLAAC_BR_SUFFIX', 'SLAAC_FIX_BR_PREFIX', 'SLAAC_FIX_BR_SUFFIX'
+    'SLAAC_BR_BASE', 'SLAAC_FIX_BR_PREFIX'
   ].forEach(k => {
     const el = document.getElementById(`cfg_${k}`);
     if (el) currentConfigStaging.slaac[k] = el.value.trim();
@@ -921,8 +1080,7 @@ function readFormValuesToStaging() {
   // 6. HGW
   if (!currentConfigStaging.hgw) currentConfigStaging.hgw = {};
   [
-    'HGW_BR_BASE', 'HGW_BR_SUFFIX',
-    'HGW_FIX_BR_BASE', 'HGW_FIX_BR_SUFFIX'
+    'HGW_BR_BASE', 'HGW_FIX_BR_BASE'
   ].forEach(k => {
     const el = document.getElementById(`cfg_${k}`);
     if (el) currentConfigStaging.hgw[k] = el.value.trim();
@@ -943,6 +1101,8 @@ function readFormValuesToStaging() {
 function onConfigInputChanged() {
   readFormValuesToStaging();
   renderIPoEVlanBanner(currentConfigStaging);
+  updateStaticIPVlanSelects();
+  updateConfigCurrentValueDisplays();
   updateConfigUIState(true);
 
   if (configDebounceTimer) clearTimeout(configDebounceTimer);
@@ -1039,11 +1199,11 @@ function validateConfigData(config) {
     s.name = name;
     const rowNum = idx + 1;
     if (!name) {
-      errors.push(`PPPoE サービス定義: ${rowNum}行目のサービス名が未入力です。`);
+      errors.push(`PPPoE サービス定義: ${rowNum}行目の Service-Name が未入力です。`);
     } else if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
-      errors.push(`PPPoE サービス定義: サービス名「${name}」に使用できない不正な文字が含まれています。半角英数字、アンダースコア（_）、ハイフン（-）を使用してください（例: Flets_VPN_west）。`);
+      errors.push(`PPPoE サービス定義: Service-Name「${name}」に使用できない不正な文字が含まれています。半角英数字、アンダースコア（_）、ハイフン（-）を使用してください（例: Flets_VPN_west）。`);
     } else if (seenSvcs.has(name.toLowerCase())) {
-      errors.push(`PPPoE サービス定義: サービス名「${name}」が重複しています。`);
+      errors.push(`PPPoE サービス定義: Service-Name「${name}」が重複しています。`);
     } else {
       seenSvcs.add(name.toLowerCase());
     }
