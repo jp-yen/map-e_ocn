@@ -36,6 +36,7 @@
 #   mape-tunnel-sync --flush      : mpe-common の全経路とデバイスを削除
 # =============================================================================
 import argparse
+import importlib.util
 import ipaddress
 import os
 import re
@@ -98,7 +99,10 @@ def load_mape_calc():
     ]
     for path in candidates:
         if path and os.path.isfile(path):
-            return SourceFileLoader("mape_calc", path).load_module()
+            spec = importlib.util.spec_from_loader("mape_calc", SourceFileLoader("mape_calc", path))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
     sys.exit("[mape-tunnel-sync] ERROR: mape_calc not found (set MAPE_CALC=/path/to/mape_calc)")
 
 
